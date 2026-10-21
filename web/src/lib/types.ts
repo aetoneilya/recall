@@ -176,7 +176,8 @@ export interface FactDetail {
 }
 
 export type NewFact = FactInput & { deckId: string }
-export type FactPatch = Partial<FactInput> & { status?: FactStatus }
+// deckId moves it to another topic deck.
+export type FactPatch = Partial<FactInput> & { status?: FactStatus; deckId?: string }
 export type WordPatch = Partial<WordInput> & { status?: WordStatus }
 
 export interface WordQuery {

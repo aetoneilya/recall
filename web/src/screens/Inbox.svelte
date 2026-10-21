@@ -1,17 +1,29 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte'
+  import Markdown from '../components/Markdown.svelte'
   import WordPreview from '../components/WordPreview.svelte'
   import { api, status } from '../lib/app.svelte.ts'
+  import { facts } from '../lib/facts.svelte.ts'
   import { remaining } from '../lib/queue.ts'
   import { session } from '../lib/review.svelte.ts'
   import { navigate } from '../lib/router.svelte.ts'
   import { swipe, type SwipeDir } from '../lib/swipe.ts'
   import { haptic } from '../lib/telegram.ts'
   import { errorText, showToast } from '../lib/toast.svelte.ts'
-  import type { WordItem } from '../lib/types.ts'
+  import type { FactItem, WordItem } from '../lib/types.ts'
   import { words } from '../lib/words.svelte.ts'
 
-  let notes = $state<WordItem[]>([])
+  // A proposal: a word for a language deck or a fact for a topic deck.
+  type Proposal = { id: string; deckId: string; deckName: string; createdAt: string; createdBy: string; tags: string[] } & (
+    | { kind: 'word'; word: WordItem }
+    | { kind: 'fact'; fact: FactItem }
+  )
+  const ofWord = (w: WordItem): Proposal => ({ kind: 'word', word: w, id: w.id, deckId: w.deckId, deckName: w.deckName, createdAt: w.createdAt, createdBy: w.createdBy, tags: w.tags })
+  const ofFact = (f: FactItem): Proposal => ({ kind: 'fact', fact: f, id: f.id, deckId: f.deckId, deckName: f.deckName, createdAt: f.createdAt, createdBy: f.createdBy, tags: f.tags })
+  const byAge = (xs: Proposal[]) => xs.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+  const label = (p: Proposal) => (p.kind === 'word' ? `“${p.word.term}”` : p.fact.front.length > 40 ? `“${p.fact.front.slice(0, 38)}…”` : `“${p.fact.front}”`)
+
+  let notes = $state<Proposal[]>([])
   let loading = $state(true)
   let error = $state('')
   let deck = $state<string | null>(null)
@@ -33,15 +45,16 @@
 
   // Paint at once from the device's copy of the collection (offline too),
   // then take the server's list.
-  void words.restore().then(() => {
-    if (!loading || notes.length || !words.all) return
-    notes = words.all.filter((w) => w.status === 'inbox').sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  void Promise.all([words.restore(), facts.restore()]).then(() => {
+    if (!loading || notes.length || (!words.all && !facts.all)) return
+    notes = byAge([...(words.all ?? []).filter((w) => w.status === 'inbox').map(ofWord), ...(facts.all ?? []).filter((f) => f.status === 'inbox').map(ofFact)])
   })
 
   async function load() {
     loading = true
     try {
-      notes = await api.inbox()
+      const r = await api.inbox()
+      notes = byAge([...r.words.map(ofWord), ...r.facts.map(ofFact)])
       status.inbox = notes.length
       error = ''
     } catch (e) {
@@ -65,11 +78,14 @@
   }
 
   // Puts proposals back into the inbox (undo of approve / reject).
-  async function restore(back: WordItem[]) {
-    notes = [...back, ...notes.filter((n) => !back.some((b) => b.id === n.id))].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  async function restore(back: Proposal[]) {
+    notes = byAge([...back, ...notes.filter((n) => !back.some((b) => b.id === n.id))])
     status.inbox = notes.length
     try {
-      for (const w of back) words.upsert(await api.updateWord(w.id, { status: 'inbox' }))
+      for (const p of back) {
+        if (p.kind === 'word') words.upsert(await api.updateWord(p.id, { status: 'inbox' }))
+        else facts.upsert(await api.updateFact(p.id, { status: 'inbox' }))
+      }
       session.markStale()
     } catch (e) {
       showToast(`Not undone: ${errorText(e)}`)
@@ -77,14 +93,15 @@
     }
   }
 
-  async function decide(note: WordItem, approve: boolean) {
+  async function decide(note: Proposal, approve: boolean) {
     const index = notes.indexOf(note)
     drop([note.id])
     haptic.impact(approve ? 'light' : 'medium')
     try {
-      words.upsert(await (approve ? api.approve(note.id) : api.reject(note.id)))
+      if (note.kind === 'word') words.upsert(await (approve ? api.approve(note.id) : api.reject(note.id)))
+      else facts.upsert(await (approve ? api.approveFact(note.id) : api.rejectFact(note.id)))
       if (approve) session.markStale()
-      showToast(`${approve ? 'Approved' : 'Rejected'} “${note.term}”`, { action: { label: 'Undo', run: () => void restore([note]) } })
+      showToast(`${approve ? 'Approved' : 'Rejected'} ${label(note)}`, { action: { label: 'Undo', run: () => void restore([note]) } })
     } catch (e) {
       notes = [...notes.slice(0, index), note, ...notes.slice(index)]
       status.inbox = notes.length
@@ -100,8 +117,11 @@
       await api.approveAll(deck ?? undefined)
       session.markStale()
       status.wordsVersion++
+      status.factsVersion++
       haptic.notify('success')
-      showToast(`Approved ${batch.length} ${batch.length === 1 ? 'word' : 'words'}`, { action: { label: 'Undo', run: () => void restore(batch) } })
+      const kinds = new Set(batch.map((b) => b.kind))
+      const noun = kinds.size > 1 ? 'proposal' : kinds.has('fact') ? 'card' : 'word'
+      showToast(`Approved ${batch.length} ${batch.length === 1 ? noun : `${noun}s`}`, { action: { label: 'Undo', run: () => void restore(batch) } })
     } catch (e) {
       notes = before
       status.inbox = notes.length
@@ -157,7 +177,7 @@
     {:else if !top}
       <div class="empty">
         <Icon name="inbox" size={44} stroke={1.3} />
-        <p><strong>Nothing to vet</strong>Words Claude or the bot propose land here. Swipe right to approve, left to reject, tap to edit first.</p>
+        <p><strong>Nothing to vet</strong>Words and cards Claude or the bot propose land here. Swipe right to approve, left to reject, tap to edit first.</p>
         {#if session.current}
           <button class="btn primary" onclick={() => navigate('/', { replace: true })}><Icon name="review" size={18} /> Review {remaining(session.queue)} {remaining(session.queue) === 1 ? 'card' : 'cards'}</button>
         {:else}
@@ -191,7 +211,14 @@
               {#if n.createdBy === 'claude'}<span class="by">by Claude</span>{:else}<span>{n.deckName}</span>{/if}
               {#each n.tags as t (t)}<span class="tag">{t}</span>{/each}
             </div>
-            <div class="content"><WordPreview word={n} /></div>
+            <div class="content">
+              {#if n.kind === 'word'}
+                <WordPreview word={n.word} />
+              {:else}
+                <div class="q"><Markdown source={n.fact.front} /></div>
+                <div class="a"><Markdown source={n.fact.back} /></div>
+              {/if}
+            </div>
             {#if dx > 24}
               <div class="wash ok" style="opacity:{pull * 0.55}"></div>
               <div class="stamp ok" style="opacity:{pull}"><Icon name="check" size={18} stroke={2.4} /> Approve</div>
@@ -332,6 +359,20 @@
     overflow-y: auto;
     overscroll-behavior: contain;
     padding: 12px 20px 24px;
+  }
+  /* A proposed fact: the question, then the answer as the card shows it. */
+  .q {
+    font-size: 19px;
+    line-height: 1.38;
+    font-weight: 600;
+    letter-spacing: -0.012em;
+  }
+  .a {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 0.5px solid var(--hairline);
+    font-size: 16px;
+    line-height: 1.5;
   }
   .wash {
     position: absolute;

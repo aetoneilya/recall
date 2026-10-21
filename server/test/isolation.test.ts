@@ -71,7 +71,7 @@ describe('data isolation between users', () => {
     expect((await b.get('/words')).body.total).toBe(0)
     expect((await b.get(`/words?deck=${deckA}`)).body.total).toBe(0)
     expect((await b.get('/words?status=inbox')).body.total).toBe(0)
-    expect((await b.get('/inbox')).body).toEqual({ words: [] })
+    expect((await b.get('/inbox')).body).toEqual({ words: [], facts: [] })
     expect((await b.get(`/inbox?deck=${deckA}`)).status).toBe(404)
     const q = (await b.get('/queue')).body
     expect(q).toMatchObject({ items: [], counts: { new: 0, learning: 0, review: 0 }, inbox: 0 })

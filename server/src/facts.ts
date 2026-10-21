@@ -6,7 +6,7 @@ import {
   type Author, type CardState, type CleanFact, type Fact, type FactInput, type FactStatus,
 } from '@recall/core'
 import { newId, tx, type Db } from './db.ts'
-import { cardSummary, getDeck, HttpError, listDecks, mustBeKind, resolveDeck, stateValues, toCard, type CardRow, type CardSummary } from './repo.ts'
+import { cardSummary, createTopicDeck, getDeck, HttpError, listDecks, mustBeKind, resolveDeck, stateValues, toCard, type CardRow, type CardSummary } from './repo.ts'
 
 // A fact with the same normalised question already exists in the deck.
 export class DuplicateFactError extends HttpError {
@@ -114,12 +114,19 @@ export function createFact(db: Db, userId: string, input: NewFact, now: Date): {
   })
 }
 
-export type FactPatch = Partial<FactInput> & { status?: FactStatus }
+// deckId moves the fact (with its card and history) to another topic deck.
+export type FactPatch = Partial<FactInput> & { status?: FactStatus; deckId?: string }
 
 // Only the fields given change; the card and its history always stay.
 export function updateFact(db: Db, userId: string, id: string, patch: FactPatch, now: Date): Fact {
   return tx(db, () => {
     const cur = mustGetFact(db, userId, id)
+    let deckId = cur.deckId
+    if (patch.deckId !== undefined && patch.deckId !== cur.deckId) {
+      const deck = resolveDeck(db, userId, patch.deckId)
+      if (!deck) throw new HttpError(404, 'deck not found')
+      deckId = mustBeKind(deck, 'topic').id
+    }
     const f = cleanFactInput({
       front: patch.front ?? cur.front,
       back: patch.back ?? cur.back,
@@ -127,10 +134,10 @@ export function updateFact(db: Db, userId: string, id: string, patch: FactPatch,
     })
     const status = patch.status ?? cur.status
     if (!FACT_STATUSES.includes(status)) throw new HttpError(400, `unknown status ${status}`)
-    const dup = findDuplicateFact(db, userId, cur.deckId, f.front)
+    const dup = findDuplicateFact(db, userId, deckId, f.front)
     if (dup && dup.id !== id) throw new DuplicateFactError(dup)
-    db.prepare('UPDATE facts SET front = ?, back = ?, tags = ?, status = ?, dedupe_key = ?, updated_at = ? WHERE id = ? AND user_id = ?')
-      .run(f.front, f.back, JSON.stringify(f.tags), status, factKey(f.front), now.toISOString(), id, userId)
+    db.prepare('UPDATE facts SET deck_id = ?, front = ?, back = ?, tags = ?, status = ?, dedupe_key = ?, updated_at = ? WHERE id = ? AND user_id = ?')
+      .run(deckId, f.front, f.back, JSON.stringify(f.tags), status, factKey(f.front), now.toISOString(), id, userId)
     return getFact(db, userId, id)!
   })
 }
@@ -138,6 +145,72 @@ export function updateFact(db: Db, userId: string, id: string, patch: FactPatch,
 export function deleteFact(db: Db, userId: string, id: string) {
   const r = db.prepare('DELETE FROM facts WHERE id = ? AND user_id = ?').run(id, userId)
   if (r.changes === 0) throw new HttpError(404, `fact ${id} not found`)
+}
+
+export function setFactSuspended(db: Db, userId: string, id: string, suspended: boolean) {
+  mustGetFact(db, userId, id)
+  db.prepare('UPDATE cards SET suspended = ? WHERE fact_id = ?').run(suspended ? 1 : 0, id)
+}
+
+// Oldest first.
+export function inboxFacts(db: Db, userId: string, now: Date, deckId?: string): FactItem[] {
+  const rows = (deckId
+    ? db.prepare("SELECT * FROM facts WHERE user_id = ? AND status = 'inbox' AND deck_id = ? ORDER BY created_at, id").all(userId, deckId)
+    : db.prepare("SELECT * FROM facts WHERE user_id = ? AND status = 'inbox' ORDER BY created_at, id").all(userId)) as unknown as FactRow[]
+  return factItems(db, userId, rows, now)
+}
+
+export function factInboxCount(db: Db, userId: string): number {
+  return (db.prepare("SELECT count(*) AS n FROM facts WHERE user_id = ? AND status = 'inbox'").get(userId) as { n: number }).n
+}
+
+export interface AddFactsResult {
+  deck: { id: string; name: string; created: boolean }
+  created: { index: number; id: string; front: string; status: FactStatus }[]
+  duplicates: { index: number; existingId: string; existingStatus: FactStatus; front: string; differs: Record<string, unknown> }[]
+  errors: { index: number; front?: string; error: string }[]
+}
+
+// Batch add (MCP): each fact validated and deduped by question like a manual
+// add, against facts of any status and earlier ones in the batch. The topic
+// deck is created only when asked.
+export function addFacts(
+  db: Db,
+  userId: string,
+  input: { deck: string; facts: FactInput[]; autoApprove?: boolean; createDeck?: boolean; createdBy: Author },
+  now: Date,
+): AddFactsResult {
+  return tx(db, () => {
+    let deck = resolveDeck(db, userId, input.deck)
+    let created = false
+    if (!deck) {
+      if (!input.createDeck) throw new HttpError(404, `no topic deck "${input.deck}"; pass createDeck: true to create it, or call list_decks`)
+      deck = createTopicDeck(db, userId, { name: input.deck }, now)
+      created = true
+    }
+    const d = mustBeKind(deck, 'topic')
+    const out: AddFactsResult = { deck: { id: d.id, name: d.name, created }, created: [], duplicates: [], errors: [] }
+    const status: FactStatus = input.autoApprove ? 'active' : 'inbox'
+    input.facts.forEach((p, index) => {
+      const r = cleanFact(p)
+      if ('error' in r) {
+        out.errors.push({ index, front: p.front, error: r.error })
+        return
+      }
+      const dup = findDuplicateFact(db, userId, d.id, r.fact.front)
+      if (dup) {
+        const differs: Record<string, unknown> = {}
+        if (r.fact.back !== dup.back) differs.back = { existing: dup.back, proposed: r.fact.back }
+        const newTags = r.fact.tags.filter((t) => !dup.tags.includes(t))
+        if (newTags.length) differs.newTags = newTags
+        out.duplicates.push({ index, existingId: dup.id, existingStatus: dup.status, front: dup.front, differs })
+        return
+      }
+      const { fact } = createFact(db, userId, { deckId: d.id, fact: r.fact, status, createdBy: input.createdBy }, now)
+      out.created.push({ index, id: fact.id, front: fact.front, status })
+    })
+    return out
+  })
 }
 
 export function factCard(db: Db, userId: string, factId: string) {

@@ -8,7 +8,7 @@ import { autofill } from './autofill.ts'
 import { isTime, isTimeZone } from './config.ts'
 import type { AppContext } from './context.ts'
 import { dashboard } from './dashboard.ts'
-import { createFact, deleteFact, factItem, getFact, searchFacts, updateFact } from './facts.ts'
+import { createFact, deleteFact, factInboxCount, factItem, getFact, inboxFacts, searchFacts, setFactSuspended, updateFact } from './facts.ts'
 import { fsrsInfo, optimizeNow, REQUEST_RETENTION } from './fsrs.ts'
 import { lexiconOf } from './lexicon.ts'
 import { createLoginNonce, pollLoginNonce, START_PREFIX } from './login.ts'
@@ -72,7 +72,7 @@ const DeckPatchBody = z.object({
 const factStatusSchema = z.enum(tuple<FactStatus>(FACT_STATUSES))
 const FactFields = { front: z.string().max(5000), back: z.string().max(50000), tags: z.array(z.string()).optional() }
 const FactBody = z.object({ deckId: z.string().min(1), ...FactFields }).strict()
-const FactPatchBody = z.object({ ...FactFields, status: factStatusSchema }).partial().strict()
+const FactPatchBody = z.object({ ...FactFields, status: factStatusSchema, deckId: z.string().min(1) }).partial().strict()
 const AutofillBody = z.object({ deckId: z.string().optional(), term: z.string().min(1).max(200), hint: z.string().max(300).optional() })
 const AnswersBody = z.object({ answers: z.array(z.object({ id: z.string(), known: z.boolean() })).max(1000) })
 const time = z.string().refine(isTime, 'must be HH:MM (24 h)')
@@ -258,7 +258,7 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
     const deck = qstr(req.query.deck)
     const deckId = deck ? resolveDeck(db, uid(req), deck)?.id ?? '-' : undefined
     const q = buildQueue(db, uid(req), opts(req), ctx.now(), { limit: qint(req.query.limit, 200), deckId })
-    res.json({ ...q, inbox: inboxCount(db, uid(req)) })
+    res.json({ ...q, inbox: inboxCount(db, uid(req)) + factInboxCount(db, uid(req)) })
   })
 
   r.post('/reviews', (req, res) => {
@@ -287,10 +287,11 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
     res.json({ deck: updateDeck(db, uid(req), req.params.id as string, parse(DeckPatchBody, req.body)) })
   })
 
-  // Only an empty topic deck.
+  // A topic deck; one with facts only with ?facts=delete (they go too, with
+  // their history), else 409 {error, facts}.
   r.delete('/decks/:id', (req, res) => {
-    deleteDeck(db, uid(req), req.params.id as string)
-    res.json({ ok: true })
+    const facts = deleteDeck(db, uid(req), req.params.id as string, { withFacts: req.query.facts === 'delete' })
+    res.json({ ok: true, facts })
   })
 
   // ---------- facts ----------
@@ -330,6 +331,19 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
     deleteFact(db, uid(req), req.params.id as string)
     res.json({ ok: true })
   })
+
+  for (const [action, status] of [['approve', 'active'], ['reject', 'rejected']] as const) {
+    r.post(`/facts/:id/${action}`, (req, res) => {
+      const f = updateFact(db, uid(req), req.params.id as string, { status }, ctx.now())
+      res.json({ fact: factItem(db, uid(req), f.id, ctx.now()) })
+    })
+  }
+  for (const [action, flag] of [['suspend', true], ['unsuspend', false]] as const) {
+    r.post(`/facts/:id/${action}`, (req, res) => {
+      setFactSuspended(db, uid(req), req.params.id as string, flag)
+      res.json({ fact: factItem(db, uid(req), req.params.id as string, ctx.now()) })
+    })
+  }
 
   // ---------- words ----------
 
@@ -404,7 +418,13 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
 
   r.get('/inbox', (req, res) => {
     const deck = qstr(req.query.deck)
-    res.json({ words: inboxWords(db, uid(req), ctx.now(), deck ? deckFor(req, deck).id : undefined) })
+    // Proposals of both kinds; ?deck= picks one deck, language or topic.
+    const d = deck ? resolveDeck(db, uid(req), deck) : null
+    if (deck && !d) throw new HttpError(404, 'deck not found')
+    res.json({
+      words: d?.kind === 'topic' ? [] : inboxWords(db, uid(req), ctx.now(), d?.id),
+      facts: d?.kind === 'language' ? [] : inboxFacts(db, uid(req), ctx.now(), d?.id),
+    })
   })
 
   r.post('/inbox/approve-all', (req, res) => {

@@ -6,9 +6,11 @@
   import LineChart from '../components/LineChart.svelte'
   import ScaleLadder from '../components/ScaleLadder.svelte'
   import { api, kv } from '../lib/app.svelte.ts'
+  import { getDecks } from '../lib/decks.ts'
+  import { session } from '../lib/review.svelte.ts'
   import { navigate } from '../lib/router.svelte.ts'
   import { errorText } from '../lib/toast.svelte.ts'
-  import type { Dashboard } from '../lib/types.ts'
+  import type { Dashboard, DeckWithCounts } from '../lib/types.ts'
 
   let data = $state.raw<Dashboard | null>(null)
   let error = $state('')
@@ -36,6 +38,15 @@
     }
   }
   void load()
+
+  // Topic decks, a small block under the vocabulary: from the review
+  // session's cached copy (offline too), refreshed on each visit.
+  let topicDecks = $state.raw<DeckWithCounts[]>(
+    (Object.values(session.decks) as DeckWithCounts[]).filter((d) => d.kind === 'topic' && d.counts),
+  )
+  void getDecks(true)
+    .then((ds) => (topicDecks = ds.filter((d) => d.kind === 'topic')))
+    .catch(() => {})
 
   const fmt = (n: number) => Math.round(n).toLocaleString('en-US')
   const pct = (r: number | null) => (r === null ? '–' : `${Math.round(r * 100)}%`)
@@ -195,6 +206,22 @@
       </p>
     </div>
 
+    {#if topicDecks.length}
+      <div class="section-label">Topics</div>
+      <div class="group topics">
+        {#each topicDecks as d (d.id)}
+          {@const c = d.counts}
+          <div class="row topic">
+            <span class="tmain">
+              <span class="tname">{d.name}{#if !d.inReview}<span class="chip">not in review</span>{/if}</span>
+              <span class="tsub">{fmt(c.total)} {c.total === 1 ? 'card' : 'cards'} · {fmt(c.known)} known · {fmt(c.learning)} learning · {fmt(c.newTotal)} new</span>
+            </span>
+            <span class="today" aria-label="{c.due + c.new} due today"><b>{fmt(c.due + c.new)}</b> today</span>
+          </div>
+        {/each}
+      </div>
+    {/if}
+
     {#if data.coverage.some((b) => b.words)}
       <div class="section-label">Frequency coverage</div>
       <div class="panel">
@@ -308,6 +335,39 @@
     padding: 8px 14px;
   }
 
+  .topic {
+    gap: 10px;
+  }
+  .tmain {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .tname {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+  }
+  .tsub {
+    font-size: 13px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .today {
+    flex: none;
+    font-size: 13px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .today b {
+    font-size: 17px;
+    font-weight: 650;
+    color: var(--text);
+    margin-right: 2px;
+  }
   .tiles {
     display: grid;
     grid-template-columns: repeat(5, 1fr);

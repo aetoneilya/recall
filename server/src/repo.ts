@@ -219,23 +219,32 @@ function checkDeckName(db: Db, userId: string, raw: string, except?: string): st
   return name
 }
 
+// Facts are longer to answer than words: fewer new ones a day by default.
+export const TOPIC_NEW_PER_DAY = 5
+
 // A topic deck: facts on one subject. Its name is unique among all the
 // user's decks.
 export function createTopicDeck(db: Db, userId: string, input: TopicDeckInput, now: Date): DeckInfo {
   const name = checkDeckName(db, userId, input.name ?? '')
   const id = newId('dk')
   db.prepare("INSERT INTO decks(id, user_id, kind, name, new_per_day, in_review, created_at) VALUES (?, ?, 'topic', ?, ?, ?, ?)")
-    .run(id, userId, name, checkNewPerDay(input.newPerDay ?? 15), input.inReview === false ? 0 : 1, now.toISOString())
+    .run(id, userId, name, checkNewPerDay(input.newPerDay ?? TOPIC_NEW_PER_DAY), input.inReview === false ? 0 : 1, now.toISOString())
   return getDeck(db, userId, id)!
 }
 
-// A topic deck with no facts left can go; anything else stays.
-export function deleteDeck(db: Db, userId: string, id: string) {
-  const deck = getDeck(db, userId, id)
-  if (!deck) throw new HttpError(404, 'deck not found')
-  if (deck.kind !== 'topic') throw new HttpError(400, 'only topic decks can be deleted')
-  if (db.prepare('SELECT 1 FROM facts WHERE deck_id = ? LIMIT 1').get(id)) throw new HttpError(409, `deck "${deck.name}" still has facts`)
-  db.prepare('DELETE FROM decks WHERE id = ? AND user_id = ?').run(id, userId)
+// Deletes a topic deck. One with facts only with `withFacts`: they go too,
+// with their cards and review history. Returns how many facts went.
+export function deleteDeck(db: Db, userId: string, id: string, { withFacts = false } = {}): number {
+  return tx(db, () => {
+    const deck = getDeck(db, userId, id)
+    if (!deck) throw new HttpError(404, 'deck not found')
+    if (deck.kind !== 'topic') throw new HttpError(400, 'only topic decks can be deleted')
+    const n = (db.prepare('SELECT count(*) AS n FROM facts WHERE deck_id = ? AND user_id = ?').get(id, userId) as { n: number }).n
+    if (n && !withFacts) throw new HttpError(409, `deck "${deck.name}" still has ${n} ${n === 1 ? 'fact' : 'facts'}`, { facts: n })
+    db.prepare('DELETE FROM facts WHERE deck_id = ? AND user_id = ?').run(id, userId)
+    db.prepare('DELETE FROM decks WHERE id = ? AND user_id = ?').run(id, userId)
+    return n
+  })
 }
 
 export function createDeck(db: Db, userId: string, input: DeckInput, now: Date): DeckInfo {
@@ -414,12 +423,17 @@ export function deleteWord(db: Db, userId: string, id: string) {
   if (r.changes === 0) throw new HttpError(404, `word ${id} not found`)
 }
 
+// Words and facts in the inbox (of one deck, or all) → active.
 export function approveAll(db: Db, userId: string, deckId: string | undefined, now: Date): number {
   const at = now.toISOString()
-  const r = deckId
-    ? db.prepare("UPDATE words SET status = 'active', updated_at = ? WHERE user_id = ? AND status = 'inbox' AND deck_id = ?").run(at, userId, deckId)
-    : db.prepare("UPDATE words SET status = 'active', updated_at = ? WHERE user_id = ? AND status = 'inbox'").run(at, userId)
-  return Number(r.changes)
+  let n = 0
+  for (const table of ['words', 'facts']) {
+    const r = deckId
+      ? db.prepare(`UPDATE ${table} SET status = 'active', updated_at = ? WHERE user_id = ? AND status = 'inbox' AND deck_id = ?`).run(at, userId, deckId)
+      : db.prepare(`UPDATE ${table} SET status = 'active', updated_at = ? WHERE user_id = ? AND status = 'inbox'`).run(at, userId)
+    n += Number(r.changes)
+  }
+  return n
 }
 
 // Recomputes freqRank of every word (or one user's) against the current

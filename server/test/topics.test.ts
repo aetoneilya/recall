@@ -18,7 +18,7 @@ describe('topic decks and facts', () => {
   it('creates topic decks without languages, never as the default deck', () => {
     const ctx = makeCtx()
     const java = createTopicDeck(ctx.db, ctx.user.id, { name: '  Java   Core ' }, ctx.now())
-    expect(java).toMatchObject({ kind: 'topic', name: 'Java Core', targetLang: null, nativeLang: null, inReview: true, newPerDay: 15 })
+    expect(java).toMatchObject({ kind: 'topic', name: 'Java Core', targetLang: null, nativeLang: null, inReview: true, newPerDay: 5 })
     expect(() => createTopicDeck(ctx.db, ctx.user.id, { name: 'java core' }, ctx.now())).toThrow(/already exists/)
     // A topic deck first does not become the place words go.
     const en = defaultDeck(ctx.db, ctx.user.id, ctx.now())
@@ -30,11 +30,17 @@ describe('topic decks and facts', () => {
     expect(updateDeck(ctx.db, ctx.user.id, java.id, { inReview: false, newPerDay: 3, name: 'Java' })).toMatchObject({ inReview: false, newPerDay: 3, name: 'Java' })
     // Only an empty topic deck can be deleted.
     addFact(ctx, java.id, 'What is the JMM?')
-    expect(() => deleteDeck(ctx.db, ctx.user.id, java.id)).toThrow(/still has facts/)
+    expect(() => deleteDeck(ctx.db, ctx.user.id, java.id)).toThrow(/still has 1 fact$/)
     expect(() => deleteDeck(ctx.db, ctx.user.id, en.id)).toThrow(/only topic decks/)
     const empty = createTopicDeck(ctx.db, ctx.user.id, { name: 'Empty' }, ctx.now())
-    deleteDeck(ctx.db, ctx.user.id, empty.id)
+    expect(deleteDeck(ctx.db, ctx.user.id, empty.id)).toBe(0)
     expect(getDeck(ctx.db, ctx.user.id, empty.id)).toBeNull()
+    // With its facts: they go too, with cards and history.
+    const { cardId } = addFact(ctx, java.id, 'What is a record?')
+    rate(ctx, cardId, 3, ctx.now())
+    expect(deleteDeck(ctx.db, ctx.user.id, java.id, { withFacts: true })).toBe(2)
+    expect(ctx.db.prepare('SELECT count(*) AS n FROM facts').get()).toEqual({ n: 0 })
+    expect(ctx.db.prepare('SELECT count(*) AS n FROM review_logs').get()).toEqual({ n: 0 })
   })
 
   it('cleans facts, dedupes by question and keeps the card on edits', () => {
@@ -55,7 +61,16 @@ describe('topic decks and facts', () => {
     const other = addFact(ctx, t.id, 'What is a livelock?', 'x', new Date(ctx.now().getTime() + 1000)).fact
     expect(() => updateFact(ctx.db, ctx.user.id, other.id, { front: 'What is a deadlock' }, ctx.now())).toThrow(DuplicateFactError)
     expect(searchFacts(ctx.db, ctx.user.id, { deck: 'Concurrency', q: 'forever' }, ctx.now()).facts.map((f) => f.id)).toEqual([fact.id])
-    expect(searchFacts(ctx.db, ctx.user.id, {}, ctx.now())).toMatchObject({ total: 2, facts: [{ deckName: 'Concurrency', card: { state: 'learning' } }, { card: { state: 'new' } }] })
+    // Moving to another topic keeps the card; the target's questions count for duplicates.
+    const java = createTopicDeck(ctx.db, ctx.user.id, { name: 'Java' }, ctx.now())
+    addFact(ctx, java.id, 'What is a livelock?')
+    expect(() => updateFact(ctx.db, ctx.user.id, other.id, { deckId: java.id }, ctx.now())).toThrow(DuplicateFactError)
+    expect(updateFact(ctx.db, ctx.user.id, fact.id, { deckId: 'Java' }, ctx.now())).toMatchObject({ deckId: java.id })
+    expect(factCard(ctx.db, ctx.user.id, fact.id)!.schedule.reps).toBe(1)
+    defaultDeck(ctx.db, ctx.user.id, ctx.now())
+    expect(() => updateFact(ctx.db, ctx.user.id, fact.id, { deckId: 'en' }, ctx.now())).toThrow(/language deck/)
+    updateFact(ctx.db, ctx.user.id, fact.id, { deckId: t.id }, ctx.now())
+    expect(searchFacts(ctx.db, ctx.user.id, { deck: t.id }, ctx.now())).toMatchObject({ total: 2, facts: [{ deckName: 'Concurrency', card: { state: 'learning' } }, { card: { state: 'new' } }] })
   })
 
   it('mixes facts into the session, per deck newPerDay, and leaves decks out of review', () => {
@@ -167,7 +182,8 @@ describe('topic deck and fact routes', () => {
 
     const patched = await api('PATCH', `/facts/${factId}`, { back: 'Happens-before, visibility, ordering.', tags: [] })
     expect(patched.body.fact).toMatchObject({ back: 'Happens-before, visibility, ordering.', tags: [] })
-    expect((await api('PATCH', `/facts/${factId}`, { deckId: 'x' })).status).toBe(400)
+    expect((await api('PATCH', `/facts/${factId}`, { deckId: 'x' })).status).toBe(404)
+    expect((await api('PATCH', `/facts/${factId}`, { kind: 'x' })).status).toBe(400)
     expect((await api('GET', '/facts?deck=Java%20Core&q=visibility')).body).toMatchObject({ total: 1, facts: [{ id: factId }] })
     // Words stay words: the list, the dashboard and autofill are about the language deck.
     expect((await api('GET', '/words')).body.total).toBe(0)
@@ -177,10 +193,30 @@ describe('topic deck and fact routes', () => {
     const decks = await callTool(url, 'static-mcp-token', 'list_decks')
     expect(decks.map((d: any) => [d.name, d.kind, d.inReview, d.targetLang])).toEqual([['English', 'language', true, 'en'], ['Java Core', 'topic', true, null]])
 
-    expect((await api('DELETE', `/decks/${id}`)).status).toBe(409)
+    // Proposals: in the inbox with words, approved one by one or all at once.
+    const proposed = await callTool(url, 'static-mcp-token', 'add_facts', { deck: 'Java Core', facts: [{ front: 'What is a sealed class?', back: 'Permits a closed set of subclasses.' }, { front: 'What is a record?', back: 'A transparent data carrier.' }] })
+    const [p1, p2] = proposed.created.map((c: any) => c.id)
+    expect((await api('GET', '/queue')).body.inbox).toBe(2)
+    const inbox = (await api('GET', '/inbox')).body
+    expect(inbox.words).toEqual([])
+    expect(inbox.facts.map((f: any) => [f.id, f.status]).sort()).toEqual([[p1, 'inbox'], [p2, 'inbox']].sort())
+    expect((await api('GET', '/inbox?deck=en')).body.facts).toEqual([])
+    expect((await api('POST', `/facts/${p1}/reject`)).body.fact).toMatchObject({ status: 'rejected' })
+    expect((await api('POST', '/inbox/approve-all', { deckId: id })).body).toEqual({ approved: 1 })
+    expect((await api('GET', `/facts/${p2}`)).body.fact.status).toBe('active')
+    expect((await api('POST', `/facts/${p2}/suspend`)).body.fact.card).toMatchObject({ suspended: true })
+    expect((await api('POST', `/facts/${p2}/unsuspend`)).body.fact.card).toMatchObject({ suspended: false })
+    // Moving between topics.
+    const other = (await api('POST', '/decks', { kind: 'topic', name: 'Databases' })).body.deck
+    expect(other.newPerDay).toBe(5)
+    expect((await api('PATCH', `/facts/${p2}`, { deckId: other.id })).body.fact).toMatchObject({ deckId: other.id, deckName: 'Databases' })
+
+    const refused = await api('DELETE', `/decks/${id}`)
+    expect(refused).toMatchObject({ status: 409, body: { facts: 2 } })
     expect((await api('DELETE', `/facts/${factId}`)).body).toEqual({ ok: true })
     expect((await api('GET', `/facts/${factId}`)).status).toBe(404)
-    expect((await api('DELETE', `/decks/${id}`)).body).toEqual({ ok: true })
+    expect((await api('DELETE', `/decks/${id}?facts=delete`)).body).toEqual({ ok: true, facts: 1 })
+    expect((await api('DELETE', `/decks/${other.id}?facts=delete`)).body).toEqual({ ok: true, facts: 1 })
     expect((await api('GET', '/decks')).body.decks.map((d: any) => d.name)).toEqual(['English'])
   })
 

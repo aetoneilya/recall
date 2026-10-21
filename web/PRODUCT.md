@@ -35,10 +35,12 @@ Words come from three places: typed into the app with autofill, sent to the Tele
 - Review: tap or Space to reveal; four ratings (Again, Hard, Good, Easy) labelled with the next interval; after reveal, swipe right = Good, left = Hard, down = Again, up = Easy; keys 1–4; undo. Typed answers per deck (RU → EN, or both) with a verdict and a suggested rating. The pencil on a revealed card edits the word (or the fact) and comes back to the same card. Deck chips on the review screen turn a deck in or out of the session, with what each has left today; facts never ask for typed answers.
 - The end of a session says what's next: tomorrow's reviews, the inbox, adding words. A new account with no words sees "Add your first words" and the bot.
 - Add word: one field, autofill once typing pauses, Enter adds (even before the draft has arrived: it's added as soon as it does) and the field is ready for the next word; an optional sentence where the word was met picks the sense and becomes the first example; the last tags are remembered; duplicates are caught inline.
-- Inbox: proposals as a swipeable stack (right approve, left reject), edit, approve all; paints from the device's copy.
+- Inbox: proposals (words and topic cards) as a swipeable stack (right approve, left reject), edit, approve all; paints from the device's copy.
 - Words: the whole collection cached on the device, instant search and filters. Word editor with both cards' state.
-- Progress: vocabulary estimate, scale, growth, streaks; a 3-minute vocabulary test.
-- Settings: what's studied daily (directions, new words per day, typed answers; per topic: in review, new per day) first; reminders; one-time setup (Claude connector, tokens) and scheduling folded away.
+- Topics (the other half of the Words tab, a segmented switch): every topic card cached on the device, instant search over questions and answers, filters by topic, state and status, grouped by topic; "+" writes cards one after another into a topic. The card editor has a Markdown preview, moves a card to another topic, suspends it, shows its state and history, deletes with Undo, and catches a duplicate question as you type.
+- Claude can make topic cards from the owner's notes (MCP `add_facts`); they wait in the inbox next to proposed words.
+- Progress: vocabulary estimate, scale, growth, streaks; a 3-minute vocabulary test; a small per-topic block (cards, known, learning, new, due today).
+- Settings: what's studied daily (directions, new words per day, typed answers; per topic: in review, new per day; topics created, renamed and deleted there) first; reminders; one-time setup (Claude connector, tokens) and scheduling folded away.
 - Updates install themselves: a new version applies at the next moment nothing is in progress and says "Updated".
 - UI strings are English; card content is English and Russian (Cyrillic) plus IPA glyphs.
 - No new runtime dependencies without a clear reason; the app shell is precached by a service worker, so any font must be precached and cover Cyrillic and IPA.

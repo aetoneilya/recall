@@ -65,7 +65,8 @@
       {#if a === 'add'}
         <AddWord />
       {:else if a === 'inbox' && b}
-        {#key b}<WordEditor id={b} inbox />{/key}
+        <!-- Proposals of both kinds share #/inbox/<id>; fact ids start with ft_. -->
+        {#key b}{#if b.startsWith('ft_')}<FactEditor id={b} inbox />{:else}<WordEditor id={b} inbox />{/if}{/key}
       {:else if a === 'inbox'}
         <Inbox />
       {:else if a === 'fact' && b}

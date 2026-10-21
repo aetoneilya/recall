@@ -172,7 +172,8 @@ export interface SeedFact {
   front: string
   back: string
   tags?: string[]
-  plan: Plan
+  // 'inbox': Claude's proposal, not studied yet.
+  plan: Plan | 'inbox'
 }
 
 export interface SeedTopic {
@@ -205,6 +206,18 @@ export const topics: SeedTopic[] = [
         back: '`volatile` gives **visibility** and prevents reordering, but no mutual exclusion — good for status flags and publishing a value.\n\n`synchronized` gives mutual exclusion plus visibility via *happens-before*. Needed for compound operations and invariants.\n\nNote: `volatile int x; x++` is **not atomic**.',
         tags: ['revolut'],
         plan: 'new',
+      },
+      {
+        front: 'What does `ConcurrentHashMap.computeIfAbsent` guarantee?',
+        back: 'The mapping function runs **at most once per key**, atomically: other threads asking for the same key wait.\n\nKeep the function short and never touch the same map inside it — that can deadlock.',
+        tags: ['notes'],
+        plan: 'inbox',
+      },
+      {
+        front: 'What is a `CountDownLatch` for?',
+        back: 'One-shot gate: threads `await()` until the count reaches zero via `countDown()`. Can\'t be reset — use `CyclicBarrier` for repeated rounds.',
+        tags: ['notes'],
+        plan: 'inbox',
       },
       {
         front: 'How does livelock differ from deadlock?',

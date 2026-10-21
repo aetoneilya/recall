@@ -1,8 +1,8 @@
 <script lang="ts">
   import type { FactQueueItem } from '@recall/core'
   import { tick } from 'svelte'
-  import { renderMarkdown } from '../lib/markdown.ts'
   import Icon from './Icon.svelte'
+  import Markdown from './Markdown.svelte'
 
   // One fact's review card: the question, and once revealed the answer
   // under it, both Markdown. The deck is the context marker, like the
@@ -11,8 +11,6 @@
   let { item, revealed, onedit }: { item: FactQueueItem; revealed: boolean; onedit?: () => void } = $props()
 
   const isNew = $derived(item.card.schedule.state === 0)
-  const front = $derived(renderMarkdown(item.fact.front))
-  const back = $derived(renderMarkdown(item.fact.back))
 
   let body: HTMLElement | undefined = $state()
   let answer: HTMLElement | undefined = $state()
@@ -47,12 +45,11 @@
     </button>
   {/if}
   <div class="body" bind:this={body}>
-    <!-- Escaped by renderMarkdown before any tag is added. -->
-    <div class="question md">{@html front}</div>
+    <div class="question"><Markdown source={item.fact.front} /></div>
     {#if revealed}
       <div class="answer reveal-in" bind:this={answer}>
         <hr class="divider" />
-        <div class="md">{@html back}</div>
+        <Markdown source={item.fact.back} />
       </div>
     {/if}
   </div>
@@ -168,83 +165,11 @@
       opacity: 0;
     }
   }
-  .answer .md {
+  .answer {
     font-size: 17px;
     line-height: 1.5;
-    text-wrap: pretty;
-    overflow-wrap: anywhere;
   }
 
-  /* Rendered Markdown (lib/markdown.ts). */
-  .md :global(p),
-  .md :global(ul),
-  .md :global(ol),
-  .md :global(pre) {
-    margin: 0;
-  }
-  .md :global(* + p),
-  .md :global(* + ul),
-  .md :global(* + ol),
-  .md :global(* + pre),
-  .md :global(p + *) {
-    margin-top: 0.75em;
-  }
-  .md :global(ul),
-  .md :global(ol) {
-    padding-left: 1.3em;
-  }
-  .md :global(li + li) {
-    margin-top: 0.3em;
-  }
-  .md :global(li::marker) {
-    color: var(--faint);
-  }
-  .md :global(strong) {
-    font-weight: 650;
-  }
-  .md :global(code) {
-    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
-    font-size: 0.84em;
-    padding: 0.1em 0.35em;
-    border-radius: 5px;
-    background: var(--surface-2);
-    overflow-wrap: anywhere;
-  }
-  /* Code blocks bleed into the card padding and scroll sideways on their own. */
-  .md :global(pre) {
-    margin-left: -10px;
-    margin-right: -10px;
-    padding: 10px 12px;
-    border-radius: 10px;
-    background: var(--surface-2);
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    overscroll-behavior-x: contain;
-    text-align: left;
-    -webkit-user-select: text;
-    user-select: text;
-  }
-  .md :global(pre code) {
-    display: block;
-    width: max-content;
-    min-width: 100%;
-    padding: 0;
-    background: none;
-    font-size: 13px;
-    line-height: 1.55;
-    white-space: pre;
-    overflow-wrap: normal;
-  }
-  /* [[wikilinks]]: emphasised, quieter than the prose. */
-  .md :global(em.wl) {
-    color: var(--muted);
-    font-style: italic;
-  }
-  .md :global(hr) {
-    border: 0;
-    border-top: 0.5px solid var(--hairline);
-    margin: 1em 0;
-  }
   .question :global(code) {
     font-weight: 500;
   }

@@ -6,10 +6,11 @@ import type { Request, Response } from 'express'
 import { z } from 'zod'
 import type { AppContext } from './context.ts'
 import { dashboard } from './dashboard.ts'
+import { addFacts, deleteFact, factItem, searchFacts, setFactSuspended, updateFact, type FactItem } from './facts.ts'
 import { tx } from './db.ts'
 import { lexiconOf } from './lexicon.ts'
 import {
-  addWords, defaultDeck, deleteWord, HttpError, mustBeKind, resolveDeck, searchWords, setWordStatus, setWordSuspended, syncFreqRanks,
+  addWords, createTopicDeck, defaultDeck, deleteWord, HttpError, mustBeKind, resolveDeck, searchWords, setWordStatus, setWordSuspended, syncFreqRanks,
   updateWord, withCards, type WordListItem, type WordRow,
 } from './repo.ts'
 import { decksWithCounts, leeches, stats, wordLogs } from './study.ts'
@@ -17,7 +18,7 @@ import { userDayOptions, type User } from './users.ts'
 
 const INSTRUCTIONS = `Mnemosyne is the user's personal vocabulary trainer (spaced repetition, FSRS). The user is a Russian speaker learning English; each language they learn is one deck ("English": English terms, Russian translations).
 
-Topic decks (kind "topic" in list_decks) hold question/answer flashcards on a subject instead of words; the word tools don't apply to them.
+Topic decks (kind "topic" in list_decks) hold question/answer flashcards ("facts") on a subject — Java Core, Databases, Distributed Systems… — instead of words; the word tools don't apply to them, the fact tools (create_topic, search_facts, add_facts, update_fact, set_fact_status) do. A fact has a question (front) and an answer (back), both Markdown; one card each, reviewed in the same session as words. Good facts: one idea per card; a question with one clear answer (not "tell me about X"); a short answer — a few sentences or a short list, **bold** for the key point, \`code\` for identifiers, a fenced block only for a few lines of code. Facts you add go to the inbox like words.
 
 Each word has two cards: forward (English → Russian, recognition) and reverse (Russian → English, production; its prompt shows the translations and the first example with the term blanked out as "___"). A deck can turn a direction off or delay reverse cards until the forward card is stable.
 
@@ -58,6 +59,27 @@ const fields = {
   cefr: cefr.optional().describe('CEFR level estimate.'),
   tags: z.array(z.string()).max(30).optional().describe('Free-form short tags, e.g. a topic or the book or article the word came from.'),
 }
+
+const FACT_RULES = 'Front: one question with one clear answer, standalone (no "as above"). Back: the answer in Markdown — a few sentences or a short "-" / "1." list; **bold** the key point, `code` for identifiers, ``` fenced blocks only for short code. One idea per card: split a big topic into several facts rather than one long answer.'
+
+const factFields = {
+  front: z.string().min(1).max(2000).describe('The question, Markdown. Unique per topic deck (case, spacing and the final "?" ignored).'),
+  back: z.string().min(1).max(20000).describe('The answer, Markdown.'),
+  tags: z.array(z.string()).max(30).optional().describe('Short tags, e.g. the note or source it came from.'),
+}
+
+const factBrief = (f: FactItem) => ({
+  id: f.id,
+  deck: f.deckName,
+  deckId: f.deckId,
+  front: f.front,
+  back: f.back,
+  tags: f.tags,
+  status: f.status,
+  createdBy: f.createdBy,
+  createdAt: f.createdAt,
+  card: f.card && { state: f.card.state, suspended: f.card.suspended, due: f.card.due, stabilityDays: f.card.stability, lapses: f.card.lapses, retrievability: f.card.retrievability },
+})
 
 const brief = (w: WordListItem) => ({
   id: w.id,
@@ -194,6 +216,81 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
           else if (action === 'approve') setWordStatus(db, uid, id, 'active', now)
           else if (action === 'reject') setWordStatus(db, uid, id, 'rejected' as WordStatus, now)
           else setWordSuspended(db, uid, id, action === 'suspend')
+          results.push({ id, ok: true })
+        } catch (e) {
+          results.push({ id, ok: false, error: (e as Error).message })
+        }
+      }
+    })
+    return { action, results }
+  }))
+
+  server.registerTool('create_topic', {
+    title: 'Create topic deck',
+    description: 'Creates an empty topic deck (question/answer facts on one subject, e.g. "Concurrency"), in the daily review by default with 5 new cards a day. Names are unique among all the user\'s decks; an existing name is an error — call list_decks first.',
+    inputSchema: { name: z.string().min(1).max(100).describe('Short subject name, e.g. "Java Core".') },
+  }, guard(({ name }) => createTopicDeck(db, uid, { name }, ctx.now())))
+
+  server.registerTool('search_facts', {
+    title: 'Search facts',
+    description: 'Finds facts of topic decks by substring over question, answer and tags (case-insensitive for Latin letters only), deck or status, oldest first. Each result has its card state (new / learning / review / relearning), due date, stability in days, lapses and recall probability. Use it before add_facts to avoid near-duplicates the exact question check would miss.',
+    inputSchema: {
+      query: z.string().optional().describe('Substring to look for.'),
+      deck: z.string().optional().describe('Topic deck name or id; default all.'),
+      status: status.optional().describe('inbox = proposed, awaiting approval; active = being studied; rejected = declined by the user.'),
+      limit: z.number().int().min(1).max(100).optional().describe('Default 20.'),
+      offset: z.number().int().min(0).optional(),
+    },
+    annotations: { readOnlyHint: true },
+  }, guard((a) => {
+    if (a.deck) mustBeKind(deckOf(a.deck), 'topic')
+    const r = searchFacts(db, uid, { deck: a.deck, q: a.query, status: a.status, limit: a.limit ?? 20, offset: a.offset }, ctx.now())
+    return { total: r.total, facts: r.facts.map(factBrief) }
+  }))
+
+  server.registerTool('add_facts', {
+    title: 'Add facts',
+    description: `Proposes up to 100 question/answer flashcards for a topic deck, e.g. generated from the user's notes. They land in the user's inbox and are not studied until approved in the app; autoApprove: true makes them active at once — only when the user asked. A fact whose question already exists in the deck (any status, including rejected) is not added: it is reported under duplicates with the existing id, its status and what differs (back, newTags) — use update_fact to merge. Invalid facts are reported under errors. ${FACT_RULES}`,
+    inputSchema: {
+      deck: z.string().min(1).describe('Topic deck name or id.'),
+      facts: z.array(z.object(factFields)).min(1).max(100),
+      autoApprove: z.boolean().optional().describe('Default false: facts go to the inbox.'),
+      createDeck: z.boolean().optional().describe('Create the topic deck if no deck has this name. Default false: an unknown deck is an error.'),
+    },
+  }, guard((a) => addFacts(db, uid, { deck: a.deck, facts: a.facts, autoApprove: a.autoApprove, createDeck: a.createDeck, createdBy: 'claude' }, ctx.now())))
+
+  server.registerTool('update_fact', {
+    title: 'Update fact',
+    description: `Edits a fact; only the fields you pass change (tags replace the list). deck moves it to another topic deck. The card keeps its schedule and review history. A question that already exists in the target deck fails with a duplicate error. The fact keeps its status. ${FACT_RULES}`,
+    inputSchema: {
+      id: z.string().describe('Fact id, e.g. ft_abc123.'),
+      front: factFields.front.optional(),
+      back: factFields.back.optional(),
+      tags: factFields.tags,
+      deck: z.string().optional().describe('Topic deck name or id to move it to.'),
+    },
+  }, guard((a) => {
+    const { id, deck, ...patch } = a
+    updateFact(db, uid, id, { ...patch, ...(deck ? { deckId: deck } : {}) }, ctx.now())
+    return factBrief(factItem(db, uid, id, ctx.now()))
+  }))
+
+  server.registerTool('set_fact_status', {
+    title: 'Set fact status',
+    description: 'Applies one action to several facts: approve (inbox → active, starts studying), reject (→ rejected: never studied, kept so the same question is recognised as a duplicate), suspend / unsuspend (the card stops or resumes being scheduled, history kept), delete (removes the fact, its card and review history permanently — prefer reject or suspend unless the user asked to delete).',
+    inputSchema: {
+      ids: z.array(z.string()).min(1).max(200).describe('Fact ids.'),
+      action: z.enum(['approve', 'reject', 'delete', 'suspend', 'unsuspend']),
+    },
+  }, guard(({ ids, action }) => {
+    const now = ctx.now()
+    const results: { id: string; ok: boolean; error?: string }[] = []
+    tx(db, () => {
+      for (const id of ids) {
+        try {
+          if (action === 'delete') deleteFact(db, uid, id)
+          else if (action === 'approve' || action === 'reject') updateFact(db, uid, id, { status: action === 'approve' ? 'active' : 'rejected' }, now)
+          else setFactSuspended(db, uid, id, action === 'suspend')
           results.push({ id, ok: true })
         } catch (e) {
           results.push({ id, ok: false, error: (e as Error).message })

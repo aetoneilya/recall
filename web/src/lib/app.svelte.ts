@@ -23,6 +23,8 @@ export const status = $state({
   pendingWords: 0,
   // Bumped whenever words changed outside the screen showing them.
   wordsVersion: 0,
+  // The same for facts (approved in the inbox, edited from a card).
+  factsVersion: 0,
   syncing: false,
   // The last upload attempt failed; pending ratings are worth showing then.
   syncFailed: false,

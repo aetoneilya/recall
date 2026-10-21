@@ -136,6 +136,9 @@ Card 20px, panels and grouped lists 14px, buttons and inputs 12px, rating button
 - **Wikilinks:** `[[x|alias]]` on a fact renders as the alias in muted italic, not as a link.
 - **Context row:** direction (word) or deck name (fact), 600 · tags · New pill, 13px muted.
 - **Fact card:** the question in the Question style, left-aligned, 12% down; the answer is body text under the divider. Code blocks: SF Mono 13px on paper shade, 10px radius, scrolling sideways; inline code 0.84em on paper shade.
+- **Library switch (Words tab):** an iOS segmented control "Words · Topics" (32px segments on paper shade, the selected one card-coloured with a soft shadow) between the large title and the search field; only once a topic deck exists. The tab bar stays at five tabs.
+- **Topic list rows:** the question (600, two lines, inline Markdown), then the card state in its colour · tags, the state dot on the right; sections per topic with the topic name as a 600 section label.
+- **Fact editor:** an Edit · Preview mini segment (28px) beside the Answer label; the preview is the card's Markdown on a card-coloured panel. A duplicate question shows as a hard-tinted strip under the field with Open.
 - **Deck chips (Review):** a scrolling row under the counts, 30px pills, name + count in 650. In the session: accent text on accent-soft; out of it: faint text in a hairline ring. Tap toggles at once (select haptic). Hidden with a single deck.
 - **Grouped list rows:** 52px min, inset hairlines, pressed state is the shade fill (not opacity).
 - **Buttons:** primary = accent fill; secondary = paper shade; danger = again-coloured text. Press = scale 0.97.

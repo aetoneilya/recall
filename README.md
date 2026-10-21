@@ -59,7 +59,9 @@ Signing in: inside Telegram the Mini App signs in by itself; in Safari / the ins
 - **Claude Code:** create a personal token in Settings → Personal tokens; the app shows the ready `claude mcp add --transport http mnemosyne https://<domain>/mcp --header "Authorization: Bearer mn_…"` command. (The legacy `MCP_TOKEN` from the env file still works and acts as the owner.)
 - **claude.ai / Claude app:** Settings → Connectors → Add custom connector → `https://<domain>/mcp`. The OAuth consent page confirms who you are through the bot.
 
-New notes from Claude land in the **Inbox** and aren't scheduled until approved in the app.
+What Claude can do through MCP: look up, add and fix words (`search_words`, `get_word`, `add_words`, `update_word`, `set_word_status`), read progress (`review_stats`, `get_leeches`, `vocabulary_profile`), and make topic flashcards from your notes: `list_decks`, `create_topic`, `search_facts`, `add_facts` (Markdown answers, one idea per card; duplicates by question are reported, not added; `createDeck: true` creates a missing topic), `update_fact` (also moves a fact to another topic), `set_fact_status`. Ask e.g. "make 10 cards on Kafka from this note into the Kafka topic".
+
+New words and cards from Claude land in the **Inbox** and aren't scheduled until approved in the app (unless you ask for `autoApprove`).
 
 ## Telegram
 

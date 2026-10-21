@@ -2,6 +2,10 @@
   import { CEFR_LEVELS, PARTS_OF_SPEECH, posLabel, type Direction } from '@recall/core'
   import { onMount } from 'svelte'
   import Icon from '../components/Icon.svelte'
+  import LibrarySwitch from '../components/LibrarySwitch.svelte'
+  import Facts from './Facts.svelte'
+  import { facts } from '../lib/facts.svelte.ts'
+  import { session } from '../lib/review.svelte.ts'
   import { status } from '../lib/app.svelte.ts'
   import { navigate } from '../lib/router.svelte.ts'
   import { DIR_STATES, dirState, filterWords, type DirState, type WordSort } from '../lib/wordFilter.ts'
@@ -56,15 +60,23 @@
     f.state = ''
   }
 
+  // Topics join the tab once there is a topic deck (or cached facts).
+  const hasTopics = $derived(Object.values(session.decks).some((d) => d.kind === 'topic') || !!facts.all?.length)
+  void facts.restore()
+
   const open = (id: string) => navigate(`/word/${id}?from=${encodeURIComponent('/words')}`)
 </script>
 
+{#if hasTopics && wordsView.kind === 'facts'}
+  <Facts />
+{:else}
 <div class="words-screen">
   <div class="screen" bind:this={wordsView.scroller} onscroll={(e) => (wordsView.scrollTop = e.currentTarget.scrollTop)}>
     <div class="screen-title">
       <h1>Words</h1>
       {#if words.all}<span class="total">{list?.length === words.all.length ? words.all.length : `${list?.length} of ${words.all.length}`}</span>{/if}
     </div>
+    {#if hasTopics}<LibrarySwitch />{/if}
 
     <div class="search">
       <Icon name="search" size={18} />
@@ -168,6 +180,7 @@
 
   <button class="fab" onclick={() => navigate(`/add?from=${encodeURIComponent('/words')}`)} aria-label="Add a word"><Icon name="plus" size={26} stroke={2.2} /></button>
 </div>
+{/if}
 
 <style>
   .words-screen {

@@ -154,12 +154,25 @@ export function createApi(opts: ApiOptions = {}) {
     decks: async () => list<Json>(await get<unknown>('/api/decks'), 'decks').map(normalizeDeck),
     patchDeck: async (id: string, d: DeckPatch) => normalizeDeck(unwrap<Json>(await request<Json>('PATCH', `/api/decks/${enc(id)}`, d), 'deck')),
     createTopicDeck: async (name: string) => normalizeDeck(unwrap<Json>(await post<Json>('/api/decks', { kind: 'topic', name }), 'deck')),
+    // A topic deck; one with facts only with withFacts (they're deleted too), else HttpError 409 with data.facts.
+    deleteDeck: (id: string, withFacts = false) => request<{ ok: true; facts: number }>('DELETE', `/api/decks/${enc(id)}${withFacts ? '?facts=delete' : ''}`),
+
+    facts: async (q: { deck?: string; q?: string; limit?: number; offset?: number } = {}) => {
+      const qs = new URLSearchParams()
+      for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== '') qs.set(k, String(v))
+      const data = await get<Json>(`/api/facts?${qs}`)
+      const facts = list<FactItem>(data, 'facts')
+      return { facts, total: typeof data.total === 'number' ? data.total : facts.length }
+    },
 
     fact: (id: string) => get<FactDetail>(`/api/facts/${enc(id)}`),
     // A duplicate question is HttpError 409 with data.existing.
     createFact: async (f: NewFact) => unwrap<FactItem>(await post<Json>('/api/facts', f), 'fact'),
     updateFact: async (id: string, p: FactPatch) => unwrap<FactItem>(await request<Json>('PATCH', `/api/facts/${enc(id)}`, p), 'fact'),
     deleteFact: (id: string) => request<unknown>('DELETE', `/api/facts/${enc(id)}`),
+    approveFact: async (id: string) => unwrap<FactItem>(await post<Json>(`/api/facts/${enc(id)}/approve`), 'fact'),
+    rejectFact: async (id: string) => unwrap<FactItem>(await post<Json>(`/api/facts/${enc(id)}/reject`), 'fact'),
+    suspendFact: async (id: string, on: boolean) => unwrap<FactItem>(await post<Json>(`/api/facts/${enc(id)}/${on ? 'suspend' : 'unsuspend'}`), 'fact'),
 
     words: async (q: WordQuery = {}): Promise<WordsPage> => {
       const qs = new URLSearchParams()
@@ -179,7 +192,12 @@ export function createApi(opts: ApiOptions = {}) {
     reject: async (id: string) => unwrap<WordItem>(await post<Json>(`/api/words/${enc(id)}/reject`), 'word'),
     suspendCard: (cardId: string, on: boolean) => post<unknown>(`/api/cards/${enc(cardId)}/${on ? 'suspend' : 'unsuspend'}`),
 
-    inbox: async () => list<WordItem>(await get<unknown>('/api/inbox'), 'words'),
+    // Proposals of both kinds; older servers send words only.
+    inbox: async () => {
+      const d = await get<unknown>('/api/inbox')
+      const facts = d && typeof d === 'object' && Array.isArray((d as Json).facts) ? ((d as Json).facts as FactItem[]) : []
+      return { words: list<WordItem>(d, 'words'), facts }
+    },
     approveAll: (deckId?: string) => post<{ approved: number }>('/api/inbox/approve-all', deckId ? { deckId } : {}),
 
     dashboard: () => get<Dashboard>('/api/dashboard'),

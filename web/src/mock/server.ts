@@ -186,9 +186,10 @@ function seed() {
     db.decks.push(deck)
     t.facts.forEach((f, k) => {
       const createdAt = iso(now - (60 - ti * 10 - k) * D)
-      const fact: Fact = { id: id('ft'), deckId: deck.id, front: f.front, back: f.back, tags: f.tags ?? [], status: 'active', createdBy: 'import', createdAt, updatedAt: createdAt }
+      const proposal = f.plan === 'inbox'
+      const fact: Fact = { id: id('ft'), deckId: deck.id, front: f.front, back: f.back, tags: f.tags ?? [], status: proposal ? 'inbox' : 'active', createdBy: proposal ? 'claude' : 'import', createdAt, updatedAt: createdAt }
       db.facts.push(fact)
-      const ps = planState(f.plan, 100 + ti * 10 + k, now)
+      const ps = planState(f.plan === 'inbox' ? 'new' : f.plan, 100 + ti * 10 + k, now)
       db.cards.push({ id: id('cd'), wordId: null, factId: fact.id, direction: 'forward', suspended: ps.suspended, schedule: ps.state })
     })
   })
@@ -400,7 +401,7 @@ function buildQueue(now: Date, limit: number, deckId?: string) {
     out,
     items,
     counts: { new: count([0]), learning: count([1, 3]), review: count([2]) },
-    inbox: db.words.filter((w) => w.status === 'inbox' && (!deckId || w.deckId === deckId)).length,
+    inbox: [...db.words, ...db.facts].filter((w) => w.status === 'inbox' && (!deckId || w.deckId === deckId)).length,
     decks,
   }
 }
@@ -479,13 +480,15 @@ function createFact(body: Body, now: Date): Fact {
 }
 
 function updateFact(f: Fact, body: Body, now: Date): Fact {
-  for (const k of Object.keys(body)) if (!['front', 'back', 'tags', 'status'].includes(k)) throw new Fail(400, `Unrecognized key: "${k}"`)
+  for (const k of Object.keys(body)) if (!['front', 'back', 'tags', 'status', 'deckId'].includes(k)) throw new Fail(400, `Unrecognized key: "${k}"`)
+  const target = body.deckId ? mustDeck(String(body.deckId)) : deckOf(f.deckId)
+  if (target.kind !== 'topic') throw new Fail(400, `"${target.name}" is a language deck; facts go into a topic deck`)
   const r = cleanFact({ front: (body.front as string) ?? f.front, back: (body.back as string) ?? f.back, tags: (body.tags as string[]) ?? f.tags })
   if ('error' in r) throw new Fail(400, r.error)
-  const dup = db.facts.find((x) => x.id !== f.id && x.deckId === f.deckId && factKey(x.front) === factKey(r.fact.front))
+  const dup = db.facts.find((x) => x.id !== f.id && x.deckId === target.id && factKey(x.front) === factKey(r.fact.front))
   if (dup) throw new Fail(409, `"${dup.front}" is already in this deck`, { existing: dup })
   if ('status' in body) f.status = body.status as Fact['status']
-  Object.assign(f, r.fact, { updatedAt: now.toISOString() })
+  Object.assign(f, r.fact, { deckId: target.id, updatedAt: now.toISOString() })
   return f
 }
 
@@ -1098,7 +1101,7 @@ function handle(method: string, url: URL, body: unknown): unknown {
       if (!name) throw new Fail(400, 'deck name is empty')
       if (db.decks.some((d) => d.name.toLowerCase() === name.toLowerCase())) throw new Fail(409, `deck "${name}" already exists`)
       const d: MockDeck = {
-        id: id('dk'), kind: 'topic', name, targetLang: null, nativeLang: null, newPerDay: Number(B.newPerDay ?? 15), inReview: B.inReview !== false,
+        id: id('dk'), kind: 'topic', name, targetLang: null, nativeLang: null, newPerDay: Number(B.newPerDay ?? 5), inReview: B.inReview !== false,
         forwardEnabled: true, reverseEnabled: true, reverseAfterDays: null, typeAnswer: 'off', createdAt: now.toISOString(),
       }
       db.decks.push(d)
@@ -1129,9 +1132,15 @@ function handle(method: string, url: URL, body: unknown): unknown {
       const d = db.decks.find((x) => x.id === b)
       if (!d) throw new Fail(404, 'deck not found')
       if (d.kind !== 'topic') throw new Fail(400, 'only topic decks can be deleted')
-      if (db.facts.some((f) => f.deckId === d.id)) throw new Fail(409, `deck "${d.name}" still has facts`)
+      const mine = db.facts.filter((f) => f.deckId === d.id)
+      if (mine.length && url.searchParams.get('facts') !== 'delete') throw new Fail(409, `deck "${d.name}" still has ${mine.length} facts`, { facts: mine.length })
+      const ids = new Set(mine.map((f) => f.id))
+      const cardIds = new Set(db.cards.filter((c) => c.factId && ids.has(c.factId)).map((c) => c.id))
+      db.facts = db.facts.filter((f) => !ids.has(f.id))
+      db.cards = db.cards.filter((c) => !cardIds.has(c.id))
+      db.logs = db.logs.filter((l) => !cardIds.has(l.cardId))
       db.decks = db.decks.filter((x) => x.id !== d.id)
-      return { ok: true }
+      return { ok: true, facts: mine.length }
     }
     if (b && method === 'PATCH') {
       const d = db.decks.find((x) => x.id === b)
@@ -1156,6 +1165,15 @@ function handle(method: string, url: URL, body: unknown): unknown {
     if (!b && method === 'POST') return new Reply(201, { fact: factItem(createFact(B, now), now) })
     const f = db.facts.find((x) => x.id === b)
     if (!f) throw new Fail(404, `fact ${b} not found`)
+    if (method === 'POST' && (c === 'approve' || c === 'reject')) {
+      f.status = c === 'approve' ? 'active' : 'rejected'
+      f.updatedAt = now.toISOString()
+      return { fact: factItem(f, now) }
+    }
+    if (method === 'POST' && (c === 'suspend' || c === 'unsuspend')) {
+      for (const card of db.cards) if (card.factId === f.id) card.suspended = c === 'suspend'
+      return { fact: factItem(f, now) }
+    }
     if (method === 'GET') {
       const card = db.cards.find((x) => x.factId === f.id)
       const logs = db.logs.filter((l) => l.cardId === card?.id).sort((x, y) => y.reviewedAt.localeCompare(x.reviewedAt)).slice(0, 20)
@@ -1218,12 +1236,16 @@ function handle(method: string, url: URL, body: unknown): unknown {
         .filter((w) => w.status === 'inbox' && (!deck || w.deckId === deck.id))
         .sort((x, y) => x.createdAt.localeCompare(y.createdAt))
         .map((w) => item(w, now)),
+      facts: db.facts
+        .filter((f) => f.status === 'inbox' && (!deck || f.deckId === deck.id))
+        .sort((x, y) => x.createdAt.localeCompare(y.createdAt))
+        .map((f) => factItem(f, now)),
     }
   }
   if (p === '/api/inbox/approve-all' && method === 'POST') {
     const deck = B.deckId ? resolveDeck(String(B.deckId)) : null
     let n = 0
-    for (const w of db.words) {
+    for (const w of [...db.words, ...db.facts]) {
       if (w.status !== 'inbox' || (B.deckId && w.deckId !== deck?.id)) continue
       w.status = 'active'
       w.updatedAt = now.toISOString()

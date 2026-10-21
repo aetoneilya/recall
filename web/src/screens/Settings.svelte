@@ -30,6 +30,37 @@
   const languageDecks = $derived(decks.filter((d) => d.kind !== 'topic'))
   const topicDecks = $derived(decks.filter((d) => d.kind === 'topic'))
 
+  // Renaming a topic in place: tap its name, type, Enter (or leave the field).
+  let renaming = $state<string | null>(null)
+  let newName = $state('')
+  function startRename(d: DeckWithCounts) {
+    renaming = d.id
+    newName = d.name
+  }
+  async function rename(d: DeckWithCounts) {
+    if (renaming !== d.id) return
+    renaming = null
+    const name = newName.replace(/\s+/g, ' ').trim()
+    if (!name || name === d.name) return
+    await patchDeck(d, { name })
+  }
+
+  // A topic and, after the second tap, every card in it with its history.
+  async function removeTopic(d: DeckWithCounts) {
+    const before = decks
+    decks = decks.filter((x) => x.id !== d.id)
+    try {
+      const r = await api.deleteDeck(d.id, true)
+      showToast(r.facts ? `Deleted “${d.name}” and ${r.facts} ${r.facts === 1 ? 'card' : 'cards'}` : `Deleted “${d.name}”`)
+      status.factsVersion++
+      void getDecks(true).catch(() => {})
+      void session.refresh()
+    } catch (e) {
+      decks = before
+      showToast(`Not deleted: ${errorText(e)}`)
+    }
+  }
+
   let topicName = $state('')
   let addingTopic = $state(false)
   async function addTopic() {
@@ -414,10 +445,20 @@
     <div class="group">
       {#each topicDecks as d (d.id)}
         <div class="row col topic">
-          <label class="topic-head">
-            <span class="grow">{d.name}<span class="sub">{d.counts.total} {d.counts.total === 1 ? 'card' : 'cards'}{d.counts.newTotal ? ` · ${d.counts.newTotal} not started` : ''}</span></span>
+          <div class="topic-head">
+            {#if renaming === d.id}
+              <form class="grow rename" onsubmit={(e) => { e.preventDefault(); void rename(d) }}>
+                <!-- svelte-ignore a11y_autofocus -->
+                <input bind:value={newName} autofocus onblur={() => void rename(d)} onkeydown={(e) => e.key === 'Escape' && (renaming = null)} aria-label="Topic name" autocomplete="off" />
+              </form>
+            {:else}
+              <button class="grow name" onclick={() => startRename(d)} aria-label="Rename {d.name}">
+                {d.name}<Icon name="edit" size={14} />
+                <span class="sub">{d.counts.total} {d.counts.total === 1 ? 'card' : 'cards'}{d.counts.newTotal ? ` · ${d.counts.newTotal} not started` : ''}</span>
+              </button>
+            {/if}
             <input type="checkbox" class="switch" checked={d.inReview} onchange={(e) => patchDeck(d, { inReview: e.currentTarget.checked })} aria-label="Review {d.name}" />
-          </label>
+          </div>
           <div class="topic-new">
             <span class="grow muted">New per day</span>
             <div class="stepper">
@@ -425,6 +466,11 @@
               <span>{d.newPerDay}</span>
               <button onclick={() => setNew(d, 1)} aria-label="More new {d.name} cards"><Icon name="plus" size={18} stroke={2} /></button>
             </div>
+          </div>
+          <div class="topic-del">
+            <ConfirmButton class="btn danger small" onconfirm={() => void removeTopic(d)} confirmLabel={d.counts.total ? `Delete ${d.counts.total} ${d.counts.total === 1 ? 'card' : 'cards'} and their history` : 'Tap again to delete'}>
+              <Icon name="trash" size={15} /> Delete topic
+            </ConfirmButton>
           </div>
         </div>
       {/each}
@@ -706,6 +752,31 @@
   }
   .topic-new {
     font-size: 15px;
+  }
+  .topic-del {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .topic-del :global(.btn.small) {
+    min-height: 34px;
+    padding: 0 12px;
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .name {
+    display: block;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    min-width: 0;
+  }
+  .name :global(svg) {
+    margin-left: 6px;
+    color: var(--faint);
+    vertical-align: -1px;
+  }
+  .rename input {
+    padding: 8px 10px;
   }
   .new-topic {
     gap: 8px;

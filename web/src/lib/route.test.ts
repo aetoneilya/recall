@@ -14,6 +14,10 @@ describe('parseRoute', () => {
     expect(r('#/add?from=/')).toEqual({ path: '/add', tab: 'review', query: { from: '/' } })
     expect(r('#/word/wd_1?from=/')).toEqual({ path: '/word/wd_1', tab: 'review', query: { from: '/' } })
     expect(r('#/test')).toMatchObject({ path: '/test', tab: 'progress' })
+    // A fact's editor: the review card's, else the Topics list's.
+    expect(r('#/fact/ft_1?from=/')).toMatchObject({ path: '/fact/ft_1', tab: 'review' })
+    expect(r('#/fact/new?from=%2Fwords&deck=dk_t')).toEqual({ path: '/fact/new', tab: 'words', query: { from: '/words', deck: 'dk_t' } })
+    expect(r('#/inbox/ft_1')).toMatchObject({ path: '/inbox/ft_1', tab: 'inbox' })
   })
 
   it("maps the bot's deep links", () => {

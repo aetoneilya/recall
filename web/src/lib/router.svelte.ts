@@ -31,7 +31,7 @@ export function parentOf(r: Route): string | null {
   const [a, b] = r.parts
   if (!a) return null
   if (a === 'word' || a === 'add') return r.query.get('from') ?? (a === 'add' ? '/' : '/words')
-  if (a === 'fact') return r.query.get('from') ?? '/'
+  if (a === 'fact') return r.query.get('from') ?? '/words'
   if (a === 'test') return '/progress'
   if (b) return `/${a}`
   return null

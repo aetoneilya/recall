@@ -139,3 +139,36 @@ describe('migration to v7', () => {
     expect(() => db.exec("INSERT INTO fact_exercises(id, fact_id, type, prompt, answer, created_by, dedupe_key, created_at) VALUES ('ex_1', 'ft_none', 'gap', 'p', 'a', 'user', 'p', 'now')")).toThrow(/FOREIGN KEY/)
   })
 })
+
+describe('migration to v8', () => {
+  it('rebuilds fact_exercises for the tap types, keeping every row and attempt', () => {
+    const db = new DatabaseSync(':memory:')
+    v5(db)
+    migrate(db, ENV, 7)
+    db.exec(`
+      INSERT INTO decks(id, user_id, kind, name, created_at) VALUES ('dk_g', 'us_a', 'topic', 'Grammar', '2026-10-21');
+      INSERT INTO facts(id, user_id, deck_id, front, back, status, created_by, dedupe_key, created_at, updated_at) VALUES ('ft_1', 'us_a', 'dk_g', 'Rule', 'Text', 'active', 'import', 'rule', '2026-10-21', '2026-10-21');
+      INSERT INTO fact_exercises(id, fact_id, type, prompt, answer, accepted, explain, created_by, dedupe_key, import_ref, created_at, shown_count, correct_count)
+        VALUES ('ex_1', 'ft_1', 'gap', 'She ___ here. (live)', 'lives', '["resides"]', 'why', 'import', 'she ___ here live', 'r:0', '2026-10-21', 1, 1);
+      INSERT INTO review_logs(id, card_id, rating, reviewed_at, duration_ms, "before", "after") VALUES ('log_g', 'cd_1f', 3, '2026-10-21', 1, '{}', '{}');
+      INSERT INTO exercise_attempts(review_log_id, exercise_id, given, correct, at) VALUES ('log_g', 'ex_1', 'lives', 1, '2026-10-21');
+    `)
+    const before = dump(db, 'fact_exercises')
+    const attempts = dump(db, 'exercise_attempts')
+    migrate(db, ENV, 8)
+    expect(schemaVersion(db)).toBe(8)
+    db.exec('PRAGMA foreign_keys = ON')
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    expect(without(dump(db, 'fact_exercises'), ['options', 'wrong'])).toEqual(before)
+    expect(dump(db, 'fact_exercises')[0]).toMatchObject({ options: '[]', wrong: null })
+    expect(dump(db, 'exercise_attempts')).toEqual(attempts)
+    const add = (id: string, type: string, wrong: string | null) => db.exec(`INSERT INTO fact_exercises(id, fact_id, type, prompt, answer, options, wrong, created_by, dedupe_key, created_at)
+      VALUES ('${id}', 'ft_1', '${type}', 'p', 'a', '["a","b"]', ${wrong ? `'${wrong}'` : 'NULL'}, 'user', '${id}', 'now')`)
+    add('ex_c', 'choose', null)
+    add('ex_s', 'spot', 'x')
+    expect(() => add('ex_s2', 'spot', null)).toThrow(/CHECK/)
+    expect(() => add('ex_q', 'quiz', null)).toThrow(/CHECK/)
+    db.exec("DELETE FROM fact_exercises WHERE id = 'ex_1'")
+    expect(dump(db, 'exercise_attempts')).toEqual([])
+  })
+})

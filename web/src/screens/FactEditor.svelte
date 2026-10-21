@@ -96,7 +96,7 @@
   // unflag / delete, and a form to add one.
   let pool = $state.raw<ExerciseInfo[]>([])
   let poolOpen = $state(false)
-  let draft = $state({ type: 'gap' as ExerciseType, prompt: '', answer: '', accepted: '', explain: '' })
+  let draft = $state({ type: 'choose' as ExerciseType, prompt: '', answer: '', accepted: '', explain: '', options: '', wrong: '' })
   let draftError = $state('')
   const poolActive = $derived(pool.filter((e) => e.status === 'active').length)
   async function loadPool() {
@@ -127,7 +127,12 @@
     }
   }
   async function addItem() {
-    const input = { type: draft.type, prompt: draft.prompt, answer: draft.answer, accepted: draft.accepted.split(';').map((a) => a.trim()).filter(Boolean), explain: draft.explain || null }
+    const list = (v: string) => v.split(';').map((a) => a.trim()).filter(Boolean)
+    const tapType = draft.type === 'choose' || draft.type === 'spot'
+    const input = {
+      type: draft.type, prompt: draft.prompt, answer: draft.answer, explain: draft.explain || null,
+      ...(tapType ? { options: list(draft.options), wrong: draft.type === 'spot' ? draft.wrong : null } : { accepted: list(draft.accepted) }),
+    }
     const c = cleanExercise(input)
     if ('error' in c) {
       draftError = c.error
@@ -140,14 +145,14 @@
         return
       }
       pool = r.exercises
-      draft = { ...draft, prompt: '', answer: '', accepted: '', explain: '' }
+      draft = { ...draft, prompt: '', answer: '', accepted: '', explain: '', options: '', wrong: '' }
       draftError = ''
       session.markStale()
     } catch (err) {
       draftError = errorText(err)
     }
   }
-  const TYPE_NAMES: Record<ExerciseType, string> = { gap: 'Gap', fix: 'Fix', rewrite: 'Rewrite' }
+  const TYPE_NAMES: Record<ExerciseType, string> = { choose: 'Choose', spot: 'Spot', gap: 'Gap', fix: 'Fix', rewrite: 'Rewrite' }
 
   async function load() {
     if (isNew) return
@@ -466,7 +471,13 @@
               <div class="row ex" class:flagged={e.status === 'flagged'}>
                 <div class="exmain">
                   <div class="exprompt"><span class="extype">{TYPE_NAMES[e.type]}</span>{e.prompt}</div>
-                  <div class="exans">→ {e.answer}{#if e.accepted.length}<span class="faint-n"> · {e.accepted.join(' · ')}</span>{/if}</div>
+                  {#if e.type === 'spot'}
+                    <div class="exans"><span class="was">{e.wrong}</span> → {e.answer}{#if (e.options?.length ?? 0) > 1}<span class="faint-n"> · of {e.options!.join(' · ')}</span>{/if}</div>
+                  {:else if e.type === 'choose'}
+                    <div class="exans">{e.answer}<span class="faint-n"> · of {(e.options ?? []).join(' · ')}</span></div>
+                  {:else}
+                    <div class="exans">→ {e.answer}{#if e.accepted.length}<span class="faint-n"> · {e.accepted.join(' · ')}</span>{/if}<span class="faint-n"> · typed (legacy)</span></div>
+                  {/if}
                   <div class="exstats">
                     {#if e.status === 'flagged'}<span class="chip">flagged</span>{/if}
                     {#if e.needsReview}<span class="chip review">“I was right”</span>{/if}
@@ -487,18 +498,20 @@
         <form class="add-ex" onsubmit={(ev) => { ev.preventDefault(); void addItem() }}>
           <div class="add-row">
             <select bind:value={draft.type} aria-label="Type">
-              <option value="gap">Gap</option>
-              <option value="fix">Fix</option>
-              <option value="rewrite">Rewrite</option>
+              <option value="choose">Choose</option>
+              <option value="spot">Spot</option>
             </select>
-            <input bind:value={draft.prompt} placeholder={draft.type === 'gap' ? 'She ___ here. (live)' : draft.type === 'fix' ? 'A sentence with one mistake' : 'Sentence. → Cue ___'} aria-label="Prompt" autocomplete="off" />
+            <input bind:value={draft.prompt} placeholder={draft.type === 'choose' ? 'The backup runs ___ 3 a.m.' : 'His shoes gets wet.'} aria-label="Sentence" autocomplete="off" />
           </div>
-          <input bind:value={draft.answer} placeholder="Answer" aria-label="Answer" autocomplete="off" autocapitalize="off" />
-          <input bind:value={draft.accepted} placeholder="Also accepted (separate with ;)" aria-label="Also accepted" autocomplete="off" autocapitalize="off" />
+          {#if draft.type === 'spot'}
+            <input bind:value={draft.wrong} placeholder="The wrong word(s), as in the sentence" aria-label="Wrong word" autocomplete="off" autocapitalize="off" />
+          {/if}
+          <input bind:value={draft.options} placeholder={draft.type === 'choose' ? 'Options: at; in; on (— = nothing)' : 'Replacements: get; getting (— = delete)'} aria-label="Options" autocomplete="off" autocapitalize="off" />
+          <input bind:value={draft.answer} placeholder="The right option" aria-label="Answer" autocomplete="off" autocapitalize="off" />
           <input bind:value={draft.explain} placeholder="Why (one line, optional)" aria-label="Why" autocomplete="off" />
           {#if draftError}<p class="problem">{draftError}</p>{/if}
           <button class="btn" type="submit" disabled={!draft.prompt.trim() || !draft.answer.trim()}><Icon name="plus" size={16} stroke={2.2} /> Add exercise</button>
-          {#if !pool.length}<p class="hint">With three or more, this card is reviewed through three of them at a time instead of question and answer.</p>{/if}
+          {#if !pool.length}<p class="hint">With three or more, this card is reviewed through three of them at a time, by tapping, instead of question and answer.</p>{/if}
         </form>
         <button class="btn danger block delete" onclick={remove}><Icon name="trash" size={18} /> Delete card</button>
       {/if}
@@ -737,6 +750,10 @@
     vertical-align: 1px;
     color: var(--muted);
     background: var(--surface-2);
+  }
+  .was {
+    color: var(--again);
+    text-decoration: line-through;
   }
   .exans {
     color: var(--good);

@@ -317,7 +317,7 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
     return { deck: { id: r.deck.id, name: r.deck.name }, added: r.added, alreadyAdded: r.alreadyAdded, duplicates: r.duplicates }
   }))
 
-  const EXERCISE_RULES = 'Each item practises the fact\'s rule (read it with search_facts first) and has exactly one clearly correct answer, plus any equally right variants in `accepted`. gap: a sentence with one "___" and a hint in parentheses — the base verb, a tense cue — e.g. "The list of jobs ___ longer. (be)", answer "is". fix: a sentence with exactly one mistake; answer = the whole corrected sentence. rewrite: "sentence → cue ___", answer = what completes the cue. `explain`: one short line on why, in Russian. Vary contexts, subjects and the item types; no answer may hinge on punctuation or spelling.'
+  const EXERCISE_RULES = 'Items are answered by tapping on a phone, so write the tap types. choose: {type, text with exactly one "___", options (2–4), answer (one of the options)} — e.g. text "The backup runs ___ 3 a.m.", options ["at", "in", "on"], answer "at"; "—" as an option means nothing there (the zero article). spot: {type, text: a natural sentence with exactly one mistake, wrong: the wrong whole word(s) as they appear (once) in the text, options (1–4 replacements), answer (one of them)} — e.g. "His shoes gets wet every time it rains.", wrong "gets", options ["get", "getting", "got"], answer "get"; "—" as the answer means "delete it" ("See you on next week."). Each item practises the fact\'s rule (read it with search_facts first). Take the distractors from the rule\'s own contrast set (at / in / on; a / the / —; is / are), make exactly one option grammatical in that sentence, and give no hint that translates or names the answer. `explain`: one short line on why, in Russian. Vary contexts, subjects and the two types. Legacy typed types are still accepted but not wanted: gap (text with "___" and a hint in parentheses, typed answer), fix (answer = the corrected sentence), rewrite ("sentence → cue ___"), each with optional `accepted` variants.'
 
   server.registerTool('list_exercises', {
     title: 'List exercises',
@@ -328,14 +328,17 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
 
   server.registerTool('add_exercises', {
     title: 'Add exercises',
-    description: `Adds up to 50 exercise items to a fact's pool (the fact becomes a rule reviewed through its exercises once it has 3 active items). They are active at once. An item whose prompt (normalised) is already in the pool is not added: it is reported under duplicates with the existing id and status. Invalid items (a gap without exactly one "___", a rewrite without "→ … ___", a fix whose answer equals the prompt) are reported under errors. ${EXERCISE_RULES}`,
+    description: `Adds up to 50 exercise items to a fact's pool (the fact becomes a rule reviewed through its exercises once it has 3 active items). They are active at once. An item whose prompt (normalised) is already in the pool is not added: it is reported under duplicates with the existing id and status. Invalid items (a choose text without exactly one "___" or with the answer not among 2–4 options; a spot whose wrong word(s) don't occur exactly once as whole words, or whose options repeat them; legacy shape errors) are reported under errors. Once a rule has 3 active tap items, reviews use only tap items. ${EXERCISE_RULES}`,
     inputSchema: {
       factId: z.string(),
       items: z.array(z.object({
-        type: z.enum(['gap', 'fix', 'rewrite']),
-        prompt: z.string().min(1).max(500),
+        type: z.enum(['choose', 'spot', 'gap', 'fix', 'rewrite']).describe('choose or spot; gap / fix / rewrite are legacy typed items.'),
+        text: z.string().min(1).max(500).optional().describe('The sentence.'),
+        prompt: z.string().min(1).max(500).optional().describe('Same as text (legacy name).'),
+        options: z.array(z.string().min(1).max(100)).max(4).optional().describe('choose: 2–4 options; spot: 1–4 replacements. "—" = nothing.'),
+        wrong: z.string().max(200).optional().describe('spot: the wrong word(s), exactly as they appear once in the text.'),
         answer: z.string().min(1).max(300),
-        accepted: z.array(z.string()).max(10).optional().describe('Other answers that are just as right.'),
+        accepted: z.array(z.string()).max(10).optional().describe('Legacy typed types only: other answers that are just as right.'),
         explain: z.string().max(500).optional(),
       })).min(1).max(50),
     },

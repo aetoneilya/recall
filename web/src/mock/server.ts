@@ -528,7 +528,7 @@ function pickExercises(factId: string) {
   const out: ExerciseInfo[] = []
   for (const e of order) if (out.length < 3 && out.filter((x) => x.type === e.type).length < 2) out.push(e)
   for (const e of order) if (out.length < 3 && !out.includes(e)) out.push(e)
-  return out.map(({ id, type, prompt, answer, accepted, explain }) => ({ id, type, prompt, answer, accepted, explain }))
+  return out.map(({ id, type, prompt, answer, accepted, explain, options, wrong }) => ({ id, type, prompt, answer, accepted, explain, ...(options?.length ? { options, wrong } : {}) }))
 }
 
 function createFact(body: Body, now: Date): Fact {
@@ -1285,7 +1285,7 @@ function handle(method: string, url: URL, body: unknown): unknown {
       ;((B.items ?? []) as ExerciseInput[]).forEach((x, index) => {
         const r = cleanExercise(x)
         if ('error' in r) return void errors.push({ index, error: r.error })
-        if (db.exercises.some((e) => e.factId === f.id && exerciseKey(e.prompt) === exerciseKey(r.item.prompt))) return void duplicates.push({ index })
+        if (db.exercises.some((e) => e.factId === f.id && exerciseKey(e.prompt, e.type) === exerciseKey(r.item.prompt, r.item.type))) return void duplicates.push({ index })
         const e: ExerciseInfo = { ...r.item, id: id('ex'), factId: f.id, status: 'active', needsReview: false, createdBy: 'user', createdAt: now.toISOString(), shownCount: 0, lastShownAt: null, correctCount: 0, wrongCount: 0 }
         db.exercises.push(e)
         created.push({ index, id: e.id })

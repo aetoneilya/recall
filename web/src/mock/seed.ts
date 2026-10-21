@@ -300,8 +300,11 @@ export interface SeedRule {
   title: string
   rule: string
   plan: Plan
-  items: { type: 'gap' | 'fix' | 'rewrite'; prompt: string; answer: string; accepted: string[]; explain: string | null }[]
+  items: { type: 'choose' | 'spot'; prompt: string; options: string[]; answer: string; wrong: string | null; accepted: string[]; explain: string | null }[]
 }
+
+const choose = (prompt: string, options: string[], answer: string, explain: string) => ({ type: 'choose' as const, prompt, options, answer, wrong: null, accepted: [], explain })
+const spot = (prompt: string, wrong: string, options: string[], answer: string, explain: string) => ({ type: 'spot' as const, prompt, options, answer, wrong, accepted: [], explain })
 
 export const grammar: SeedRule[] = [
   {
@@ -309,25 +312,25 @@ export const grammar: SeedRule[] = [
     rule: 'В Present Simple после **he / she / it** и единственного числа глагол получает **-s**: *She **works** here.*\nВ вопросах и отрицаниях -s уходит в **does**: *Does she **work**?*',
     plan: 'due',
     items: [
-      { type: 'gap', prompt: 'My brother ___ in a bank. (work)', answer: 'works', accepted: [], explain: 'my brother = he → -s' },
-      { type: 'gap', prompt: 'The service ___ every request twice. (log)', answer: 'logs', accepted: [], explain: 'the service = it → -s' },
-      { type: 'gap', prompt: '___ your sister speak French? (do)', answer: 'Does', accepted: [], explain: 'вопрос к she — does, глагол без -s' },
-      { type: 'fix', prompt: 'She don\'t like coffee.', answer: "She doesn't like coffee.", accepted: ['She does not like coffee.'], explain: 'she → does not' },
-      { type: 'fix', prompt: 'The build take ten minutes.', answer: 'The build takes ten minutes.', accepted: [], explain: 'the build = it → takes' },
-      { type: 'rewrite', prompt: 'I watch the news every evening. → My dad ___', answer: 'watches the news every evening', accepted: [], explain: 'watch → watches после he' },
+      choose('My brother ___ in a bank.', ['works', 'work', 'working'], 'works', 'my brother = he → -s'),
+      choose('The service ___ every request twice.', ['logs', 'log'], 'logs', 'the service = it → -s'),
+      choose('___ your sister speak French?', ['Does', 'Do', 'Is'], 'Does', 'вопрос к she — does, глагол без -s'),
+      spot("She don't like coffee.", "don't", ["doesn't", "isn't", "not"], "doesn't", 'she → does not'),
+      spot('The build take ten minutes on a good day.', 'take', ['takes', 'taking', 'took'], 'takes', 'the build = it → takes'),
+      spot('My parents lives near the sea.', 'lives', ['live', 'living'], 'live', 'parents — мн. ч., без -s'),
     ],
   },
   {
-    title: 'since vs for',
-    rule: '**since** + точка во времени (*since Monday, since 2019*), **for** + отрезок (*for two weeks*). Оба — с Present Perfect: *I have lived here **for** years.*',
+    title: 'Prepositions of time',
+    rule: '**at** + время суток и точка (*at 3 a.m., at night*), **on** + день и дата (*on Monday, on 5 May*), **in** + месяц, год, части дня (*in July, in the morning*). Без предлога: *next week, last year, this Monday*.',
     plan: 'new',
     items: [
-      { type: 'gap', prompt: "I've known her ___ 2015. (since / for)", answer: 'since', accepted: [], explain: '2015 — точка' },
-      { type: 'gap', prompt: 'The server has been down ___ three hours. (since / for)', answer: 'for', accepted: [], explain: 'three hours — отрезок' },
-      { type: 'gap', prompt: "We haven't spoken ___ the meeting. (since / for)", answer: 'since', accepted: [], explain: 'the meeting — момент' },
-      { type: 'fix', prompt: 'She has worked here since five years.', answer: 'She has worked here for five years.', accepted: [], explain: 'five years — отрезок → for' },
-      { type: 'gap', prompt: 'He has been waiting ___ ages. (since / for)', answer: 'for', accepted: [], explain: 'ages — отрезок' },
-      { type: 'rewrite', prompt: 'I started this job in March. → I have had this job ___', answer: 'since March', accepted: [], explain: 'March — точка → since' },
+      choose('The backup runs ___ 3 a.m.', ['at', 'in', 'on'], 'at', 'точное время → at'),
+      choose("We're releasing it ___ Friday.", ['on', 'in', 'at'], 'on', 'день недели → on'),
+      choose('She was born ___ 1994.', ['in', 'on', 'at'], 'in', 'год → in'),
+      choose('See you ___ next week.', ['—', 'on', 'in'], '—', 'next / last / this — без предлога'),
+      spot('I usually read in night.', 'in', ['at', 'on'], 'at', 'at night — устойчиво'),
+      spot('The meeting is on next Monday.', 'on', ['—', 'in', 'at'], '—', 'next Monday — без предлога'),
     ],
   },
 ]

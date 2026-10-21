@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { checkExercise, cleanExercise, exerciseKey, exerciseRating, exerciseReadings, normalizeExercise } from './exercises.ts'
+import { checkExercise, cleanExercise, correctedParts, exerciseKey, exerciseRating, exerciseReadings, normalizeExercise, spotSpan, spotTokens } from './exercises.ts'
 
 describe('exercise grading', () => {
   const item = (answer: string, accepted: string[] = []) => ({ answer, accepted })
@@ -40,12 +40,55 @@ describe('exercise grading', () => {
 describe('exercise items', () => {
   it('validates the shape of each type', () => {
     expect(cleanExercise({ type: 'gap', prompt: ' She  ___ here. (live) ', answer: ' lives ', accepted: ['lives', 'resides', ''] }))
-      .toEqual({ item: { type: 'gap', prompt: 'She ___ here. (live)', answer: 'lives', accepted: ['resides'], explain: null } })
+      .toEqual({ item: { type: 'gap', prompt: 'She ___ here. (live)', answer: 'lives', accepted: ['resides'], explain: null, options: [], wrong: null } })
     expect(cleanExercise({ type: 'gap', prompt: 'No gap here', answer: 'x' })).toEqual({ error: 'a gap prompt needs exactly one ___' })
     expect(cleanExercise({ type: 'rewrite', prompt: 'He left. → He has ___', answer: 'left' })).toMatchObject({ item: { type: 'rewrite' } })
     expect(cleanExercise({ type: 'rewrite', prompt: 'He left. He has ___', answer: 'left' })).toMatchObject({ error: expect.stringMatching(/rewrite/) })
     expect(cleanExercise({ type: 'fix', prompt: 'She go home.', answer: 'she go home' })).toEqual({ error: 'a fix answer must differ from its prompt' })
     expect(cleanExercise({ type: 'quiz' as never, prompt: 'x', answer: 'y' })).toMatchObject({ error: expect.stringMatching(/type/) })
     expect(exerciseKey('She ____ here.  (live)')).toBe(exerciseKey('she ___ here (live)'))
+  })
+})
+
+describe('tap exercises', () => {
+  const choose = (over: object = {}) => ({ type: 'choose' as const, text: 'The backup runs ___ 3 a.m.', options: ['at', 'in', 'on'], answer: 'at', explain: 'at + clock time', ...over })
+  const spot = (over: object = {}) => ({ type: 'spot' as const, text: 'His shoes gets wet every time it rains.', wrong: 'gets', options: ['get', 'getting', 'got'], answer: 'get', explain: 'shoes — мн. ч.', ...over })
+
+  it('validates choose', () => {
+    expect(cleanExercise(choose())).toEqual({ item: { type: 'choose', prompt: 'The backup runs ___ 3 a.m.', answer: 'at', accepted: [], explain: 'at + clock time', options: ['at', 'in', 'on'], wrong: null } })
+    expect(cleanExercise(choose({ text: 'No gap at 3 a.m.' }))).toEqual({ error: 'a choose text needs exactly one ___' })
+    expect(cleanExercise(choose({ options: ['at'] }))).toEqual({ error: 'choose needs 2–4 options' })
+    expect(cleanExercise(choose({ options: ['at', 'in', 'on', 'by', 'for'] }))).toEqual({ error: 'choose needs 2–4 options' })
+    expect(cleanExercise(choose({ answer: 'by' }))).toEqual({ error: 'the answer must be one of the options' })
+    // "—" (also typed as "-") is the zero article; repeated options collapse.
+    expect(cleanExercise(choose({ text: 'She plays ___ piano.', options: ['the', '-', 'a', 'the'], answer: 'the' }))).toMatchObject({ item: { options: ['the', '—', 'a'] } })
+  })
+
+  it('validates spot', () => {
+    expect(cleanExercise(spot())).toMatchObject({ item: { type: 'spot', wrong: 'gets', options: ['get', 'getting', 'got'], answer: 'get' } })
+    expect(cleanExercise(spot({ wrong: 'get' }))).toMatchObject({ error: expect.stringMatching(/exactly once/) })
+    expect(cleanExercise(spot({ text: 'It gets cold and it gets dark.' }))).toMatchObject({ error: expect.stringMatching(/exactly once/) })
+    expect(cleanExercise(spot({ wrong: '' }))).toEqual({ error: 'spot needs the wrong token(s)' })
+    expect(cleanExercise(spot({ options: ['gets', 'get'] }))).toEqual({ error: 'an option repeats the wrong token(s)' })
+    expect(cleanExercise(spot({ text: 'See you on next week.', wrong: 'on', options: ['—', 'in'], answer: '—' }))).toMatchObject({ item: { answer: '—' } })
+    expect(cleanExercise(spot({ text: 'I am agree with you.', wrong: 'am agree', options: ['agree', 'agreed'], answer: 'agree' }))).toMatchObject({ item: { wrong: 'am agree' } })
+  })
+
+  it('finds and replaces the mistake by whole tokens', () => {
+    expect(spotSpan('His shoes gets wet every time it rains.', 'rains')).toEqual({ start: 7, length: 1 })
+    expect(spotSpan('The user hasn’t logged in.', 'in')).toEqual({ start: 4, length: 1 })
+    expect(spotSpan('Getting gets old.', 'gets')).toEqual({ start: 1, length: 1 })
+    expect(spotSpan('I am agree with you.', 'am agree')).toEqual({ start: 1, length: 2 })
+    expect(spotTokens('He go home.', 'go')).toEqual([{ text: 'He', wrong: false }, { text: 'go', wrong: true }, { text: 'home.', wrong: false }])
+    const join = (p: { text: string }[]) => p.map((x) => x.text).join('')
+    expect(join(correctedParts('His shoes gets wet.', 'gets', 'get'))).toBe('His shoes get wet.')
+    expect(correctedParts('His shoes gets wet.', 'gets', 'get').filter((p) => p.changed)).toEqual([{ text: 'get', changed: true }])
+    expect(join(correctedParts('It ends on Friday, gets.', 'gets', 'too'))).toBe('It ends on Friday, too.')
+    expect(join(correctedParts('See you on next week.', 'on', '—'))).toBe('See you next week.')
+    expect(join(correctedParts('I am agree with you.', 'am agree', 'agree'))).toBe('I agree with you.')
+  })
+
+  it('keeps tap and typed keys apart', () => {
+    expect(exerciseKey('She ___ here.', 'choose')).toBe(`tap:${exerciseKey('She ___ here.')}`)
   })
 })

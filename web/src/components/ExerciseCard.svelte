@@ -1,20 +1,25 @@
 <script lang="ts">
-  import { answerDiff, exerciseRating, type ExerciseAttempt, type ExerciseCheck, type FactQueueItem } from '@recall/core'
+  import { answerDiff, correctedParts, exerciseRating, isTapType, NOTHING, spotTokens, type ExerciseAttempt, type ExerciseCheck, type FactQueueItem } from '@recall/core'
   import Icon from './Icon.svelte'
   import Markdown from './Markdown.svelte'
 
   // A rule reviewed through its exercises: one item at a time (`index`),
-  // the verdict once checked, and after the last one (`revealed`) a summary
-  // with the rule. `results` holds the items done so far; `check` the
-  // current one's verdict, `given` what was typed. `onbad` takes the current
-  // item out of the pool; `onedit` opens the rule.
+  // the verdict once answered, and after the last one (`revealed`) a summary
+  // with the rule. `results` holds the items done so far.
+  // Tap items (choose, spot): `tap` is the current one's state — the option
+  // picked, the token tapped (spot), done — and `onchoose` / `ontoken`
+  // answer. Legacy typed items: `check` is the verdict, `given` what was typed.
+  // `onbad` takes the current item out of the pool; `onedit` opens the rule.
   let {
     item,
     index,
     results,
     check,
     given,
+    tap = { pick: null, token: null, done: false },
     revealed,
+    onchoose,
+    ontoken,
     onbad,
     onedit,
   }: {
@@ -23,14 +28,27 @@
     results: ExerciseAttempt[]
     check: ExerciseCheck | null
     given: string
+    tap?: { pick: string | null; token: number | null; done: boolean }
     revealed: boolean
+    onchoose?: (option: string) => void
+    ontoken?: (index: number) => void
     onbad?: () => void
     onedit?: () => void
   } = $props()
 
   const items = $derived(item.exercises ?? [])
   const ex = $derived(items[Math.min(index, items.length - 1)])
-  const INSTRUCTION = { gap: 'Fill the gap', fix: 'Fix the mistake', rewrite: 'Complete the sentence' } as const
+  const INSTRUCTION = { choose: 'Choose the right word', spot: 'Tap the mistake', gap: 'Fill the gap', fix: 'Fix the mistake', rewrite: 'Complete the sentence' } as const
+  const isTap = $derived(!!ex && isTapType(ex.type))
+  const answered = $derived(isTap ? tap.done : !!check)
+  // spot: the sentence as tappable tokens, and once a token was tapped
+  // whether it was the mistake (then the replacement options show).
+  const tokens = $derived(ex?.type === 'spot' && ex.wrong ? spotTokens(ex.prompt, ex.wrong) : [])
+  const foundIt = $derived(tap.token !== null && !!tokens[tap.token]?.wrong)
+  const showOptions = $derived(ex?.type === 'choose' || (ex?.type === 'spot' && foundIt))
+  const fixed = $derived(ex?.type === 'spot' && ex.wrong && tap.done ? correctedParts(ex.prompt, ex.wrong, ex.answer) : null)
+  const tapRight = $derived(!!results[index]?.correct)
+  const optionLabel = (o: string) => (o === NOTHING ? (ex?.type === 'spot' ? '— delete it' : '— (nothing)') : o)
   // The prompt split around its "___", so the gap can be drawn.
   const parts = $derived(ex ? ex.prompt.split(/_{3,}/) : [])
   const current = $derived(results[index])
@@ -51,12 +69,12 @@
     <span class="meta">{item.fact.front}</span>
     {#if !revealed}
       <span class="steps" aria-label="Item {index + 1} of {items.length}">
-        {#each items as _, i (i)}<i class:done={i < index || (i === index && !!check)} class:now={i === index} class:bad={results[i] && !results[i]!.correct && !results[i]!.bad}></i>{/each}
+        {#each items as _, i (i)}<i class:done={i < index || (i === index && answered)} class:now={i === index} class:bad={results[i] && !results[i]!.correct && !results[i]!.bad}></i>{/each}
         <b>{index + 1}/{items.length}</b>
       </span>
     {/if}
   </div>
-  {#if onedit && (revealed || check)}
+  {#if onedit && (revealed || answered)}
     <button
       class="edit"
       onclick={(e) => {
@@ -70,7 +88,63 @@
     </button>
   {/if}
   <div class="body">
-    {#if !revealed && ex}
+    {#if !revealed && ex && isTap}
+      <p class="instruction">{ex.type === 'spot' && foundIt && !tap.done ? 'Now pick the right form' : INSTRUCTION[ex.type]}</p>
+      {#if ex.type === 'choose'}
+        <p class="prompt" lang="en">
+          {#each parts as part, i (i)}{#if i > 0}<span class="gap" class:filled={tap.done} aria-label="gap">{tap.done ? (ex.answer === NOTHING ? '—' : ex.answer) : '…'}</span>{/if}{part}{/each}
+        </p>
+      {:else}
+        <p class="prompt tokens" lang="en">
+          {#each tokens as t, i (i)}
+            <button
+              class="tok"
+              class:hit={tap.token === i && t.wrong}
+              class:miss={tap.token === i && !t.wrong}
+              class:show={tap.done && t.wrong && !(tap.token !== null && tokens[tap.token]?.wrong)}
+              disabled={tap.token !== null}
+              onclick={(e) => {
+                e.stopPropagation()
+                ontoken?.(i)
+              }}>{t.text}</button
+            >{' '}
+          {/each}
+        </p>
+      {/if}
+      {#if showOptions}
+        <div class="options" role="group" aria-label="Options" style="--cols: {(ex.options?.length ?? 0) === 4 ? 2 : Math.max(1, ex.options?.length ?? 1)}">
+          {#each ex.options ?? [] as o, k (o)}
+            <button
+              class="opt"
+              class:right={tap.done && o === ex.answer}
+              class:wrong={tap.done && tap.pick === o && o !== ex.answer}
+              class:dim={tap.done && o !== ex.answer && tap.pick !== o}
+              disabled={tap.done}
+              onclick={(e) => {
+                e.stopPropagation()
+                onchoose?.(o)
+              }}
+            >
+              <span class="key" aria-hidden="true">{k + 1}</span>{optionLabel(o)}
+            </button>
+          {/each}
+        </div>
+      {/if}
+      {#if tap.done}
+        <div class="verdict reveal-in" data-ok={tapRight}>
+          <span class="pill">{tapRight ? 'Correct' : ex.type === 'spot' && !foundIt ? 'The mistake was elsewhere' : 'Not quite'}</span>
+          {#if fixed}
+            <p class="fixed" lang="en">{#each fixed as p, i (i)}{#if p.changed}{#if p.text}<mark class="fix">{p.text}</mark>{:else}{' '}<mark class="gone">{ex.wrong}</mark>{/if}{:else}{p.text}{/if}{/each}</p>
+          {/if}
+          {#if ex.explain}<p class="explain" lang="ru">{ex.explain}</p>{/if}
+          {#if onbad}
+            <button class="badlink" onclick={(e) => { e.stopPropagation(); onbad() }} onmousedown={(e) => e.preventDefault()} disabled={current?.bad}>
+              {current?.bad ? 'Taken out of the pool' : 'Bad item'}
+            </button>
+          {/if}
+        </div>
+      {/if}
+    {:else if !revealed && ex}
       <p class="instruction">{INSTRUCTION[ex.type]}</p>
       <p class="prompt" lang="en">
         {#each parts as part, i (i)}{#if i > 0}<span class="gap" class:filled={!!check} aria-label="gap">{check ? (check.correct ? given.trim() || check.expected : check.expected) : '…'}</span>{/if}{part}{/each}
@@ -104,7 +178,15 @@
             {@const it = items.find((x) => x.id === r.id)}
             <li class:ok={r.correct && !r.bad} class:no={!r.correct && !r.bad} class:skip={r.bad}>
               <span class="mark" aria-hidden="true">{r.bad ? '–' : r.correct ? '✓' : '✗'}</span>
-              <span class="what" lang="en">{it?.prompt ?? ''}{#if !r.correct && !r.bad && it}<span class="ans"> → {it.answer}</span>{/if}</span>
+              <span class="what" lang="en">
+                {#if it?.type === 'spot' && it.wrong}
+                  {#each correctedParts(it.prompt, it.wrong, it.answer) as p, k (k)}{#if p.changed}<span class="ans">{p.text || '—'}</span>{:else}{p.text}{/if}{/each}
+                {:else if it?.type === 'choose'}
+                  {#each it.prompt.split(/_{3,}/) as part, k (k)}{#if k > 0}<span class="ans">{it.answer}</span>{/if}{part}{/each}
+                {:else}
+                  {it?.prompt ?? ''}{#if !r.correct && !r.bad && it}<span class="ans"> → {it.answer}</span>{/if}
+                {/if}
+              </span>
             </li>
           {/each}
         </ul>
@@ -310,6 +392,113 @@
     color: var(--good);
     background: var(--good-bg);
     font-weight: 650;
+  }
+  /* Tap items. */
+  .tokens {
+    line-height: 1.7;
+  }
+  .tok {
+    display: inline;
+    padding: 2px 3px;
+    margin: 0 -3px;
+    border-radius: 6px;
+    font: inherit;
+    color: inherit;
+    transition:
+      background-color var(--t-fast) ease,
+      color var(--t-fast) ease;
+  }
+  .tok:active:not(:disabled) {
+    background: var(--accent-soft);
+  }
+  .tok:disabled {
+    cursor: default;
+    opacity: 1;
+    color: inherit;
+  }
+  .tok.hit {
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .tok.miss {
+    color: var(--again);
+    background: var(--again-bg);
+    animation: flash 360ms ease 2;
+  }
+  /* Missed: where the mistake was. */
+  .tok.show {
+    color: var(--hard);
+    background: var(--hard-bg);
+  }
+  @keyframes flash {
+    50% {
+      opacity: 0.35;
+    }
+  }
+  /* One row of equal targets (two rows of two for four). */
+  .options {
+    display: grid;
+    grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 22px;
+  }
+  .opt {
+    min-width: 0;
+    min-height: 56px;
+    padding: 8px 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border-radius: 14px;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text);
+    background: var(--surface-2);
+    overflow-wrap: anywhere;
+    transition:
+      transform var(--t-press) var(--ease-out),
+      background-color var(--t-fast) ease,
+      color var(--t-fast) ease,
+      opacity var(--t-fast) ease;
+  }
+  .opt:disabled {
+    opacity: 1;
+    cursor: default;
+  }
+  .opt:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+  .opt .key {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--faint);
+  }
+  .opt.right {
+    color: var(--good);
+    background: var(--good-bg);
+  }
+  .opt.wrong {
+    color: var(--again);
+    background: var(--again-bg);
+  }
+  .opt.dim:disabled {
+    opacity: 0.45;
+  }
+  .opt.right .key,
+  .opt.wrong .key {
+    color: inherit;
+  }
+  .fixed {
+    font-size: 17px;
+    line-height: 1.45;
+  }
+  mark.gone {
+    color: var(--again);
+    background: var(--again-bg);
+    text-decoration: line-through;
+    border-radius: 3px;
+    padding: 0 2px;
   }
   .explain {
     font-size: 15px;

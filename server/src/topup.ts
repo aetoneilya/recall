@@ -2,10 +2,11 @@
 // rule whose pool has fewer than TOPUP_BELOW active, never-shown items gets
 // TOPUP_COUNT new ones — at most one attempt per rule per day, each call on
 // the user's autofill budget (autofill.structuredCall). One structured call
-// writes the items and checks each of them (selfCheck); the server keeps the
-// ones that pass its own checks too (core.cleanExercise, the answer grades
-// as correct, a fix prompt doesn't, no repeated prompt).
-import { checkExercise, cleanExercise, type ExerciseInput } from '@recall/core'
+// writes tap items (choose, spot) and checks each of them (selfCheck: the
+// rule, one right option, no grammatical distractor, no giveaway); the
+// server keeps the ones that also pass core.cleanExercise, have no hint in
+// parentheses and aren't repeats.
+import { cleanExercise, type ExerciseInput } from '@recall/core'
 import { autofillClient, structuredCall } from './autofill.ts'
 import type { AppContext } from './context.ts'
 import { addExercises, listExercises } from './exercises.ts'
@@ -26,21 +27,23 @@ export const TOPUP_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['type', 'prompt', 'answer', 'accepted', 'explain', 'selfCheck'],
+        required: ['type', 'text', 'options', 'answer', 'wrong', 'explain', 'selfCheck'],
         properties: {
-          type: { type: 'string', enum: ['gap', 'fix', 'rewrite'] },
-          prompt: { type: 'string', description: 'gap: one sentence with exactly one "___" and a hint in parentheses. fix: a sentence with exactly one mistake. rewrite: "sentence → cue ___".' },
-          answer: { type: 'string', description: 'gap: what fills the gap. fix: the whole corrected sentence. rewrite: what completes the cue.' },
-          accepted: { type: 'array', items: { type: 'string' }, description: 'Other answers that are equally correct; usually empty.' },
+          type: { type: 'string', enum: ['choose', 'spot'] },
+          text: { type: 'string', description: 'choose: one sentence with exactly one "___". spot: a natural sentence with exactly one mistake.' },
+          options: { type: 'array', items: { type: 'string' }, description: 'choose: 2-4 options; spot: 1-4 replacements for the wrong word(s). "—" means nothing (zero article / delete).' },
+          answer: { type: 'string', description: 'The one right option, exactly as in options.' },
+          wrong: { anyOf: [{ type: 'string', description: 'spot: the wrong whole word(s), exactly as they appear once in the text.' }, { type: 'null' }] },
           explain: { type: 'string', description: 'One short line in Russian on why.' },
           selfCheck: {
             type: 'object',
             additionalProperties: false,
-            required: ['practisesTheRule', 'oneClearAnswer', 'answerIsCorrect'],
+            required: ['practisesTheRule', 'exactlyOneRight', 'noDistractorGrammatical', 'noGiveaway'],
             properties: {
               practisesTheRule: { type: 'boolean', description: 'The item tests exactly this rule.' },
-              oneClearAnswer: { type: 'boolean', description: 'Only the answer (and the accepted variants) is right; no other natural answer fits.' },
-              answerIsCorrect: { type: 'boolean', description: 'Re-read: the answer is grammatical and fits the prompt and hint.' },
+              exactlyOneRight: { type: 'boolean', description: 'Re-read: the answer is grammatical and natural in this sentence.' },
+              noDistractorGrammatical: { type: 'boolean', description: 'Try every other option in the sentence: none of them is grammatical or natural.' },
+              noGiveaway: { type: 'boolean', description: 'Nothing in the sentence translates, names or hints the answer.' },
             },
           },
         },
@@ -50,7 +53,7 @@ export const TOPUP_SCHEMA = {
 }
 
 export function topupSystem(): string {
-  return `You write grammar exercises for a Russian-speaking learner of English (B2), for one rule at a time. Each item has exactly one clearly correct answer, plus equally right variants in "accepted". Types: gap — one sentence with exactly one "___" and a hint in parentheses (the base verb, a tense or number cue), e.g. "The list of jobs ___ longer every hour. (be)" → "is"; fix — a natural sentence with exactly one mistake of this rule, the answer is the whole corrected sentence; rewrite — "sentence → cue ___", the answer completes the cue. Use varied, everyday and work contexts (software, travel, family), different subjects and tenses; mostly gap, some fix, few rewrite. Never make an answer hinge on spelling, punctuation or a rare word. Don't repeat or lightly reword the existing prompts. "explain" is one short line in Russian. Then check each item honestly in selfCheck; it is fine to mark a weak one false.`
+  return `You write grammar exercises for a Russian-speaking learner of English (B2), one rule at a time. They are answered by tapping on a phone, so there are two types. choose — one sentence with exactly one "___" and 2-4 options, e.g. "The backup runs ___ 3 a.m." with ["at", "in", "on"], answer "at"; "—" as an option means nothing there (the zero article). spot — a natural sentence with exactly one mistake of this rule; "wrong" is the wrong whole word(s) exactly as they appear (once) in the sentence, options are 1-4 replacements with the answer among them, e.g. "His shoes gets wet every time it rains." wrong "gets", options ["get", "getting", "got"], answer "get"; the answer "—" means "delete it" ("See you on next week." wrong "on"). Take the distractors from the rule's own contrast set (at / in / on; a / the / —; is / are), so that exactly one option is grammatical in that sentence. No hints in parentheses, nothing that translates or names the answer. Use varied everyday and work contexts (software, travel, family), different subjects and tenses, both types. Don't repeat or lightly reword the existing sentences. "explain" is one short line in Russian. Then check each item honestly in selfCheck — try every option in the sentence; it is fine to mark a weak item false.`
 }
 
 interface Candidate {
@@ -90,7 +93,7 @@ export async function topupFact(ctx: AppContext, userId: string, factId: string)
     `Rule: ${fact.front}`,
     fact.back,
     '',
-    `Existing prompts (don't repeat these):`,
+    `Existing sentences (don't repeat these):`,
     ...pool.map((e) => `- ${e.prompt}`),
     '',
     `Write ${TOPUP_COUNT} new items.`,
@@ -106,11 +109,15 @@ export async function topupFact(ctx: AppContext, userId: string, factId: string)
   const keep: ExerciseInput[] = []
   for (const it of items) {
     const sc = (it.selfCheck ?? {}) as Record<string, unknown>
-    if (sc.practisesTheRule !== true || sc.oneClearAnswer !== true || sc.answerIsCorrect !== true) continue
-    const r = cleanExercise({ type: it.type as ExerciseInput['type'], prompt: String(it.prompt ?? ''), answer: String(it.answer ?? ''), accepted: Array.isArray(it.accepted) ? it.accepted.map(String) : [], explain: typeof it.explain === 'string' ? it.explain : null })
+    if (sc.practisesTheRule !== true || sc.exactlyOneRight !== true || sc.noDistractorGrammatical !== true || sc.noGiveaway !== true) continue
+    if (it.type !== 'choose' && it.type !== 'spot') continue
+    const r = cleanExercise({
+      type: it.type, text: String(it.text ?? ''), answer: String(it.answer ?? ''), options: Array.isArray(it.options) ? it.options.map(String) : [],
+      wrong: typeof it.wrong === 'string' ? it.wrong : null, explain: typeof it.explain === 'string' ? it.explain : null,
+    })
     if ('error' in r) continue
-    if (!checkExercise(r.item.answer, r.item).correct) continue
-    if (r.item.type === 'fix' && checkExercise(r.item.prompt, r.item).correct) continue
+    // A hint in parentheses gives the answer away.
+    if (/\(/.test(r.item.prompt)) continue
     keep.push(r.item)
   }
   const out = keep.length ? addExercises(db, userId, factId, keep, 'claude', ctx.now()) : { created: [], duplicates: [], errors: [] }

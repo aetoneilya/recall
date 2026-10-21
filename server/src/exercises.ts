@@ -4,7 +4,7 @@
 // review (ReviewInput.exercises) and is kept per log (exercise_attempts).
 // Ownership is the fact's: every function takes the acting user's id.
 import {
-  cleanExercise, exerciseKey, EXERCISE_TYPES,
+  cleanExercise, exerciseKey, EXERCISE_TYPES, isTapType,
   type Author, type ExerciseAttempt, type ExerciseInput, type ExerciseItem, type ExerciseType,
 } from '@recall/core'
 import { newId, tx, type Db } from './db.ts'
@@ -25,6 +25,8 @@ export interface ExerciseRow {
   prompt: string
   answer: string
   accepted: string
+  options: string
+  wrong: string | null
   explain: string | null
   status: string
   needs_review: number
@@ -54,6 +56,7 @@ export interface ExerciseInfo extends ExerciseItem {
 
 export const toItem = (r: ExerciseRow): ExerciseItem => ({
   id: r.id, type: r.type as ExerciseType, prompt: r.prompt, answer: r.answer, accepted: JSON.parse(r.accepted) as string[], explain: r.explain,
+  ...(isTapType(r.type as ExerciseType) ? { options: JSON.parse(r.options ?? '[]') as string[], wrong: r.wrong } : {}),
 })
 
 export const toExercise = (r: ExerciseRow): ExerciseInfo => ({
@@ -102,15 +105,15 @@ export function addExercises(
     mustGetFact(db, userId, factId)
     const out: AddExercisesResult = { created: [], duplicates: [], errors: [] }
     const find = db.prepare('SELECT id, status FROM fact_exercises WHERE fact_id = ? AND dedupe_key = ?')
-    const insert = db.prepare(`INSERT INTO fact_exercises(id, fact_id, type, prompt, answer, accepted, explain, created_by, dedupe_key, import_ref, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    const insert = db.prepare(`INSERT INTO fact_exercises(id, fact_id, type, prompt, answer, accepted, options, wrong, explain, created_by, dedupe_key, import_ref, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     items.forEach((input, index) => {
       const r = cleanExercise(input)
       if ('error' in r) {
         out.errors.push({ index, error: r.error })
         return
       }
-      const key = exerciseKey(r.item.prompt)
+      const key = exerciseKey(r.item.prompt, r.item.type)
       const dup = find.get(factId, key) as { id: string; status: ExerciseStatus } | undefined
       if (dup) {
         out.duplicates.push({ index, existingId: dup.id, existingStatus: dup.status })
@@ -118,7 +121,7 @@ export function addExercises(
       }
       const id = newId('ex')
       const it = r.item
-      insert.run(id, factId, it.type, it.prompt, it.answer, JSON.stringify(it.accepted), it.explain, createdBy, key, input.importRef ?? null,
+      insert.run(id, factId, it.type, it.prompt, it.answer, JSON.stringify(it.accepted), JSON.stringify(it.options), it.wrong, it.explain, createdBy, key, input.importRef ?? null,
         new Date(now.getTime() + index).toISOString())
       out.created.push({ index, id })
     })
@@ -133,19 +136,21 @@ export function updateExercise(db: Db, userId: string, id: string, patch: Exerci
     const cur = toExercise(mustOwn(db, userId, id))
     const r = cleanExercise({
       type: patch.type ?? cur.type,
-      prompt: patch.prompt ?? cur.prompt,
+      prompt: patch.prompt ?? patch.text ?? cur.prompt,
       answer: patch.answer ?? cur.answer,
       accepted: patch.accepted ?? cur.accepted,
       explain: patch.explain !== undefined ? patch.explain : cur.explain,
+      options: patch.options ?? cur.options ?? [],
+      wrong: patch.wrong !== undefined ? patch.wrong : cur.wrong ?? null,
     })
     if ('error' in r) throw new HttpError(400, r.error)
     const status = patch.status ?? cur.status
     if (status !== 'active' && status !== 'flagged') throw new HttpError(400, 'status must be active or flagged')
-    const key = exerciseKey(r.item.prompt)
+    const key = exerciseKey(r.item.prompt, r.item.type)
     const dup = db.prepare('SELECT id FROM fact_exercises WHERE fact_id = ? AND dedupe_key = ? AND id <> ?').get(cur.factId, key, id)
     if (dup) throw new HttpError(409, 'the pool already has this prompt')
-    db.prepare('UPDATE fact_exercises SET type = ?, prompt = ?, answer = ?, accepted = ?, explain = ?, status = ?, needs_review = ?, dedupe_key = ? WHERE id = ?').run(
-      r.item.type, r.item.prompt, r.item.answer, JSON.stringify(r.item.accepted), r.item.explain, status,
+    db.prepare('UPDATE fact_exercises SET type = ?, prompt = ?, answer = ?, accepted = ?, options = ?, wrong = ?, explain = ?, status = ?, needs_review = ?, dedupe_key = ? WHERE id = ?').run(
+      r.item.type, r.item.prompt, r.item.answer, JSON.stringify(r.item.accepted), JSON.stringify(r.item.options), r.item.wrong, r.item.explain, status,
       (patch.needsReview ?? cur.needsReview) ? 1 : 0, key, id,
     )
     return toExercise(db.prepare('SELECT * FROM fact_exercises WHERE id = ?').get(id) as unknown as ExerciseRow)
@@ -201,6 +206,15 @@ export function pickExercises<T extends { type: string; last_shown_at: string | 
   return out
 }
 
+// The items a review draws from: with MIN_POOL active tap items (choose,
+// spot), only those — the typed legacy types are never served again; else
+// the whole active pool, tap items first.
+export function servablePool<T extends { type: string; last_shown_at: string | null }>(pool: T[]): T[] {
+  const tap = pool.filter((x) => isTapType(x.type as ExerciseType))
+  if (tap.length >= MIN_POOL) return tap
+  return pool
+}
+
 // This review's items for every fact given that has a pool to review from.
 export function exercisesForQueue(db: Db, factIds: string[], rand: () => number = Math.random): Map<string, ExerciseItem[]> {
   const out = new Map<string, ExerciseItem[]>()
@@ -209,7 +223,16 @@ export function exercisesForQueue(db: Db, factIds: string[], rand: () => number 
     const rows = db.prepare(`SELECT * FROM fact_exercises WHERE status = 'active' AND fact_id IN (${chunk.map(() => '?').join(',')})`).all(...chunk) as unknown as ExerciseRow[]
     const byFact = new Map<string, ExerciseRow[]>()
     for (const r of rows) byFact.set(r.fact_id, [...(byFact.get(r.fact_id) ?? []), r])
-    for (const [factId, pool] of byFact) if (pool.length >= MIN_POOL) out.set(factId, pickExercises(pool, PER_REVIEW, rand).map(toItem))
+    for (const [factId, all] of byFact) {
+      if (all.length < MIN_POOL) continue
+      const pool = servablePool(all)
+      const tap = pool.filter((x) => isTapType(x.type as ExerciseType))
+      // A pool still short of tap items: those come first, typed ones fill up.
+      const picked = tap.length && tap.length < pool.length
+        ? [...pickExercises(tap, PER_REVIEW, rand), ...pickExercises(pool.filter((x) => !tap.includes(x)), PER_REVIEW - Math.min(tap.length, PER_REVIEW), rand)]
+        : pickExercises(pool, PER_REVIEW, rand)
+      out.set(factId, picked.map(toItem))
+    }
   }
   return out
 }

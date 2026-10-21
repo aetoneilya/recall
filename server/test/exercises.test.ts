@@ -118,7 +118,7 @@ describe('import-exercises', () => {
     expect(s).toEqual({
       deck: { name: 'Grammar', created: true },
       rules: { created: 2, existing: 0 },
-      exercises: { created: 6, existing: 0, duplicates: 0, invalid: [{ rule: 'since-for', index: 3, error: 'a gap prompt needs exactly one ___' }] },
+      exercises: { created: 6, existing: 0, duplicates: 0, replaced: 0, invalid: [{ rule: 'since-for', index: 3, error: 'a gap prompt needs exactly one ___' }] },
     })
     const facts = ctx.db.prepare('SELECT front, tags, import_ref, created_by FROM facts ORDER BY created_at').all()
     expect(facts).toEqual([
@@ -203,22 +203,23 @@ describe('Claude top-up', () => {
     return { id: 'm', type: 'message', role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', stop_sequence: null, stop_details: null,
       content: [{ type: 'text', text: JSON.stringify(body), citations: null }], usage: { input_tokens: 100, output_tokens: 50 } } as unknown as BetaMessage
   }
-  const ok = { practisesTheRule: true, oneClearAnswer: true, answerIsCorrect: true }
+  const ok = { practisesTheRule: true, exactlyOneRight: true, noDistractorGrammatical: true, noGiveaway: true }
   const fake = (body: unknown) => {
     const calls: MessageCreateParamsNonStreaming[] = []
     const client: AutofillClient = { beta: { messages: { create: async (b) => (calls.push(b), message(body)) } } }
     return { client, calls }
   }
 
-  it('asks for new items for a low pool once a day and keeps only the ones that check out', async () => {
+  it('asks for new tap items for a low pool once a day and keeps only the ones that check out', async () => {
     const { client, calls } = fake({
       items: [
-        { type: 'gap', prompt: 'She ___ coffee every day. (drink)', answer: 'drinks', accepted: [], explain: 'she → -s', selfCheck: ok },
-        { type: 'fix', prompt: 'He like jazz.', answer: 'He likes jazz.', accepted: [], explain: '-s', selfCheck: ok },
-        { type: 'gap', prompt: 'It ___ often. (rain)', answer: 'rains', accepted: [], explain: '', selfCheck: { ...ok, oneClearAnswer: false } },
-        { type: 'gap', prompt: 'Two gaps ___ and ___. (x)', answer: 'x', accepted: [], explain: '', selfCheck: ok },
-        { type: 'fix', prompt: 'He likes jazz.', answer: 'He likes jazz!', accepted: [], explain: '', selfCheck: ok },
-        { type: 'gap', prompt: 'Sentence 1 ___ here. (hint)', answer: 'w1', accepted: [], explain: '', selfCheck: ok },
+        { type: 'choose', text: 'She ___ coffee every day.', options: ['drinks', 'drink', 'drinking'], answer: 'drinks', wrong: null, explain: 'she → -s', selfCheck: ok },
+        { type: 'spot', text: 'He like jazz a lot.', options: ['likes', 'liking'], answer: 'likes', wrong: 'like', explain: '-s', selfCheck: ok },
+        { type: 'choose', text: 'It ___ often here.', options: ['rains', 'rain'], answer: 'rains', wrong: null, explain: '', selfCheck: { ...ok, noDistractorGrammatical: false } },
+        { type: 'choose', text: 'No gap in this one.', options: ['a', 'b'], answer: 'a', wrong: null, explain: '', selfCheck: ok },
+        { type: 'choose', text: 'She ___ there. (live)', options: ['lives', 'live'], answer: 'lives', wrong: null, explain: '', selfCheck: ok },
+        { type: 'spot', text: 'They plays well.', options: ['play'], answer: 'play', wrong: 'play', explain: '', selfCheck: ok },
+        { type: 'gap', text: 'Old ___ type. (x)', options: [], answer: 'x', wrong: null, explain: '', selfCheck: ok },
       ],
     })
     const ctx = makeCtx({ OWNER_TELEGRAM_ID: '1001' }, undefined, client)
@@ -228,10 +229,13 @@ describe('Claude top-up', () => {
     expect(topupCandidates(ctx).map((c) => c.fact_id)).toEqual([fact.id])
 
     const r = await topupFact(ctx, ctx.user.id, fact.id)
-    expect(r).toEqual({ proposed: 6, added: 2, dropped: 4 })
+    expect(r).toEqual({ proposed: 7, added: 2, dropped: 5 })
     expect(calls[0]).toMatchObject({ model: 'claude-opus-5-5', output_config: { effort: 'low', format: { type: 'json_schema' } } })
     expect(calls[0]!.messages[0]!.content).toMatch(/Rule: Third person -s[\s\S]*- Sentence 1 ___ here/)
-    expect(listExercises(ctx.db, ctx.user.id, fact.id).slice(3).map((e) => [e.prompt, e.createdBy])).toEqual([['She ___ coffee every day. (drink)', 'claude'], ['He like jazz.', 'claude']])
+    expect(calls[0]!.system).toMatch(/tapping/)
+    expect(listExercises(ctx.db, ctx.user.id, fact.id).slice(3).map((e) => [e.type, e.prompt, e.options, e.wrong, e.createdBy])).toEqual([
+      ['choose', 'She ___ coffee every day.', ['drinks', 'drink', 'drinking'], null, 'claude'], ['spot', 'He like jazz a lot.', ['likes', 'liking'], 'like', 'claude'],
+    ])
     expect(ctx.db.prepare('SELECT calls FROM autofill_usage').get()).toEqual({ calls: 1 })
     // Attempted today: not again until tomorrow.
     expect(topupCandidates(ctx)).toEqual([])
@@ -249,3 +253,78 @@ describe('Claude top-up', () => {
     expect(ctx.db.prepare('SELECT count(*) AS n FROM exercise_topups').get()).toEqual({ n: 0 })
   })
 })
+
+const choose = (n: number, answer = 'at') => ({ type: 'choose' as const, text: `Thing ${n} runs ___ noon.`, options: ['at', 'in', 'on'], answer, explain: `at ${n}` })
+const spot = (n: number) => ({ type: 'spot' as const, text: `The ${n} dogs barks loudly.`, wrong: 'barks', options: ['bark', 'barking'], answer: 'bark', explain: null })
+
+describe('tap exercises', () => {
+  it('stores choose and spot items with their options, deduped by text within their family', () => {
+    const ctx = makeCtx()
+    const { fact } = rule(ctx, [gap(1)])
+    const r = addExercises(ctx.db, ctx.user.id, fact.id, [
+      choose(1), spot(1), choose(1, 'in'), { type: 'choose', text: 'Sentence 1 ___ here. (hint)', options: ['w1', 'w2'], answer: 'w1' },
+      { ...spot(2), wrong: 'bark' }, { ...choose(3), options: ['at'] },
+    ], 'user', ctx.now())
+    expect(r.created.map((c) => c.index)).toEqual([0, 1, 3])
+    expect(r.duplicates.map((d) => d.index)).toEqual([2])
+    expect(r.errors.map((e) => [e.index, e.error])).toEqual([[4, expect.stringMatching(/exactly once/)], [5, 'choose needs 2–4 options']])
+    const pool = listExercises(ctx.db, ctx.user.id, fact.id)
+    expect(pool.slice(1, 3)).toMatchObject([
+      { type: 'choose', prompt: 'Thing 1 runs ___ noon.', options: ['at', 'in', 'on'], answer: 'at', wrong: null },
+      { type: 'spot', prompt: 'The 1 dogs barks loudly.', options: ['bark', 'barking'], answer: 'bark', wrong: 'barks' },
+    ])
+    expect(pool[0]).not.toHaveProperty('options')
+    expect(() => updateExercise(ctx.db, ctx.user.id, pool[2]!.id, { wrong: 'loudly', options: ['quietly'], answer: 'quietly' })).not.toThrow()
+    expect(() => updateExercise(ctx.db, ctx.user.id, pool[2]!.id, { wrong: 'cats' })).toThrow(/exactly once/)
+  })
+
+  it('serves tap items only once there are three, and puts them first before that', () => {
+    const ctx = makeCtx()
+    const { fact } = rule(ctx, [gap(1), gap(2), gap(3), fix(1)])
+    const served = () => {
+      const it = buildQueue(ctx.db, ctx.user.id, TZ, ctx.now()).items.find((i) => i.kind === 'fact')
+      return (it as { exercises: { type: string }[] }).exercises.map((e) => e.type)
+    }
+    expect(served().every((t) => t !== 'choose')).toBe(true)
+    addExercises(ctx.db, ctx.user.id, fact.id, [choose(1)], 'user', ctx.now())
+    for (let i = 0; i < 10; i++) expect(served()[0]).toBe('choose')
+    addExercises(ctx.db, ctx.user.id, fact.id, [spot(1), choose(2)], 'user', ctx.now())
+    for (let i = 0; i < 10; i++) expect(served().sort()).toEqual(['choose', 'choose', 'spot'])
+  })
+
+  it('replaces a rule\'s typed items with tap ones on --replace, keeping its card and history', () => {
+    const ctx = makeCtx()
+    importExercises(ctx.db, ctx.user.id, rules(), { now: ctx.now() })
+    const factId = (ctx.db.prepare("SELECT id FROM facts WHERE import_ref = 'rules:third-person-s'").get() as { id: string }).id
+    const cardId = (ctx.db.prepare('SELECT id FROM cards WHERE fact_id = ?').get(factId) as { id: string }).id
+    applyReviews(ctx.db, ctx.user.id, [{ id: 'rv-keep', cardId, rating: 3, reviewedAt: ctx.now().toISOString() }])
+    const tap = rules()
+    tap[0]!.items = [choose(1), choose(2), spot(1)]
+    tap[1]!.items = [gap(3), gap(4)]
+    const dry = importExercises(ctx.db, ctx.user.id, tap, { now: ctx.now(), replace: true, dryRun: true })
+    expect(dry.exercises).toMatchObject({ created: 3, replaced: 3 })
+    expect(listExercises(ctx.db, ctx.user.id, factId).every((e) => e.status === 'active')).toBe(true)
+
+    const s = importExercises(ctx.db, ctx.user.id, tap, { now: ctx.now(), replace: true })
+    // The second rule brought no tap items: its typed ones stay.
+    expect(s).toMatchObject({ rules: { created: 0, existing: 2 }, exercises: { created: 3, existing: 2, replaced: 3 } })
+    const pool = listExercises(ctx.db, ctx.user.id, factId)
+    expect(pool.map((e) => [e.type, e.status])).toEqual([['gap', 'flagged'], ['gap', 'flagged'], ['fix', 'flagged'], ['choose', 'active'], ['choose', 'active'], ['spot', 'active']])
+    expect(ctx.db.prepare("SELECT import_ref FROM fact_exercises WHERE fact_id = ? AND type IN ('choose', 'spot') ORDER BY rowid").all(factId).map((r: any) => r.import_ref))
+      .toEqual(['third-person-s:tap:0', 'third-person-s:tap:1', 'third-person-s:tap:2'])
+    expect(ctx.db.prepare('SELECT id FROM cards WHERE fact_id = ?').get(factId)).toEqual({ id: cardId })
+    expect(ctx.db.prepare("SELECT count(*) AS n FROM review_logs WHERE id = 'rv-keep'").get()).toEqual({ n: 1 })
+    // Again: nothing changes.
+    expect(importExercises(ctx.db, ctx.user.id, tap, { now: ctx.now(), replace: true }).exercises).toMatchObject({ created: 0, existing: 5, replaced: 0 })
+  })
+
+  it('prefers the choice copy, then the reviewed one', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-rules-'))
+    const file = path.join(dir, 'rules.json')
+    for (const f of ['rules.json', 'rules.reviewed.json', 'rules.choice.json']) fs.writeFileSync(path.join(dir, f), '[]')
+    expect(preferReviewed(file)).toBe(path.join(dir, 'rules.choice.json'))
+    expect(preferReviewed(path.join(dir, 'rules.reviewed.json'))).toBe(path.join(dir, 'rules.reviewed.json'))
+    fs.rmSync(dir, { recursive: true })
+  })
+})
+

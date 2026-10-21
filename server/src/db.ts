@@ -194,6 +194,45 @@ export const MIGRATIONS: Migration[] = [
     result TEXT
   );
   `,
+  // v8: tap exercises (choose, spot) next to the typed ones. fact_exercises is
+  // rebuilt for the wider type CHECK, with options (json) and wrong; every row
+  // and id is kept, exercise_attempts keeps pointing at it by name.
+  {
+    before: backupBefore(8, (db) => hasRows(db, 'fact_exercises')),
+    run: (db) => db.exec(`
+  CREATE TABLE fact_exercises_v8 (
+    id TEXT PRIMARY KEY,
+    fact_id TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+    type TEXT NOT NULL CHECK (type IN ('choose', 'spot', 'gap', 'fix', 'rewrite')),
+    prompt TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    accepted TEXT NOT NULL DEFAULT '[]',
+    options TEXT NOT NULL DEFAULT '[]',
+    wrong TEXT,
+    explain TEXT,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'flagged')),
+    needs_review INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL,
+    import_ref TEXT,
+    created_at TEXT NOT NULL,
+    shown_count INTEGER NOT NULL DEFAULT 0,
+    last_shown_at TEXT,
+    correct_count INTEGER NOT NULL DEFAULT 0,
+    wrong_count INTEGER NOT NULL DEFAULT 0,
+    CHECK ((type = 'spot') = (wrong IS NOT NULL))
+  );
+  INSERT INTO fact_exercises_v8(id, fact_id, type, prompt, answer, accepted, explain, status, needs_review, created_by, dedupe_key, import_ref,
+      created_at, shown_count, last_shown_at, correct_count, wrong_count)
+    SELECT id, fact_id, type, prompt, answer, accepted, explain, status, needs_review, created_by, dedupe_key, import_ref,
+      created_at, shown_count, last_shown_at, correct_count, wrong_count FROM fact_exercises ORDER BY rowid;
+  DROP TABLE fact_exercises;
+  ALTER TABLE fact_exercises_v8 RENAME TO fact_exercises;
+  CREATE UNIQUE INDEX fact_exercises_dedupe ON fact_exercises(fact_id, dedupe_key);
+  CREATE INDEX fact_exercises_fact ON fact_exercises(fact_id, status, last_shown_at);
+  CREATE INDEX fact_exercises_import_ref ON fact_exercises(import_ref);
+  `),
+  },
 ]
 
 // The file a connection works on; '' for :memory:.

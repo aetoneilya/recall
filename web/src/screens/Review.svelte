@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { checkAnswer, checkExercise, exerciseRating, formatInterval, preview, type AnswerCheck, type ExerciseAttempt, type ExerciseCheck, type Rating } from '@recall/core'
+  import { checkAnswer, checkExercise, exerciseRating, formatInterval, isTapType, preview, spotTokens, type AnswerCheck, type ExerciseAttempt, type ExerciseCheck, type Rating } from '@recall/core'
   import { flushSync, onMount, untrack } from 'svelte'
   import ExerciseCard from '../components/ExerciseCard.svelte'
   import FactCard from '../components/FactCard.svelte'
@@ -53,6 +53,12 @@
   let exAnswer = $state('')
   let exInput: HTMLInputElement | undefined = $state()
   const exTyping = $derived(!!exercises && !session.revealed)
+  // The current item, and for tap items (choose, spot) their state: the
+  // option picked, the token tapped, done.
+  const exItem = $derived(exercises?.[exIndex] ?? null)
+  const exTap = $derived(!!exItem && isTapType(exItem.type))
+  let tap = $state<{ pick: string | null; token: number | null; done: boolean }>({ pick: null, token: null, done: false })
+  const exAnswered = $derived(exTap ? tap.done : !!exCheck)
   // The rating to take on Enter / one tap: the typed answer's, or the exercises'.
   const suggested = $derived<Rating | null>(exercises ? (exResults.length ? exerciseRating(exResults) : null) : check?.suggestedRating ?? null)
 
@@ -65,6 +71,7 @@
     exIndex = 0
     exCheck = null
     exAnswer = ''
+    tap = { pick: null, token: null, done: false }
     exResults = untrack(() => {
       const cur = session.current
       return cur && session.revealed ? [...(session.exerciseResults[cur.card.id] ?? [])] : []
@@ -81,13 +88,46 @@
 
   // Next item, or the summary after the last one.
   function nextItem() {
-    if (!exercises || !exCheck) return
+    if (!exercises || !exAnswered) return
     if (exIndex + 1 < exercises.length) {
       exIndex++
       exCheck = null
       exAnswer = ''
-      exInput?.focus()
+      tap = { pick: null, token: null, done: false }
+      if (!exTap) flushSync()
+      if (exercises[exIndex] && !isTapType(exercises[exIndex]!.type)) exInput?.focus()
     } else session.reveal()
+  }
+
+  function record(given: string, correct: boolean) {
+    const ex = exItem
+    if (!ex) return
+    exResults = [...exResults.slice(0, exIndex), { id: ex.id, given, correct }]
+    haptic.notify(correct ? 'success' : 'error')
+  }
+
+  // choose: the option; spot: the replacement, once the mistake is found.
+  function chooseOption(o: string) {
+    const ex = exItem
+    if (!ex || tap.done) return
+    if (ex.type === 'spot' && (tap.token === null || !spotTokens(ex.prompt, ex.wrong ?? '')[tap.token]?.wrong)) return
+    tap = { ...tap, pick: o, done: true }
+    record(ex.type === 'spot' ? `${ex.wrong} → ${o}` : o, o === ex.answer)
+  }
+
+  // spot: a tap on the mistake asks for the replacement; anywhere else is a miss.
+  function tapToken(i: number) {
+    const ex = exItem
+    if (!ex || ex.type !== 'spot' || tap.token !== null || tap.done) return
+    const t = spotTokens(ex.prompt, ex.wrong ?? '')[i]
+    if (!t) return
+    if (t.wrong) {
+      tap = { ...tap, token: i }
+      haptic.select()
+    } else {
+      tap = { ...tap, token: i, done: true }
+      record(t.text, false)
+    }
   }
 
   // "I was right": counted as right, and the item is marked for a look.
@@ -188,7 +228,9 @@
   }
 
   function tapCard() {
-    if (exTyping) exInput?.focus()
+    if (exTyping && exTap) {
+      if (tap.done) nextItem()
+    } else if (exTyping) exInput?.focus()
     else if (typed && !session.revealed) input?.focus()
     else reveal()
   }
@@ -233,13 +275,18 @@
     if (t.closest('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return
     if (e.key === ' ' || e.key === 'Enter') {
       e.preventDefault()
-      if (exTyping) {
+      if (exTyping && exTap) {
+        if (tap.done) nextItem()
+      } else if (exTyping) {
         if (exCheck && e.key === 'Enter') nextItem()
         else exInput?.focus()
       } else if (!session.revealed) {
         if (typed) input?.focus()
         else reveal()
       } else rate(suggested ?? 3)
+    } else if (exTyping && exTap && ['1', '2', '3', '4'].includes(e.key)) {
+      const o = exItem?.options?.[Number(e.key) - 1]
+      if (o) chooseOption(o)
     } else if (session.revealed && ['1', '2', '3', '4'].includes(e.key)) {
       rate(Number(e.key) as Rating)
     } else if (e.key === 'z' || e.key === 'u' || e.key === 'Backspace') {
@@ -301,7 +348,19 @@
           }}
         >
           {#if item.kind === 'fact' && exercises}
-            <ExerciseCard {item} index={exIndex} results={exResults} check={exCheck} given={exAnswer} revealed={session.revealed} onbad={badItem} onedit={() => navigate(`/fact/${item.fact.id}?from=/`)} />
+            <ExerciseCard
+              {item}
+              index={exIndex}
+              results={exResults}
+              check={exCheck}
+              given={exAnswer}
+              {tap}
+              revealed={session.revealed}
+              onchoose={chooseOption}
+              ontoken={tapToken}
+              onbad={badItem}
+              onedit={() => navigate(`/fact/${item.fact.id}?from=/`)}
+            />
           {:else if item.kind === 'fact'}
             <FactCard {item} revealed={session.revealed} onedit={() => navigate(`/fact/${item.fact.id}?from=/`)} />
           {:else}
@@ -357,7 +416,19 @@
           <button type="button" class="check" onclick={reveal} onmousedown={(e) => e.preventDefault()}>{answer.trim() ? 'Check' : "Don't know"}</button>
         </form>
       {/if}
-      {#if exTyping}
+      {#if exTyping && exTap}
+        <!-- Tap items are answered on the card; here: undo before, Next after. -->
+        <div class="pre">
+          {#if tap.done}
+            <button class="show next" onclick={nextItem}>{exIndex + 1 < (exercises?.length ?? 0) ? 'Next' : 'Done'}</button>
+          {:else}
+            <button class="undo" onclick={() => session.undo()} disabled={!session.canUndo} aria-label="Undo last rating">
+              <Icon name="undo" size={22} />
+            </button>
+            <p class="tap-hint">{exItem?.type === 'spot' ? (tap.token === null ? 'Tap the wrong word' : 'Pick the right form') : 'Tap the right option'}</p>
+          {/if}
+        </div>
+      {:else if exTyping}
         <form class="type-row" onsubmit={(e) => e.preventDefault()}>
           {#if exCheck}
             {#if !exCheck.correct && !exResults[exIndex]?.overridden && exResults[exIndex]?.given}
@@ -751,6 +822,18 @@
   }
   .check.grow {
     flex: 1;
+  }
+  .tap-hint {
+    flex: 1;
+    margin: 0;
+    align-self: center;
+    text-align: center;
+    font-size: 15px;
+    color: var(--faint);
+  }
+  .show.next {
+    color: var(--accent-text);
+    background: var(--accent);
   }
   /* Checked: the field steps out of view but keeps the focus (and the keyboard). */
   .type-row input.gone {

@@ -1,25 +1,40 @@
 // Grammar exercises: a rule's fact reviews through fresh items drawn from a
-// pool (see DESIGN.md "Exercises"). Grading here is strict — the form is the
-// point, so no typo tolerance — but forgiving about what doesn't matter:
-// case, spacing, quotes, punctuation, and contractions vs full forms.
+// pool (see DESIGN.md "Exercises"). Two families:
+// - tap (choose, spot): answered with taps, graded by identity — the types
+//   the app serves;
+// - typed (gap, fix, rewrite, legacy): graded strictly — no typo tolerance —
+//   but forgiving about case, spacing, quotes, punctuation and contractions.
 
-export type ExerciseType = 'gap' | 'fix' | 'rewrite'
-export const EXERCISE_TYPES: readonly ExerciseType[] = ['gap', 'fix', 'rewrite']
+export type ExerciseType = 'choose' | 'spot' | 'gap' | 'fix' | 'rewrite'
+export const EXERCISE_TYPES: readonly ExerciseType[] = ['choose', 'spot', 'gap', 'fix', 'rewrite']
+export const TAP_TYPES: readonly ExerciseType[] = ['choose', 'spot']
+export const isTapType = (t: ExerciseType) => t === 'choose' || t === 'spot'
+
+// An option that means "nothing here": the zero article in choose, "delete
+// the word" in spot.
+export const NOTHING = '—'
 
 // What the review screen needs for one item (answers included: grading runs
 // on the device, offline too).
 export interface ExerciseItem {
   id: string
-  // gap: the prompt has one "___" and a hint in parentheses, answer fills it.
-  // fix: the prompt is a sentence with one mistake, answer is the corrected sentence.
-  // rewrite: "sentence → cue ___", answer completes the cue.
+  // choose: `prompt` has one "___"; tap one of `options`, `answer` is right.
+  // spot: `prompt` is a sentence whose `wrong` tokens are the mistake; tap
+  //   them, then the replacement among `options` (`answer`; "—" deletes).
+  // gap / fix / rewrite (legacy, typed): the prompt has a "___" + hint / one
+  //   mistake (answer = the corrected sentence) / "sentence → cue ___".
   type: ExerciseType
+  // The sentence ("text" in files and tools).
   prompt: string
   answer: string
-  // Other answers that are just as right.
+  // Typed types: other answers that are just as right.
   accepted: string[]
   // One line on why, shown after the check.
   explain: string | null
+  // Tap types: the choices, the answer among them.
+  options?: string[]
+  // spot: the wrong token(s), once in the sentence.
+  wrong?: string | null
 }
 
 // One item's outcome, sent with the review (ReviewInput.exercises).
@@ -120,33 +135,142 @@ export function exerciseRating(attempts: Pick<ExerciseAttempt, 'correct' | 'bad'
   return 1
 }
 
-// The dedupe key of an item: its prompt, normalised.
-export function exerciseKey(prompt: string): string {
-  return normalizeExercise(prompt.replace(/_{2,}/g, ' ___ ')).replace(/\s+/g, ' ')
+// The dedupe key of an item: its sentence, normalised. The tap family has its
+// own keys, so a choose item may reuse a legacy gap sentence.
+export function exerciseKey(prompt: string, type: ExerciseType = 'gap'): string {
+  const k = normalizeExercise(prompt.replace(/_{2,}/g, ' ___ ')).replace(/\s+/g, ' ')
+  return isTapType(type) ? `tap:${k}` : k
 }
 
 export interface ExerciseInput {
   type: ExerciseType
-  prompt: string
+  // The sentence; `text` is the same field under the name files and tools use.
+  prompt?: string
+  text?: string
   answer: string
   accepted?: string[]
   explain?: string | null
+  options?: string[]
+  wrong?: string | null
 }
 
-export const EXERCISE_LIMITS = { prompt: 500, answer: 300, accepted: 10, explain: 500 }
+export interface CleanExercise {
+  type: ExerciseType
+  prompt: string
+  answer: string
+  accepted: string[]
+  explain: string | null
+  options: string[]
+  wrong: string | null
+}
 
-// Validates one item: the gap and rewrite prompts need their "___", a fix
-// answer must differ from its prompt. Returns the cleaned item or a problem.
-export function cleanExercise(input: ExerciseInput): { item: Required<ExerciseInput> } | { error: string } {
+export const EXERCISE_LIMITS = { prompt: 500, answer: 300, accepted: 10, explain: 500, option: 100 }
+
+const words = (s: string) => s.split(' ').filter(Boolean)
+// A token of a sentence without the punctuation around it: "rains." → "rains".
+const core = (t: string) => t.replace(/^[^\p{L}\p{N}']+|[^\p{L}\p{N}']+$/gu, '')
+
+// Where the wrong tokens are in a spot sentence: the first token index and
+// how many, matching whole space-separated tokens (punctuation around a
+// token doesn't count). null unless they occur exactly once.
+export function spotSpan(text: string, wrong: string): { start: number; length: number } | null {
+  const t = words(text).map(core)
+  const w = words(wrong).map(core)
+  if (!w.length || w.some((x) => !x)) return null
+  let found: number | null = null
+  for (let i = 0; i + w.length <= t.length; i++) {
+    if (w.every((x, k) => t[i + k] === x)) {
+      if (found !== null) return null
+      found = i
+    }
+  }
+  return found === null ? null : { start: found, length: w.length }
+}
+
+export interface SentencePart {
+  text: string
+  // The tokens that changed (the replacement; empty when deleted).
+  changed: boolean
+}
+
+// A spot sentence with its mistake replaced ("—" deletes it), the change
+// marked: "His shoes gets wet." → [His shoes ][get][ wet.].
+export function correctedParts(text: string, wrong: string, replacement: string): SentencePart[] {
+  const toks = words(text)
+  const span = spotSpan(text, wrong)
+  if (!span) return [{ text, changed: false }]
+  const before = toks.slice(0, span.start)
+  const gone = toks.slice(span.start, span.start + span.length)
+  const after = toks.slice(span.start + span.length)
+  // Punctuation stuck to the wrong tokens ("gets," → "get,") stays.
+  const lead = gone[0]!.match(/^[^\p{L}\p{N}']*/u)![0]
+  const trail = gone.at(-1)!.match(/[^\p{L}\p{N}']*$/u)![0]
+  const out: SentencePart[] = []
+  const head = before.join(' ')
+  if (replacement === NOTHING) {
+    out.push({ text: [head, lead + trail].filter(Boolean).join(' ').replace(/ ([,.;:!?])/g, '$1'), changed: false })
+    out.push({ text: '', changed: true })
+  } else {
+    out.push({ text: head ? `${head} ${lead}` : lead, changed: false })
+    out.push({ text: replacement, changed: true })
+    out.push({ text: trail, changed: false })
+  }
+  const tail = after.join(' ')
+  if (tail) out.push({ text: ` ${tail}`, changed: false })
+  return out.filter((p, i) => p.text || p.changed || i === 0)
+}
+
+// The sentence's tokens, for tapping: each knows whether it is part of the mistake.
+export function spotTokens(text: string, wrong: string): { text: string; wrong: boolean }[] {
+  const span = spotSpan(text, wrong)
+  return words(text).map((t, i) => ({ text: t, wrong: !!span && i >= span.start && i < span.start + span.length }))
+}
+
+function cleanOptions(input: ExerciseInput): string[] {
+  const out: string[] = []
+  for (const o of input.options ?? []) {
+    const t = (o ?? '').replace(/\s+/g, ' ').trim()
+    const v = t === '-' || t === '–' ? NOTHING : t
+    if (v && !out.includes(v)) out.push(v)
+  }
+  return out
+}
+
+// Validates one item. Tap types: choose has one "___" in its text and 2–4
+// options with the answer among them; spot names its wrong token(s), found
+// exactly once in the text, and 1–4 replacement options with the answer
+// (never the wrong token itself). Typed (legacy): the gap and rewrite
+// prompts need their "___", a fix answer must differ from its prompt.
+export function cleanExercise(input: ExerciseInput): { item: CleanExercise } | { error: string } {
   const type = input.type
   if (!EXERCISE_TYPES.includes(type)) return { error: `type must be one of ${EXERCISE_TYPES.join(', ')}` }
-  const prompt = (input.prompt ?? '').replace(/\s+/g, ' ').trim()
-  const answer = (input.answer ?? '').replace(/\s+/g, ' ').trim()
-  if (!prompt) return { error: 'prompt is empty' }
+  const prompt = (input.prompt ?? input.text ?? '').replace(/\s+/g, ' ').trim()
+  const rawAnswer = (input.answer ?? '').replace(/\s+/g, ' ').trim()
+  const answer = rawAnswer === '-' || rawAnswer === '–' ? NOTHING : rawAnswer
+  if (!prompt) return { error: 'text is empty' }
   if (!answer) return { error: 'answer is empty' }
   if (prompt.length > EXERCISE_LIMITS.prompt) return { error: `prompt is longer than ${EXERCISE_LIMITS.prompt} characters` }
   if (answer.length > EXERCISE_LIMITS.answer) return { error: `answer is longer than ${EXERCISE_LIMITS.answer} characters` }
   const gaps = (prompt.match(/_{3,}/g) ?? []).length
+  const explainText = input.explain?.replace(/\s+/g, ' ').trim() || null
+  if (explainText && explainText.length > EXERCISE_LIMITS.explain) return { error: `explain is longer than ${EXERCISE_LIMITS.explain} characters` }
+  if (isTapType(type)) {
+    const options = cleanOptions(input)
+    if (options.some((o) => o.length > EXERCISE_LIMITS.option)) return { error: `an option is longer than ${EXERCISE_LIMITS.option} characters` }
+    if (!options.includes(answer)) return { error: 'the answer must be one of the options' }
+    if (type === 'choose') {
+      if (gaps !== 1) return { error: 'a choose text needs exactly one ___' }
+      if (options.length < 2 || options.length > 4) return { error: 'choose needs 2–4 options' }
+      return { item: { type, prompt, answer, accepted: [], explain: explainText, options, wrong: null } }
+    }
+    const wrong = (input.wrong ?? '').replace(/\s+/g, ' ').trim()
+    if (!wrong) return { error: 'spot needs the wrong token(s)' }
+    if (gaps) return { error: 'a spot text has no ___' }
+    if (!spotSpan(prompt, wrong)) return { error: 'the wrong token(s) must occur exactly once in the text, as whole words' }
+    if (options.length < 1 || options.length > 4) return { error: 'spot needs 1–4 replacement options' }
+    if (options.some((o) => o.toLowerCase() === wrong.toLowerCase())) return { error: 'an option repeats the wrong token(s)' }
+    return { item: { type, prompt, answer, accepted: [], explain: explainText, options, wrong } }
+  }
   if (type === 'gap' && gaps !== 1) return { error: 'a gap prompt needs exactly one ___' }
   if (type === 'rewrite' && (gaps !== 1 || !prompt.includes('→'))) return { error: 'a rewrite prompt is "sentence → cue ___"' }
   if (type === 'fix' && exerciseKey(prompt) === exerciseKey(answer)) return { error: 'a fix answer must differ from its prompt' }
@@ -156,7 +280,5 @@ export function cleanExercise(input: ExerciseInput): { item: Required<ExerciseIn
     if (t && t !== answer && !accepted.includes(t)) accepted.push(t)
   }
   if (accepted.length > EXERCISE_LIMITS.accepted) return { error: `at most ${EXERCISE_LIMITS.accepted} accepted variants` }
-  const explain = input.explain?.replace(/\s+/g, ' ').trim() || null
-  if (explain && explain.length > EXERCISE_LIMITS.explain) return { error: `explain is longer than ${EXERCISE_LIMITS.explain} characters` }
-  return { item: { type, prompt, answer, accepted, explain } }
+  return { item: { type, prompt, answer, accepted, explain: explainText, options: [], wrong: null } }
 }

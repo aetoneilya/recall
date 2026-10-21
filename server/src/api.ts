@@ -83,9 +83,13 @@ const FactFields = { front: z.string().max(5000), back: z.string().max(50000), t
 const FactBody = z.object({ deckId: z.string().min(1), ...FactFields }).strict()
 const FactPatchBody = z.object({ ...FactFields, status: factStatusSchema, deckId: z.string().min(1) }).partial().strict()
 const ExerciseFields = {
-  type: z.enum(['gap', 'fix', 'rewrite']),
-  prompt: z.string().max(1000),
+  type: z.enum(['choose', 'spot', 'gap', 'fix', 'rewrite']),
+  // The sentence; `text` is the same field.
+  prompt: z.string().max(1000).optional(),
+  text: z.string().max(1000).optional(),
   answer: z.string().max(500),
+  options: z.array(z.string().max(200)).max(6).optional(),
+  wrong: z.string().max(200).nullable().optional(),
   accepted: z.array(z.string().max(500)).max(20).optional(),
   explain: z.string().max(1000).nullable().optional(),
 }

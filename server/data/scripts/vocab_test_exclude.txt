@@ -1,0 +1,39 @@
+# Hand-reviewed exclusions for the test bank (one word per line): names, offensive/dated terms,
+# abbreviations, clipped/plural-only forms, dialect or ambiguous items spotted when skimming the sample.
+harry      # personal name / verb
+rend
+pant       # plural-only in practice
+alpha
+redskin    # offensive
+poly       # clipping
+brander
+ilia
+sabra
+kayo
+hereto
+chappy
+corrie
+dibs
+fink       # slur-ish
+wack
+sass
+yang
+kirsch
+morel
+gram
+dram
+rive
+minim
+tarry
+troth
+whit
+whitehead
+fink
+twitch
+guff
+nutter
+chipper
+tryout
+downer
+slack
+shill

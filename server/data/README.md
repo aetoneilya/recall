@@ -1,0 +1,83 @@
+# Vocabulary-size data
+
+Static data for the vocabulary-size feature. The server only reads these files; nothing here touches the network at runtime.
+
+| File | What |
+|---|---|
+| `en-freq.tsv` | 30,000 English **lemmas**, `lemma<TAB>rank` (1 = most frequent), lowercase, header `lemma\trank` |
+| `vocab-test.json` | Yes/No test bank: 30 bands x 40 words (band = 1000 ranks), 80 pseudowords, scoring formula |
+| `vocab-scale.json` | Reference points ("5-year-old ... philosopher"), unit **lemmas**, plus per-band calibration |
+| `scripts/` | Build scripts (`fetch_sources.sh` then `build_all.sh RAW_DIR`); output is byte-identical on rebuild |
+
+## 1. en-freq.tsv
+
+**Unit: lemmas** (run/runs/ran/running -> run), not word families.
+
+Source choice. Nation's BNC/COCA word-family lists (the lists behind the Vocabulary Size Test) are the research standard, but only the headwords of the first **10,000** families are publicly downloadable (PDFs on Victoria Univ. of Wellington's site; the 25k lists ship inside the Range program) and they are alphabetical within each 1000, not ranked, with no stated licence. They cannot give 20k bands. So the rank list is built from wordfreq and Nation's lists are used only as a **cross-check** (not redistributed). SUBTLEX-US was not used as the base: it is subtitle-only and has no lemma data in the main file; it is, however, one of wordfreq's input sources.
+
+Pipeline (`scripts/build_en_freq.py`):
+1. Token frequencies from wordfreq 3.1.1 `large_en` (321k types; blends Wikipedia, OpenSubtitles/SUBTLEX-US, Google Books, Reddit, Twitter, web text; frequencies are stored in 1-centibel buckets, so ties are broken alphabetically). Only `[a-z]+` types are kept.
+2. Lemmatisation with Michal Mechura's `lemmatization-en.txt` (41.7k lemma/form pairs from Hunspell dictionaries; no heavy dependency, no POS tagging). An inflected form is merged into its most frequent candidate lemma (frequencies are summed), except -ing/-ed/-er/-est forms that are headwords in the dictionary and more frequent than their lemma (building, interested), which stay separate. Irregular/plural forms (was, feet, left, saw) always merge. Known flaw: ambiguous forms merge into one lemma ("well" -> "good" in this table, "left" -> "leave"), and merging can lose a second sense.
+3. Only lemmas that are lowercase base entries of the `en_US` Hunspell dictionary (SCOWL size 60) survive. This removes proper nouns, brands, typos, slang and foreign words; 32,722 lemmas pass, the top 30,000 are written.
+
+Licences: wordfreq data CC BY-SA 4.0 (code Apache-2.0; its data includes SUBTLEX terms: credit Brysbaert et al.); lemma table ODbL 1.0; Hunspell en_US derives from SCOWL (permissive, see its licence file). Personal, non-commercial use is fine under all of them; `en-freq.tsv` is a derivative, so treat it as **CC BY-SA 4.0 + ODbL**.
+
+References: Speer, R. (2022). *rspeer/wordfreq* v3.1.1, https://github.com/rspeer/wordfreq. Mechura, M. B. *Lemmatization lists*, https://github.com/michmech/lemmatization-lists. Atkinson, K. *SCOWL*, http://wordlist.aspell.net/. Brysbaert, M. & New, B. (2009). Moving beyond Kucera and Francis ... SUBTLEX-US. *Behavior Research Methods* 41(4), 977-990.
+
+**Comparability with Nation's bands (caveat).** `scripts/validate_vs_nation.py` shows, for Nation's headword PDFs: ~90-94% of his headwords are in our list, and the median rank of his k-th thousand of *families* is ours: 1k -> 577, 2k -> 1,882, 3k -> 2,591, 4k -> 4,391, 5k -> 5,791, 6k -> 7,643, 8k -> 10,552, 10k -> 13,774. So **our band 10 is not Nation's 10k level**: a lemma rank r roughly equals a family rank r/1.0 at 1-2k, r/1.3-1.4 at 8-10k, and the corpora differ (web/social vs BNC/COCA). Bands are rank-comparable to the *lemma* literature (Milton's X_Lex, Brysbaert), not to Nation's family bands. `scripts/family_to_lemma_ratio.py`: the 90%-coverage rank is x1.3-1.4 the family count at 3k-10k.
+
+## 2. vocab-test.json
+
+Method: Yes/No (checklist) test with pseudowords (Meara & Buxton 1987; Meara's X_Lex tests; same family as testyourvocab.com, LexTALE and the Ghent crowdsourcing test). The user ticks the words they know; ticks on pseudowords measure guessing/over-claiming.
+
+Words (`scripts/build_vocab_test.py`, seed fixed): for each 1000-rank band, 40 words drawn at random from the band after filtering: 4+ letters, a vowel, in Hunspell `en_US`, in Webster's 2nd (`/usr/share/dict/words`) unless rank <= 3000 (removes abbreviations), not a function word/number/abbreviation, not in the LDNOOBW English list (CC BY 4.0) nor matching extra offensive/sensitive stems, and not in `scripts/vocab_test_exclude.txt` (hand-reviewed exclusions: names, slurs, clippings, odd items). Words above ~rank 15k are obscure/technical by nature; "unambiguous meaning" was judged by hand only for the sample, not systematically.
+
+Pseudowords: generated, not copied (Meara's and LexTALE's item sets are copyrighted/for-research; not reused). Method, Wuggy-like (Keuleers & Brysbaert 2010): take a real word (rank 1.5k-15k, 5-8 letters), substitute 1-2 letters with same-class letters (vowel for vowel, consonant for consonant), accept only if (a) every letter trigram, with word boundaries, occurs in >= 30 lemmas of the list (legal orthography), (b) no 3+ vowel or 4+ consonant clusters, (c) it is not a wordfreq type, Hunspell word, Webster word or lemma-table form, nor an inflection/derivation (+s, -ed, -ing, -ly, ...) of one, (d) it is **not within edit distance 1** of any such word (so not a misspelling), (e) it embeds no real 4+-letter common word, (f) not offensive, (g) one per two-letter onset. Result: 80 items such as `boollat`, `slindar`, `vercir`. Some (e.g. `celetary`, `iminance`) still look like distorted real words; that is inherent in the method.
+
+Scoring (per band, then summed):
+
+```
+known_b = max(0, (h_b - f) / (1 - f))      # cfg, Meara & Buxton (1987)
+smooth known_b to be non-increasing in b   # a few items per band are noisy
+size    = 1000 * sum_b known_b             # lemmas, within the 30,000-lemma list
+```
+h_b = share of the band's words ticked, f = share of pseudowords ticked (one global f). Simpler h - f is the Anderson & Freebody (1983) variant (used by Brysbaert et al. 2016). Stricter, bias-aware alternative for the overall score: I_SDT = 1 - [4h(1-f) - 2(h-f)(1+h-f)] / [4h(1-f) - (h-f)(1+h-f)] for h >= f (Huibregtse, Admiraal & Meara 2002, *Language Testing* 19(3), 227-245; formula transcribed from Lemhofer & Broersma 2012, appendix; I did not check it against the original). Huibregtse et al. report that cfg tends to over-estimate at high hit rates and Meara's delta-m to under-estimate. With ~3 words per band per test the per-band estimate is very noisy; use the smoothed curve and show an interval, and treat f > 0.5 as an invalid test.
+
+Also: Mochida & Harrington (2006), *Language Testing* 23(1), on yes/no scoring (pages not checked).
+
+## 3. vocab-scale.json
+
+**Unit: lemmas.** Sources use different units, and this is the main caveat:
+
+| id | value | range | unit in source -> conversion | source |
+|---|---|---|---|---|
+| A1 | 1,000 | <1,500 | lemmas (X_Lex, top 5,000 lemmatised) | Meara & Milton 2003, via Milton 2010 Table 5 |
+| A2 | 2,000 | 1,500-2,500 | lemmas | same |
+| B1 | 3,000 | 2,750-3,250 | lemmas | same (Milton & Alexiou 2020: 2,500-3,250) |
+| B2 | 3,500 | 3,250-3,750 | lemmas | same |
+| C1 | 4,125 | 3,750-4,500 | lemmas | same |
+| C2 | 4,750 | 4,500-5,000 | lemmas; **cap of the test**, a floor | same |
+| child5 | ~6,000 | 5,400-6,750 | 4,000-5,000 word families x1.35 | Nation & Waring 1997 |
+| child10 | ~12,500 | 11,800-13,300 | 8,400 root words (Biemiller & Slonim 2001, grade 5) to ~9,500 families (Nation rule) x1.4 | Biemiller & Slonim 2001; Nation & Waring 1997 |
+| teen16 | ~27,000 | 22,000-32,000 | interpolation (see below), **not measured** | derived |
+| adult20 | 42,000 | 27,100-51,700 | lemmas (5th-95th percentile) | Brysbaert et al. 2016, Table 4 |
+| adult60 | 48,200 | 35,100-56,400 | lemmas | Brysbaert et al. 2016, Table 4 |
+| reader95 ("philosopher") | 51,700 | 51,700-56,400 | lemmas, 95th percentile | Brysbaert et al. 2016 |
+| shakespeare | ~18,500 | 18,500-39,000 | 31,534 word types /1.7 | Efron & Thisted 1976 |
+
+Caveats.
+- **Families vs lemmas.** Brysbaert et al. (2016): the average 20-year-old knows 42,000 lemmas = 11,100 *base words* (their list: 61,800 lemmas -> 18,269 families), lemmas x1.7 ~ word types incl. inflections. A "family" is not a standard unit (Nation's families are narrower than Brysbaert's merged ones; Goulden, Nation & Read 1990 found 17,200 base words for graduates, Milton & Treffers-Daller 2013 9,800). The x1.35-1.4 factor I used for children is my own: at 3k-10k Nation families the 90%-coverage rank in our lemma list is 1.3-1.4 x the family count (`scripts/family_to_lemma_ratio.py`). The ratio grows with level (adult: 42,000/~20,000 = ~2.1), so children's lemma numbers are rough and likely an over- not under-statement at the low end of the ranges. Treat `approximate: true` points as +-30%.
+- **teen16** has no direct source: Nation & Waring's rule (about +1,000 families a year, ~15,500 at 16) with a lemma/family ratio interpolated between 1.4 (10k families) and 2.1 (adult). Biemiller's grade-2 figure (5,200 root words) is lower than Nation's age-5 figure (4,000-5,000 families would imply a 5-year-old almost matches a 7-year-old), so child numbers differ by source by a factor ~1.3.
+- **"University graduate"**: Brysbaert's education breakdown exists only as a plot (their Fig. 3), I could not read numbers from it; adult20/adult60 stand in. Goulden et al. 1990 (17,200 families) is in a different unit and was not converted.
+- **"Philosopher"** has no measurable basis; it is attached to the 95th percentile (the best-supported high benchmark). Brysbaert et al. give only p5/p50/p95, no p99.
+- **Shakespeare** measures words *used* (31,534 distinct forms in 884,647 tokens; Efron & Thisted estimate >= 35,000 more types he knew but did not use), not words known; the 1.7 conversion is for modern American English.
+- **CEFR learner values** come from X_Lex (a test of the first 5,000 lemmatised words, ~Hindmarsh/Nation lists) and mean scores of Cambridge-exam learners; real C1/C2 learners know more than the 5,000 cap, Nation (Vocabulary and the CEFR) suggests 5,000-9,000 families. Milton's own bands (above) are not Nation's.
+- **Estimates are approximate** because they depend on the definition of "word", the word list the test samples, the task (self-report vs meaning production) and population (receptive; productive knowledge is under half). Our list has 30,000 lemmas, so the test **cannot show more than 30,000**, while an average adult knows ~42,000 lemmas of a 61,800-lemma list that includes many rarer words. Hence `calibration` (below).
+
+`calibration`: `bandPrevalence[b]` = mean Pknown of band b's lemmas in Brysbaert, Mandera, McCormick & Keuleers (2019), *Behavior Research Methods* 51(2), 467-479 (supplement ESM 2); `expectedKnownInList_averageRespondent` ~ 26.7k of 30k. Use it to place a test score relative to the average adult: `adult_equivalent = 42000 * (user_size / 26,686)`. I could not verify from the paper whether Pknown is guessing-corrected or which respondents it covers (the Springer page was not fetchable), so this is a yardstick, not a norm. The factor relies on a linear assumption and the 42,000 figure is for a *different* lemma list (61.8k).
+
+URLs: Brysbaert et al. 2016 https://doi.org/10.3389/fpsyg.2016.01116 ; Milton 2010 https://www.eurosla.org/monographs/EM01/211-232Milton.pdf ; Nation & Waring 1997 https://www.lextutor.ca/research/nation_waring_97.html (Schmitt & McCarthy (eds.), *Vocabulary: Description, Acquisition and Pedagogy*, CUP, 6-19) ; Biemiller & Slonim 2001 https://doi.org/10.1037/0022-0663.93.3.498 ; Efron & Thisted 1976 https://doi.org/10.1093/biomet/63.3.435 ; Nation, *Vocabulary and the CEFR* (Victoria Univ. of Wellington) https://www.wgtn.ac.nz/lals/resources/paul-nations-resources/vocabulary-lists ; Brysbaert et al. 2019 https://doi.org/10.3758/s13428-018-1077-9 .
+
+## 4. Combining the test with SRS-known words
+
+Keep it simple and conservative: per band, `known_share = max(test_estimate, srs_share)` where `srs_share` = (lemmas of that band that the user has marked/reviewed as known in the app) / 1000 (the whole band, not only the 40 sampled words). Why: the SRS count is a **hard lower bound** (the user demonstrably knows those words, no guessing correction needed), whereas the test is a noisy sample (about 3 words per band) that can both under- and over-estimate. Taking the max never lowers a score the user has earned, and a lucky test cannot be overruled by it. If both are available and you want a smoother value, blend with a weight from the sample size, `(n_test*test + k*srs) / (n_test + k)` with k ~ 5-10, but never below `srs_share`. Words the user added to the app because they did **not** know them should not count as known; and SRS words come only from the user's own study, so the SRS share inside rare bands is tiny and the test dominates there, which is the desired behaviour. Note the app's deck language (Russian-English) is irrelevant to the unit: both count English lemmas of `en-freq.tsv`.

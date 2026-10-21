@@ -1,0 +1,31 @@
+[Unit]
+Description=recall — spaced repetition server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=recall
+Group=recall
+WorkingDirectory=/opt/recall
+# PORT=8090, HOST=127.0.0.1, DB_PATH=/var/lib/recall/recall.db, secrets.
+EnvironmentFile=/etc/recall/recall.env
+ExecStart=/usr/bin/node server/src/main.ts
+Restart=always
+RestartSec=5
+StateDirectory=recall
+# Small (2 GB) host shared with other services.
+MemoryMax=300M
+CPUQuota=50%
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

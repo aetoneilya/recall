@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <title>Mnemosyne</title>
+    <meta name="description" content="Personal spaced repetition" />
+    <meta name="theme-color" content="#f4f3ef" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#131416" media="(prefers-color-scheme: dark)" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Mnemosyne" />
+    <meta name="format-detection" content="telephone=no" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <script>
+      // Load the Telegram SDK only when actually launched as a Mini App, so the
+      // PWA never waits on telegram.org (offline or on a bad connection).
+      // It must run before the app reads location.hash: Telegram passes the
+      // launch data there.
+      ;(function () {
+        var h = location.hash + location.search
+        var inTelegram =
+          /tgWebApp/.test(h) ||
+          window.TelegramWebviewProxy ||
+          (function () { try { return sessionStorage.getItem('__telegram__initParams') } catch (e) { return null } })()
+        if (inTelegram) document.write('<script src="https://telegram.org/js/telegram-web-app.js"><\/script>')
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

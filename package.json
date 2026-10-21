@@ -1,0 +1,11 @@
+{
+  "name": "recall",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/core", "server", "web"],
+  "scripts": {
+    "dev": "npm -w server run dev",
+    "check": "npm -ws --if-present run check && npm -ws --if-present test",
+    "build": "npm -w web run build && npm -w server run build"
+  }
+}

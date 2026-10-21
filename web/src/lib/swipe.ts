@@ -1,0 +1,292 @@
+// Swipe gestures on an element whose content may also scroll vertically.
+//
+// The element keeps `touch-action: pan-y`, so the browser scrolls vertically
+// on its own and horizontal drags are always ours. Vertical swipes (opt-in
+// with `axes: 'xy'`) compete with that scrolling, so the rule is:
+//
+// - If the scroller's content fits, every vertical drag is a swipe.
+// - If it scrolls, a vertical drag is a swipe only when it *starts* at an
+//   edge and moves outward: down from the very top, or up from the very
+//   bottom. Any other vertical drag scrolls natively for its whole length,
+//   so scrolling into an edge never fires a rating; a fresh drag from the
+//   edge does.
+//
+// The axis is locked once the finger has moved SLOP px; the dominant
+// direction wins for the rest of the gesture, so diagonals don't misfire.
+//
+// Touch input uses touch events (a non-passive touchmove can still claim a
+// gesture before WebKit starts scrolling, which pointer events + touch-action
+// can't express on iOS); mouse and pen use pointer events.
+
+export type SwipeDir = 'left' | 'right' | 'up' | 'down'
+export type Axis = 'x' | 'y'
+
+export interface ScrollState {
+  top: number
+  height: number
+  client: number
+}
+
+export const SLOP = 12
+
+// null while inside the slop; afterwards the dominant axis.
+export function lockAxis(dx: number, dy: number, slop = SLOP): Axis | null {
+  if (Math.max(Math.abs(dx), Math.abs(dy)) < slop) return null
+  return Math.abs(dx) >= Math.abs(dy) ? 'x' : 'y'
+}
+
+// Whether a vertical drag heading `dy` may be a swipe instead of a scroll.
+export function verticalAllowed(dy: number, s: ScrollState | null): boolean {
+  if (!s || s.height <= s.client + 1) return true
+  if (dy > 0) return s.top <= 0
+  if (dy < 0) return s.top + s.client >= s.height - 1
+  return false
+}
+
+// The committed direction on release: past the threshold, or a fast flick.
+export function release(axis: Axis, dx: number, dy: number, vx: number, vy: number, threshold: number): SwipeDir | null {
+  const d = axis === 'x' ? dx : dy
+  const v = axis === 'x' ? vx : vy
+  const fast = Math.abs(v) > 0.55 && Math.abs(d) > 40 && Math.sign(v) === Math.sign(d)
+  if (Math.abs(d) <= threshold && !fast) return null
+  if (axis === 'x') return d > 0 ? 'right' : 'left'
+  return d > 0 ? 'down' : 'up'
+}
+
+export interface MoveResult {
+  state: 'pending' | 'drag' | 'scroll'
+  axis: Axis | null
+  // Displacement along the locked axis; the other one is 0.
+  dx: number
+  dy: number
+  // Whether the native default (scrolling) should be cancelled.
+  prevent: boolean
+}
+
+// Gesture state machine, independent of the DOM.
+export function createTracker(opts: { axes: 'x' | 'xy'; threshold: () => number }) {
+  let x0 = 0
+  let y0 = 0
+  let lastX = 0
+  let lastY = 0
+  let lastT = 0
+  let vx = 0
+  let vy = 0
+  let scroll: ScrollState | null = null
+  let state: MoveResult['state'] = 'pending'
+  let axis: Axis | null = null
+
+  const along = (dx: number, dy: number): MoveResult => ({
+    state,
+    axis,
+    dx: axis === 'x' ? dx : 0,
+    dy: axis === 'y' ? dy : 0,
+    prevent: state === 'drag',
+  })
+
+  return {
+    start(x: number, y: number, t: number, s: ScrollState | null) {
+      x0 = lastX = x
+      y0 = lastY = y
+      lastT = t
+      vx = vy = 0
+      scroll = s
+      state = 'pending'
+      axis = null
+    },
+    move(x: number, y: number, t: number): MoveResult {
+      const dx = x - x0
+      const dy = y - y0
+      if (state === 'pending') {
+        const a = lockAxis(dx, dy)
+        if (!a) {
+          // Claim early what will be ours anyway, before the browser
+          // commits to scrolling: sideways motion, or vertical motion
+          // that couldn't scroll.
+          const mine = Math.abs(dx) >= Math.abs(dy) ? dx !== 0 : opts.axes === 'xy' && verticalAllowed(dy, scroll)
+          return { state, axis: null, dx: 0, dy: 0, prevent: mine }
+        }
+        axis = a
+        state = a === 'x' || (opts.axes === 'xy' && verticalAllowed(dy, scroll)) ? 'drag' : 'scroll'
+      }
+      if (state === 'drag') {
+        const dt = t - lastT
+        if (dt > 0) {
+          vx = 0.7 * ((x - lastX) / dt) + 0.3 * vx
+          vy = 0.7 * ((y - lastY) / dt) + 0.3 * vy
+        }
+        lastX = x
+        lastY = y
+        lastT = t
+      }
+      return along(dx, dy)
+    },
+    end(x: number, y: number): { dir: SwipeDir | null; wasDrag: boolean } {
+      const wasDrag = state === 'drag'
+      const dir = wasDrag && axis ? release(axis, x - x0, y - y0, vx, vy, opts.threshold()) : null
+      state = 'pending'
+      axis = null
+      return { dir, wasDrag }
+    },
+  }
+}
+
+export interface SwipeOptions {
+  enabled?: () => boolean
+  // 'x' (default): left/right only. 'xy': also up/down.
+  axes?: 'x' | 'xy'
+  // The scrolling element inside the node whose scroll wins over vertical
+  // swipes (see the rule above). Defaults to treating content as fitting.
+  scroller?: () => HTMLElement | null | undefined
+  onmove?: (dx: number, dy: number, axis: Axis) => void
+  // Called on release with the committed direction, or null to snap back.
+  onend?: (dir: SwipeDir | null, dx: number, dy: number) => void
+  threshold?: number
+}
+
+// Commit distance: a quarter of the width sideways, a sixth of the height
+// vertically, never more than 110px.
+export function defaultThreshold(axis: Axis | null, width: number, height: number): number {
+  return axis === 'y' ? Math.min(110, height * 0.18) : Math.min(110, width * 0.28)
+}
+
+const IGNORE = 'pre, .table-wrap, input, textarea, select, a, button'
+
+export function swipe(node: HTMLElement, initial: SwipeOptions) {
+  let opts = initial
+  const threshold = (axis: Axis | null) => opts.threshold ?? defaultThreshold(axis, node.clientWidth, node.clientHeight)
+  let lockedAxis: Axis | null = null
+  const tracker = createTracker({ axes: opts.axes ?? 'x', threshold: () => threshold(lockedAxis) })
+  // The active pointer or touch, or null.
+  let active: number | null = null
+  let kind: 'pointer' | 'touch' = 'pointer'
+  let dx = 0
+  let dy = 0
+
+  const scrollState = (): ScrollState | null => {
+    const el = opts.scroller?.()
+    return el ? { top: el.scrollTop, height: el.scrollHeight, client: el.clientHeight } : null
+  }
+
+  const begin = (target: EventTarget | null, x: number, y: number, t: number) => {
+    if (opts.enabled && !opts.enabled()) return false
+    // Code blocks and tables scroll sideways themselves.
+    if ((target as Element | null)?.closest?.(IGNORE)) return false
+    dx = dy = 0
+    lockedAxis = null
+    tracker.start(x, y, t, scrollState())
+    return true
+  }
+
+  const step = (x: number, y: number, t: number) => {
+    const r = tracker.move(x, y, t)
+    if (r.state === 'drag') {
+      lockedAxis = r.axis
+      dx = r.dx
+      dy = r.dy
+      opts.onmove?.(r.dx, r.dy, r.axis!)
+    }
+    return r
+  }
+
+  const finish = (x: number, y: number, cancelled: boolean) => {
+    active = null
+    const { dir, wasDrag } = tracker.end(x, y)
+    if (!wasDrag) return
+    // Swallow the click that follows a drag so it doesn't count as a tap.
+    node.addEventListener('click', stopOnce, { capture: true, once: true })
+    setTimeout(() => node.removeEventListener('click', stopOnce, { capture: true }), 50)
+    opts.onend?.(cancelled ? null : dir, dx, dy)
+  }
+
+  const stopOnce = (e: Event) => {
+    e.stopPropagation()
+    e.preventDefault()
+  }
+
+  // Mouse and pen.
+  const pdown = (e: PointerEvent) => {
+    if (e.pointerType === 'touch' || active !== null || e.button !== 0) return
+    if (!begin(e.target, e.clientX, e.clientY, e.timeStamp)) return
+    active = e.pointerId
+    kind = 'pointer'
+  }
+  const pmove = (e: PointerEvent) => {
+    if (kind !== 'pointer' || e.pointerId !== active) return
+    const r = step(e.clientX, e.clientY, e.timeStamp)
+    if (r.state === 'drag' && !node.hasPointerCapture(e.pointerId)) {
+      try {
+        node.setPointerCapture(e.pointerId)
+      } catch {
+        // Synthetic or already-released pointer; the drag still works.
+      }
+    }
+  }
+  const pup = (e: PointerEvent) => {
+    if (kind !== 'pointer' || e.pointerId !== active) return
+    finish(e.clientX, e.clientY, e.type === 'pointercancel')
+  }
+
+  // Touch.
+  const find = (list: TouchList) => {
+    for (let i = 0; i < list.length; i++) if (list[i].identifier === active) return list[i]
+    return null
+  }
+  const tstart = (e: TouchEvent) => {
+    if (active !== null) {
+      // A second finger: end the gesture cleanly rather than jump to it.
+      if (kind === 'touch') finish(0, 0, true)
+      return
+    }
+    if (e.touches.length > 1) return
+    const t = e.changedTouches[0]
+    if (!begin(e.target, t.clientX, t.clientY, e.timeStamp)) return
+    active = t.identifier
+    kind = 'touch'
+  }
+  const tmove = (e: TouchEvent) => {
+    if (kind !== 'touch' || active === null) return
+    const t = find(e.changedTouches)
+    if (!t) return
+    const r = step(t.clientX, t.clientY, e.timeStamp)
+    if (r.prevent && e.cancelable) e.preventDefault()
+  }
+  const tend = (e: TouchEvent) => {
+    if (kind !== 'touch' || active === null) return
+    const t = find(e.changedTouches)
+    if (!t) return
+    finish(t.clientX, t.clientY, e.type === 'touchcancel')
+  }
+  const blur = () => {
+    if (active !== null) finish(0, 0, true)
+  }
+
+  node.addEventListener('pointerdown', pdown)
+  node.addEventListener('pointermove', pmove)
+  node.addEventListener('pointerup', pup)
+  node.addEventListener('pointercancel', pup)
+  node.addEventListener('lostpointercapture', pup)
+  node.addEventListener('touchstart', tstart, { passive: true })
+  node.addEventListener('touchmove', tmove, { passive: false })
+  node.addEventListener('touchend', tend)
+  node.addEventListener('touchcancel', tend)
+  window.addEventListener('blur', blur)
+
+  return {
+    update(next: SwipeOptions) {
+      opts = next
+    },
+    destroy() {
+      node.removeEventListener('pointerdown', pdown)
+      node.removeEventListener('pointermove', pmove)
+      node.removeEventListener('pointerup', pup)
+      node.removeEventListener('pointercancel', pup)
+      node.removeEventListener('lostpointercapture', pup)
+      node.removeEventListener('touchstart', tstart)
+      node.removeEventListener('touchmove', tmove)
+      node.removeEventListener('touchend', tend)
+      node.removeEventListener('touchcancel', tend)
+      window.removeEventListener('blur', blur)
+    },
+  }
+}

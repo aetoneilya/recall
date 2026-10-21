@@ -1,0 +1,29 @@
+{
+  "name": "@recall/server",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/main.ts --dev",
+    "start": "node src/main.ts",
+    "import-decks": "node src/import-decks.ts",
+    "build": "tsc --noEmit -p .",
+    "test": "vitest run",
+    "check": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.137.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@open-spaced-repetition/binding": "0.5.0",
+    "@recall/core": "*",
+    "express": "5.3.0",
+    "grammy": "1.46.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.6",
+    "@types/node": "26.6.5",
+    "typescript": "5.9.3",
+    "vitest": "5.0.5"
+  }
+}

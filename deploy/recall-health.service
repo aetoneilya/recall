@@ -1,0 +1,6 @@
+[Unit]
+Description=recall public health check
+
+[Service]
+Type=oneshot
+ExecStart=/opt/recall/deploy/healthcheck.sh

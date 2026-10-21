@@ -1,0 +1,20 @@
+{
+  "name": "@recall/core",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "check": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "ts-fsrs": "^5.4.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "vitest": "5.0.5"
+  }
+}

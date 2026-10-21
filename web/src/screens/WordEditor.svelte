@@ -8,6 +8,7 @@
   import { session } from '../lib/review.svelte.ts'
   import { back } from '../lib/router.svelte.ts'
   import { haptic } from '../lib/telegram.ts'
+  import { setUnsaved } from '../lib/unsaved.ts'
   import { errorText, showToast } from '../lib/toast.svelte.ts'
   import type { CardSummary, WordItem } from '../lib/types.ts'
   import { dirState } from '../lib/wordFilter.ts'
@@ -74,6 +75,8 @@
       if (!gone) adopt(w)
       else saved = JSON.stringify(input)
       words.upsert(w)
+      // The review card it was opened from shows the fix at once.
+      session.patchWord(w)
       session.markStale()
       if (!opts.quiet) showToast(opts.approve ? `Approved “${w.term}”` : 'Saved')
       return true
@@ -85,8 +88,12 @@
     }
   }
 
+  // Edits not saved yet: Telegram asks before closing, updates wait.
+  $effect(() => setUnsaved('word', dirty))
+
   // Leaving with unsaved (valid) edits keeps them.
   onDestroy(() => {
+    setUnsaved('word', false)
     gone = true
     if (dirty && !problem && word) void save({ quiet: false })
   })
@@ -126,7 +133,8 @@
     if (!word) return
     // Nothing left to save once it's gone.
     saved = form ? JSON.stringify(formToInput(form)) : saved
-    words.deleteWithUndo(word, () => session.markStale())
+    words.deleteWithUndo(word, () => void session.refresh())
+    session.dropWord(word.id)
     session.markStale()
     back()
   }
@@ -139,6 +147,7 @@
       const next = { ...word, cards: { ...word.cards, [c.direction]: { ...c, suspended: s } } }
       word = next
       words.upsert(next)
+      session.patchWord(next)
     }
     patch(on)
     haptic.select()

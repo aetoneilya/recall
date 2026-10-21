@@ -22,12 +22,17 @@ class WordStore {
   // Paints from the cache, then refetches if it is older than a minute (or
   // words changed elsewhere, e.g. offline adds just synced).
   async ensure(force = false) {
-    if (!this.restored) {
-      this.restored = true
-      const cached = await kv.get<WordItem[]>('words')
-      if (cached && !this.all) this.all = cached
-    }
+    await this.restore()
     if (force || this.version !== status.wordsVersion || Date.now() - this.loadedAt > STALE_MS) await this.load()
+  }
+
+  // The device's copy only, no network: for a screen that paints from it
+  // while fetching something smaller of its own.
+  async restore() {
+    if (this.restored) return
+    this.restored = true
+    const cached = await kv.get<WordItem[]>('words')
+    if (cached && !this.all) this.all = cached
   }
 
   async load() {

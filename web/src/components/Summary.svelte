@@ -2,6 +2,8 @@
   import { status } from '../lib/app.svelte.ts'
   import { navigate } from '../lib/router.svelte.ts'
   import { session } from '../lib/review.svelte.ts'
+  import { openTelegramLink } from '../lib/telegram.ts'
+  import { checkpoint } from '../lib/update.ts'
   import Icon from './Icon.svelte'
 
   const s = $derived(session.stats)
@@ -16,6 +18,34 @@
     return session.waiting()
   })
   const inMin = $derived(w.next ? Math.max(1, Math.round((w.next.getTime() - session.now) / 60000)) : 0)
+
+  // A deck with nothing in it yet (a new account): the next step is adding
+  // words, not waiting for reviews.
+  const firstRun = $derived(session.loaded && session.wordCount === 0 && !status.inbox && !s.reviewed)
+  const bot = $derived(status.me?.botUsername ?? null)
+
+  // "What's next" once the queue is empty: tomorrow's reviews, so the end of
+  // a session says when to come back.
+  let tomorrow = $state<number | null>(null)
+  $effect(() => {
+    if (!session.loaded || firstRun) return
+    let live = true
+    void session.tomorrow().then((n) => {
+      if (live) tomorrow = n
+    })
+    return () => {
+      live = false
+    }
+  })
+
+  // The session is over: a good moment for a waiting app update.
+  $effect(() => {
+    if (session.loaded && !session.current) checkpoint('summary')
+  })
+
+  function openBot(e: MouseEvent) {
+    if (bot && openTelegramLink(`https://t.me/${bot}`)) e.preventDefault()
+  }
 </script>
 
 {#if !session.loaded && !session.error}
@@ -41,6 +71,20 @@
           <Icon name="refresh" size={18} /> Try again
         </button>
       {/if}
+    {:else if firstRun}
+      <span class="first"><Icon name="sparkle" size={30} stroke={1.6} /></span>
+      <h2>Add your first words</h2>
+      <p class="muted">Type a word you met and Claude fills in the translation, pronunciation and an example. It's ready to review right away.</p>
+      <div class="next-steps">
+        <button class="btn primary block" onclick={() => navigate('/add?from=/')}><Icon name="plus" size={18} stroke={2.2} /> Add a word</button>
+        {#if bot}
+          <a class="row bot" href="https://t.me/{bot}" target="_blank" rel="noopener" onclick={openBot}>
+            <Icon name="send" size={20} />
+            <span>Or send words to <b>@{bot}</b> in Telegram</span>
+            <Icon name="chevron" size={18} />
+          </a>
+        {/if}
+      </div>
     {:else}
       <svg class="mark" class:done={s.reviewed} width="56" height="56" viewBox="0 0 56 56" aria-hidden="true">
         <circle cx="28" cy="28" r="27" />
@@ -61,13 +105,26 @@
           {w.count} learning {w.count === 1 ? 'card' : 'cards'} back in {inMin} min
         </p>
       {/if}
-      {#if status.inbox}
-        <button class="row inbox" onclick={() => navigate('/inbox', { replace: true })}>
-          <Icon name="inbox" size={20} />
-          <span>{status.inbox} {status.inbox === 1 ? 'word' : 'words'} from Claude to vet</span>
+      {#if tomorrow !== null && !w.count}
+        <p class="next">
+          <Icon name="clock" size={16} />
+          {tomorrow ? `Tomorrow: ${tomorrow} ${tomorrow === 1 ? 'review' : 'reviews'}` : 'No reviews due tomorrow'}
+        </p>
+      {/if}
+      <div class="next-steps group">
+        {#if status.inbox}
+          <button class="row" onclick={() => navigate('/inbox', { replace: true })}>
+            <Icon name="inbox" size={20} />
+            <span>Vet {status.inbox} new {status.inbox === 1 ? 'word' : 'words'} in the inbox</span>
+            <Icon name="chevron" size={18} />
+          </button>
+        {/if}
+        <button class="row" onclick={() => navigate('/add?from=/')}>
+          <Icon name="plus" size={20} stroke={2} />
+          <span>Add words</span>
           <Icon name="chevron" size={18} />
         </button>
-      {/if}
+      </div>
       <div class="actions">
         {#if session.canUndo}
           <button class="btn" onclick={() => session.undo()}><Icon name="undo" size={18} /> Undo</button>
@@ -168,23 +225,54 @@
     }
   }
 
-  .inbox {
+  .next-steps {
+    width: 100%;
     max-width: 340px;
     margin-top: 14px;
-    border-radius: var(--radius-m);
-    background: var(--surface);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .next-steps.group {
+    gap: 0;
+  }
+  .next-steps .row {
     color: var(--text);
     font-size: 15px;
+    text-decoration: none;
   }
-  .inbox :global(svg) {
+  .next-steps .row :global(svg) {
     color: var(--accent);
     flex: none;
   }
-  .inbox :global(svg:last-child) {
+  .next-steps .row :global(svg:last-child) {
     color: var(--faint);
   }
-  .inbox span {
+  .next-steps .row span {
     flex: 1;
+  }
+  .next-steps .btn.primary {
+    min-height: 52px;
+    font-size: 17px;
+  }
+  .bot {
+    border-radius: var(--radius-m);
+    background: var(--surface);
+    line-height: 1.35;
+  }
+  .bot b {
+    font-weight: 600;
+  }
+  .first {
+    width: 56px;
+    height: 56px;
+    margin-bottom: 6px;
+    border-radius: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--accent);
+    background: var(--accent-soft);
   }
   .actions {
     display: flex;

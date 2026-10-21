@@ -171,6 +171,11 @@ export function createApi(opts: ApiOptions = {}) {
     approveAll: (deckId?: string) => post<{ approved: number }>('/api/inbox/approve-all', deckId ? { deckId } : {}),
 
     dashboard: () => get<Dashboard>('/api/dashboard'),
+    // Cards coming due per study day, today first (14 days).
+    forecast: async () => {
+      const d = await get<Json>('/api/stats?days=1')
+      return list<{ day: string; due: number }>(d, 'forecast')
+    },
     startVocabTest: () => post<VocabTestStart>('/api/vocab-test'),
     answerVocabTest: (id: string, answers: { id: string; known: boolean }[]) => post<TestResult>(`/api/vocab-test/${enc(id)}/answers`, { answers }),
     vocabTests: async () => list<TestSummary>(await get<unknown>('/api/vocab-tests'), 'tests'),

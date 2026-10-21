@@ -2,6 +2,7 @@
   import Icon from '../components/Icon.svelte'
   import WordPreview from '../components/WordPreview.svelte'
   import { api, status } from '../lib/app.svelte.ts'
+  import { remaining } from '../lib/queue.ts'
   import { session } from '../lib/review.svelte.ts'
   import { navigate } from '../lib/router.svelte.ts'
   import { swipe, type SwipeDir } from '../lib/swipe.ts'
@@ -30,6 +31,13 @@
   const visible = $derived(deck ? notes.filter((n) => n.deckId === deck) : notes)
   const top = $derived(visible[0])
 
+  // Paint at once from the device's copy of the collection (offline too),
+  // then take the server's list.
+  void words.restore().then(() => {
+    if (!loading || notes.length || !words.all) return
+    notes = words.all.filter((w) => w.status === 'inbox').sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  })
+
   async function load() {
     loading = true
     try {
@@ -43,6 +51,12 @@
     }
   }
   void load()
+
+  // Vetted everything: today's queue picks up what was approved, so the
+  // empty state can offer to review it.
+  $effect(() => {
+    if (!loading && !notes.length && !error) void session.refreshIfStale()
+  })
 
   function drop(ids: string[]) {
     notes = notes.filter((n) => !ids.includes(n.id))
@@ -144,6 +158,11 @@
       <div class="empty">
         <Icon name="inbox" size={44} stroke={1.3} />
         <p><strong>Nothing to vet</strong>Words Claude or the bot propose land here. Swipe right to approve, left to reject, tap to edit first.</p>
+        {#if session.current}
+          <button class="btn primary" onclick={() => navigate('/', { replace: true })}><Icon name="review" size={18} /> Review {remaining(session.queue)} {remaining(session.queue) === 1 ? 'card' : 'cards'}</button>
+        {:else}
+          <button class="btn" onclick={() => navigate('/add?from=/')}><Icon name="plus" size={18} stroke={2.2} /> Add a word</button>
+        {/if}
       </div>
     {:else}
       {#each visible.slice(0, 3).reverse() as n, i (n.id)}

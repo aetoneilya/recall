@@ -12,6 +12,7 @@ describe('parseRoute', () => {
     expect(r('#/words')).toEqual({ path: '/words', tab: 'words', query: {} })
     expect(r('#/word/wd_1?from=%2Fwords')).toEqual({ path: '/word/wd_1', tab: 'words', query: { from: '/words' } })
     expect(r('#/add?from=/')).toEqual({ path: '/add', tab: 'review', query: { from: '/' } })
+    expect(r('#/word/wd_1?from=/')).toEqual({ path: '/word/wd_1', tab: 'review', query: { from: '/' } })
     expect(r('#/test')).toMatchObject({ path: '/test', tab: 'progress' })
   })
 

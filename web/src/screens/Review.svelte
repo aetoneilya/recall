@@ -216,7 +216,7 @@
             onend: onSwipeEnd,
           }}
         >
-          <WordCard {item} revealed={session.revealed} typed={answer} {check} {langs} />
+          <WordCard {item} revealed={session.revealed} typed={answer} {check} {langs} onedit={() => navigate(`/word/${item.word.id}?from=/`)} />
           {#if dir && lean && intervals}
             <div class="wash {dir} {tone[lean]}" style="opacity: {pull * 0.6}"></div>
             <div class="swipe-hint {dir} {tone[lean]}" class:armed style="opacity: {0.35 + pull * 0.65}; --pull: {pull}">
@@ -304,16 +304,19 @@
     align-items: center;
     gap: 8px;
   }
+  /* A 34px disc in a 44px target. */
   .add {
-    width: 34px;
-    height: 34px;
-    border-radius: 17px;
+    width: 44px;
+    height: 44px;
+    padding: 5px;
+    border-radius: 22px;
+    background-clip: content-box;
     display: flex;
     align-items: center;
     justify-content: center;
     color: var(--accent);
-    background: var(--accent-soft);
-    margin-right: -4px;
+    background-color: var(--accent-soft);
+    margin: -2px -9px -2px 0;
     transition: transform var(--t-press) var(--ease-out);
   }
   .add:active {

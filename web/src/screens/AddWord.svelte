@@ -9,6 +9,7 @@
   import { session } from '../lib/review.svelte.ts'
   import { navigate, router } from '../lib/router.svelte.ts'
   import { haptic } from '../lib/telegram.ts'
+  import { setUnsaved } from '../lib/unsaved.ts'
   import { errorText, showToast } from '../lib/toast.svelte.ts'
   import type { AutofillResult, Draft, WordItem } from '../lib/types.ts'
   import { emptyForm, formFrom, formToInput, guessPos, newTranslations, withContext, type WordForm } from '../lib/wordForm.ts'
@@ -57,6 +58,8 @@
   // 503 (not configured) or 429 (daily limit): don't ask again this visit.
   let autofillOff = false
   let edited = false
+  // Enter came before the draft: add it the moment it arrives.
+  let addWhenFilled = $state(false)
   let timer: ReturnType<typeof setTimeout> | undefined
 
   const key = (t: string, c: string) => `${t.replace(/\s+/g, ' ').trim().toLowerCase()}|${c.replace(/\s+/g, ' ').trim()}`
@@ -64,8 +67,14 @@
   onMount(() => {
     termEl?.focus()
     void words.ensure()
-    return () => clearTimeout(timer)
+    return () => {
+      clearTimeout(timer)
+      setUnsaved('add', false)
+    }
   })
+
+  // A typed word not added yet: Telegram asks before closing, updates wait.
+  $effect(() => setUnsaved('add', !!term.trim()))
 
   // Autofill once typing pauses for 600 ms.
   $effect(() => {
@@ -83,6 +92,8 @@
         return
       }
       if (key(t, c) === filledFor) return
+      // Still typing: an earlier Enter was for a different word.
+      addWhenFilled = false
       timer = setTimeout(() => void fill(t, c), 600)
     })
   })
@@ -91,6 +102,7 @@
     clearTimeout(timer)
     const k = key(t, c)
     const my = ++seq
+    if (viaEnter) addWhenFilled = true
     if (autofillOff || !status.online) {
       if (!status.online) fallback = "You're offline — fill it in by hand; it'll be added when you're back online."
       manual(t, c, viaEnter)
@@ -142,11 +154,21 @@
     phase = 'ready'
     edited = false
     problem = ''
-    if (viaEnter && !form.translations.length) void tick().then(() => translationInput?.focus())
+    const go = addWhenFilled
+    addWhenFilled = false
+    if (go && form.translations.length) {
+      // Unless it turns out to be a word already there: then the panel
+      // below says so and nothing is added behind the person's back.
+      void tick().then(() => {
+        if (!existing && filledFor === key(term, context)) void submit()
+      })
+    } else if ((viaEnter || go) && !form.translations.length) void tick().then(() => translationInput?.focus())
   }
 
   // No autofill: the fields for this term, keeping what was typed into them.
   function manual(t: string, c: string, viaEnter: boolean) {
+    viaEnter ||= addWhenFilled
+    addWhenFilled = false
     filledFor = key(t, c)
     if (!edited) form = { ...emptyForm(t.trim(), form.source), tags: form.tags, examples: withContext([], c) }
     else form.pos = form.translations.length ? form.pos : guessPos(t)
@@ -162,6 +184,13 @@
     if (!term.trim()) return
     if (phase === 'ready' && filledFor === key(term, context)) void submit()
     else if (phase !== 'loading') void fill(term, context, true)
+    else addWhenFilled = true
+  }
+
+  // The sentence is one line: Enter there works like Enter on the word.
+  function onContextKey(e: KeyboardEvent) {
+    if (e.key !== 'Enter' || e.shiftKey) return
+    onTermKey(e)
   }
 
   // The existing word still matches (same term and part of speech).
@@ -227,6 +256,7 @@
       } else if (e instanceof NetworkError) queueOffline(input, false)
       else {
         restore()
+        haptic.notify('error')
         showToast(`Not added: ${errorText(e)}`)
       }
     } finally {
@@ -313,6 +343,7 @@
     duplicate = null
     problem = ''
     edited = false
+    addWhenFilled = false
     filledFor = ''
     if (!autofillOff) fallback = ''
     termEl?.focus()
@@ -325,7 +356,9 @@
 
   const altLabel = (a: Draft) => [a.term !== term.trim() ? a.term : null, posLabel(a.pos), a.translations[0]].filter(Boolean).join(' ')
   const actionLabel = $derived(
-    dupActive ? (toMerge.length ? `Add ${toMerge.length === 1 ? 'it' : 'them'} to “${duplicate!.term}”` : `Open “${duplicate!.term}”`) : 'Add',
+    phase === 'loading' && addWhenFilled
+      ? 'Adding when it’s filled in…'
+      : dupActive ? (toMerge.length ? `Add ${toMerge.length === 1 ? 'it' : 'them'} to “${duplicate!.term}”` : `Open “${duplicate!.term}”`) : 'Add',
   )
 </script>
 
@@ -356,7 +389,7 @@
     </div>
 
     {#if contextOpen}
-      <textarea id="add-context" class="context" bind:value={context} rows="2" lang="en" placeholder="The sentence where you met it — picks the right sense and becomes the first example"></textarea>
+      <textarea id="add-context" class="context" bind:value={context} onkeydown={onContextKey} enterkeyhint="go" rows="2" lang="en" placeholder="The sentence where you met it — picks the right sense and becomes the first example"></textarea>
     {:else}
       <button class="link" onclick={openContext}><Icon name="plus" size={15} stroke={2.2} /> Sentence where you met it</button>
     {/if}
@@ -419,7 +452,11 @@
 
   <div class="bar">
     {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
-    <button class="btn primary block" onclick={() => void submit()} disabled={!term.trim() || phase === 'loading'}>{actionLabel}</button>
+    <button
+      class="btn primary block"
+      onclick={() => (phase === 'loading' ? (addWhenFilled = true) : void submit())}
+      disabled={!term.trim() || (phase === 'loading' && addWhenFilled)}>{actionLabel}</button
+    >
   </div>
 </div>
 

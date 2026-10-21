@@ -5,6 +5,7 @@
   import { session } from './lib/review.svelte.ts'
   import { back, parentOf, router } from './lib/router.svelte.ts'
   import { setBackButton } from './lib/telegram.ts'
+  import { checkpoint } from './lib/update.ts'
   import AddWord from './screens/AddWord.svelte'
   import Dashboard from './screens/Dashboard.svelte'
   import Denied from './screens/Denied.svelte'
@@ -31,6 +32,12 @@
     enter = r.tab !== lastTab ? 'none' : d > lastDepth ? 'push' : d < lastDepth ? 'pop' : 'none'
     lastDepth = d
     lastTab = r.tab
+  })
+
+  // A new version waiting applies when a screen opens with nothing in progress.
+  $effect(() => {
+    void r.path
+    checkpoint('route')
   })
 
   // The test runs its own Back (it undoes the last answer).

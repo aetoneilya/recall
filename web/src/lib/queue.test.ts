@@ -1,6 +1,6 @@
 import { newCardState, type CardState, type Direction, type QueueItem, type Word } from '@recall/core'
 import { describe, expect, it } from 'vitest'
-import { applyRating, buildQueue, counts, emptyQueue, LEARN_AHEAD_MS, nextItem, waiting } from './queue.ts'
+import { applyRating, buildQueue, counts, dropWord, emptyQueue, LEARN_AHEAD_MS, nextItem, patchWord, waiting } from './queue.ts'
 
 const day = { timeZone: 'Europe/Moscow', startHour: 4 }
 // 13:00 MSK; the study day ends at 04:00 MSK tomorrow.
@@ -214,5 +214,27 @@ describe('applyRating', () => {
     const snapshot = structuredClone(q)
     applyRating(q, q.main[0], 1, now, day)
     expect(q).toEqual(snapshot)
+  })
+})
+
+describe('patchWord / dropWord', () => {
+  const list = [item('c1', 'n1', reviewState(min(-5))), item('c2', 'n1', newCardState(now), 1), item('c3', 'n2', reviewState(min(-1)))]
+
+  it('swaps in the edited word on every card of it', () => {
+    const edited = { ...word('n1'), translations: ['нахмуриться', 'хмуриться'] }
+    const out = patchWord(list, edited)
+    expect(ids(out)).toEqual(['c1', 'c2', 'c3'])
+    expect(out[0].word.translations[0]).toBe('нахмуриться')
+    expect(out[1].word).toBe(edited)
+    expect(out[2]).toBe(list[2])
+  })
+
+  it('drops a word that is no longer active, and suspended cards', () => {
+    expect(ids(patchWord(list, { ...word('n1'), status: 'rejected' }))).toEqual(['c3'])
+    expect(ids(patchWord(list, word('n1'), new Set(['c2'])))).toEqual(['c1', 'c3'])
+  })
+
+  it('drops every card of a deleted word', () => {
+    expect(ids(dropWord(list, 'n1'))).toEqual(['c3'])
   })
 })

@@ -2,16 +2,20 @@
   import { answerDiff, wordFace, type AnswerCheck, type QueueItem } from '@recall/core'
   import { tick } from 'svelte'
   import { markTerm } from '../lib/mark.ts'
+  import Icon from './Icon.svelte'
 
   // One review card, faces from core.wordFace(). `typed` / `check`: the
   // learner's typed answer and its verdict, shown above the answer.
+  // `onedit`: opens the word's editor; offered once the answer shows, which
+  // is when a wrong translation gets noticed.
   let {
     item,
     revealed,
     typed = '',
     check = null,
     langs = ['en', 'ru'],
-  }: { item: QueueItem; revealed: boolean; typed?: string; check?: AnswerCheck | null; langs?: [string, string] } = $props()
+    onedit,
+  }: { item: QueueItem; revealed: boolean; typed?: string; check?: AnswerCheck | null; langs?: [string, string]; onedit?: () => void } = $props()
 
   const f = $derived(wordFace(item.word, item.card.direction))
   const forward = $derived(item.card.direction === 'forward')
@@ -55,6 +59,19 @@
     {#each item.word.tags.filter((t) => t.toLowerCase() !== item.word.source?.toLowerCase()) as t (t)}<span class="meta">{t}</span>{/each}
     {#if isNew}<span class="new">New</span>{/if}
   </div>
+  {#if revealed && onedit}
+    <button
+      class="edit"
+      onclick={(e) => {
+        e.stopPropagation()
+        onedit()
+      }}
+      onmousedown={(e) => e.preventDefault()}
+      aria-label="Edit “{item.word.term}”"
+    >
+      <Icon name="edit" size={18} />
+    </button>
+  {/if}
   <div class="body" bind:this={body}>
     {#if forward}
       <div class="front">
@@ -114,6 +131,7 @@
 
 <style>
   .card {
+    position: relative;
     height: 100%;
     display: flex;
     flex-direction: column;
@@ -128,7 +146,8 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 4px 6px;
-    padding: 16px 20px 0;
+    /* Room on the right for the edit button, so nothing shifts on reveal. */
+    padding: 16px 48px 0 20px;
     font-size: 13px;
     line-height: 18px;
     color: var(--muted);
@@ -148,6 +167,26 @@
     content: '·';
     margin-right: 6px;
     color: var(--faint);
+  }
+  .edit {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 44px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 14px;
+    color: var(--faint);
+    animation: fade-in var(--t-fast) ease;
+    transition:
+      color var(--t-fast) ease,
+      background-color var(--t-fast) ease;
+  }
+  .edit:active {
+    color: var(--accent);
+    background: var(--accent-soft);
   }
   .new {
     margin-left: 2px;

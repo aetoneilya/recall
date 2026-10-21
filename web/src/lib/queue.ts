@@ -1,7 +1,7 @@
 // Local review queue: what to show next and how a rating changes the queue.
 // Pure functions over immutable state so undo is just "restore the previous
 // state" and the logic is testable without a DOM.
-import { nextDayStart, review, type CardState, type DayOptions, type QueueItem, type Rating } from '@recall/core'
+import { nextDayStart, review, type CardState, type DayOptions, type QueueItem, type Rating, type Word } from '@recall/core'
 import type { Scheduler } from './fsrs.ts'
 
 export interface QueueState {
@@ -132,4 +132,21 @@ export function waiting(q: QueueState, now: Date, learnAheadMs = LEARN_AHEAD_MS)
 // Every item of the queue, for persisting it.
 export function allItems(q: QueueState): QueueItem[] {
   return [...q.learning, ...q.main]
+}
+
+// A word was edited elsewhere (e.g. "Edit" from the revealed card): its
+// items show the new fields at once. A word that left the active set, or a
+// card now suspended, drops out.
+export function patchWord(list: QueueItem[], word: Word, suspended: ReadonlySet<string> = new Set()): QueueItem[] {
+  const gone = word.status !== 'active'
+  return list.flatMap((it) => {
+    if (it.word.id !== word.id) return [it]
+    if (gone || suspended.has(it.card.id)) return []
+    return [{ ...it, word }]
+  })
+}
+
+// A word deleted here: none of its cards stay queued.
+export function dropWord(list: QueueItem[], wordId: string): QueueItem[] {
+  return list.filter((it) => it.word.id !== wordId)
 }

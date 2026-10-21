@@ -31,8 +31,10 @@ export function parseRoute(hash: string): Route {
   // Pushed screens belong to the tab they were opened from.
   const from = q.get('from') ?? ''
   const tab: Tab =
-    first === 'words' || first === 'word'
+    first === 'words' || (first === 'word' && from !== '/')
       ? 'words'
+      : first === 'word'
+        ? 'review'
       : first === 'add'
         ? from.startsWith('/words') || from.startsWith('/word/') ? 'words' : 'review'
         : first === 'inbox'

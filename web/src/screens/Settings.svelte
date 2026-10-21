@@ -11,7 +11,11 @@
   import { errorText, showToast } from '../lib/toast.svelte.ts'
   import type { ApiToken, AuthVia, DeckPatch, DeckWithCounts, Me, NewToken, TypeAnswer } from '../lib/types.ts'
 
-  let decks = $state<DeckWithCounts[]>([])
+  // The review screen's cached copy paints the study settings at once (and
+  // offline); the fetch below brings fresh counts.
+  let decks = $state<DeckWithCounts[]>(
+    (Object.values(session.decks) as Partial<DeckWithCounts>[]).every((d) => d.counts) ? ($state.snapshot(Object.values(session.decks)) as DeckWithCounts[]) : [],
+  )
   let theme = $state<ThemeChoice>(loadTheme())
   let mockOffline = $state(false)
 
@@ -32,8 +36,8 @@
     session.applyDeck($state.snapshot(d) as DeckWithCounts)
     try {
       await api.patchDeck(d.id, p)
-      session.markStale()
-      void getDecks(true)
+      // The queue reflects the change by the time Review is back on screen.
+      void session.refresh()
     } catch (e) {
       Object.assign(d, before)
       session.applyDeck($state.snapshot(d) as DeckWithCounts)
@@ -78,8 +82,7 @@
       setTimeout(async () => {
         try {
           await api.patchDeck(d.id, { newPerDay: v })
-          session.markStale()
-          void getDecks(true)
+          void session.refresh()
         } catch (e) {
           d.newPerDay = before
           showToast(`Not saved: ${errorText(e)}`)
@@ -192,6 +195,7 @@
   // ---- advanced: FSRS ----
 
   let advancedOpen = $state(false)
+  let connectOpen = $state(false)
   let retention = $state(0.9)
   $effect(() => {
     if (me?.fsrs) retention = me.fsrs.requestRetention
@@ -486,40 +490,6 @@
     </div>
   {/if}
 
-  {#if canManageTokens}
-    <div class="section-label">Personal tokens for Claude</div>
-    <div class="group">
-      {#if tokens === null && !tokensError}
-        <div class="row skel-row" aria-hidden="true"><span class="skel" style="width: 40%"></span><span class="skel" style="width: 62%; height: 10px"></span></div>
-      {:else if tokensError}
-        <div class="row">
-          <span class="grow muted">Couldn't load tokens <span class="sub">{tokensError}</span></span>
-          <button class="btn small" onclick={loadTokens}>Retry</button>
-        </div>
-      {:else}
-        {#each tokens ?? [] as t (t.id)}
-          <div class="row">
-            <span class="grow">
-              <span class="ellipsis">{t.name}</span>
-              <span class="sub">Created {shortDate(t.createdAt)} · {t.lastUsedAt ? `used ${relTime(t.lastUsedAt)}` : 'never used'}</span>
-            </span>
-            <ConfirmButton class="btn danger small" confirmLabel="Revoke?" onconfirm={() => revoke(t)}>Revoke</ConfirmButton>
-          </div>
-        {/each}
-      {/if}
-      {#if naming}
-        <form class="row naming" onsubmit={createToken}>
-          <input use:focus bind:value={tokenName} placeholder="Name, e.g. Laptop" maxlength="100" autocomplete="off" enterkeyhint="done" aria-label="Token name" />
-          <button class="btn primary small" type="submit" disabled={!tokenName.trim() || creating}>{creating ? 'Creating…' : 'Create'}</button>
-          <button class="btn small" type="button" onclick={() => (naming = false)}>Cancel</button>
-        </form>
-      {:else if tokens !== null}
-        <button class="row add" onclick={startNaming}><Icon name="plus" size={20} stroke={2} /> New token</button>
-      {/if}
-    </div>
-    <p class="caption">For Claude Code and scripts. A token acts as you; revoke the ones you no longer use.</p>
-  {/if}
-
   {#if me?.fsrs}
     <div class="group adv">
       <button class="row" aria-expanded={advancedOpen} onclick={() => (advancedOpen = !advancedOpen)}>
@@ -549,14 +519,58 @@
     </div>
   {/if}
 
-  <div class="section-label">claude.ai</div>
-  <div class="group">
-    <div class="block">
-      <p class="hint">Settings → Connectors → Add custom connector with this URL. It confirms in Telegram, no token needed.</p>
-      <code class="cmd">{mcpUrl}</code>
-      <button class="btn copy" onclick={() => copy(mcpUrl)}><Icon name="copy" size={16} /> Copy URL</button>
-    </div>
+  <!-- One-time setup, folded away so the daily settings stay short. -->
+  <div class="group adv" class:tight={!!me?.fsrs}>
+    <button class="row" aria-expanded={connectOpen} onclick={() => (connectOpen = !connectOpen)}>
+      <span class="grow">Connect Claude <span class="sub">claude.ai connector, tokens for Claude Code</span></span>
+      <span class="chev" class:open={connectOpen}><Icon name="chevron" size={16} stroke={2} /></span>
+    </button>
   </div>
+  {#if connectOpen}
+    <div class="section-label">claude.ai</div>
+    <div class="group">
+      <div class="block">
+        <p class="hint">Settings → Connectors → Add custom connector with this URL. It confirms in Telegram, no token needed.</p>
+        <code class="cmd">{mcpUrl}</code>
+        <button class="btn copy" onclick={() => copy(mcpUrl)}><Icon name="copy" size={16} /> Copy URL</button>
+      </div>
+    </div>
+
+    {#if canManageTokens}
+      <div class="section-label">Personal tokens for Claude</div>
+      <div class="group">
+        {#if tokens === null && !tokensError}
+          <div class="row skel-row" aria-hidden="true"><span class="skel" style="width: 40%"></span><span class="skel" style="width: 62%; height: 10px"></span></div>
+        {:else if tokensError}
+          <div class="row">
+            <span class="grow muted">Couldn't load tokens <span class="sub">{tokensError}</span></span>
+            <button class="btn small" onclick={loadTokens}>Retry</button>
+          </div>
+        {:else}
+          {#each tokens ?? [] as t (t.id)}
+            <div class="row">
+              <span class="grow">
+                <span class="ellipsis">{t.name}</span>
+                <span class="sub">Created {shortDate(t.createdAt)} · {t.lastUsedAt ? `used ${relTime(t.lastUsedAt)}` : 'never used'}</span>
+              </span>
+              <ConfirmButton class="btn danger small" confirmLabel="Revoke?" onconfirm={() => revoke(t)}>Revoke</ConfirmButton>
+            </div>
+          {/each}
+        {/if}
+        {#if naming}
+          <form class="row naming" onsubmit={createToken}>
+            <input use:focus bind:value={tokenName} placeholder="Name, e.g. Laptop" maxlength="100" autocomplete="off" enterkeyhint="done" aria-label="Token name" />
+            <button class="btn primary small" type="submit" disabled={!tokenName.trim() || creating}>{creating ? 'Creating…' : 'Create'}</button>
+            <button class="btn small" type="button" onclick={() => (naming = false)}>Cancel</button>
+          </form>
+        {:else if tokens !== null}
+          <button class="row add" onclick={startNaming}><Icon name="plus" size={20} stroke={2} /> New token</button>
+        {/if}
+      </div>
+      <p class="caption">For Claude Code and scripts. A token acts as you; revoke the ones you no longer use.</p>
+    {/if}
+
+  {/if}
 
   <p class="version">Mnemosyne · {__BUILD__}{status.mock ? ' · mock' : ''}</p>
 </div>
@@ -819,6 +833,9 @@
 
   .adv {
     margin-top: 28px;
+  }
+  .adv.tight {
+    margin-top: 12px;
   }
   .retention-head {
     display: flex;

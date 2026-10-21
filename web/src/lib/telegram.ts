@@ -13,6 +13,9 @@ interface TgWebApp {
   setHeaderColor?(c: string): void
   setBackgroundColor?(c: string): void
   onEvent(e: string, fn: () => void): void
+  openTelegramLink?(url: string): void
+  enableClosingConfirmation?(): void
+  disableClosingConfirmation?(): void
   BackButton: { show(): void; hide(): void; onClick(fn: () => void): void; offClick(fn: () => void): void }
   HapticFeedback: {
     impactOccurred(s: 'light' | 'medium' | 'heavy' | 'rigid' | 'soft'): void
@@ -97,4 +100,21 @@ export const haptic = {
     const tg = app()
     if (tg?.isVersionAtLeast('6.1')) tg.HapticFeedback.selectionChanged()
   },
+}
+
+// Opens a t.me link inside Telegram (the bot's chat) instead of a browser
+// tab. false outside Telegram: the caller's own link does the job.
+export function openTelegramLink(url: string): boolean {
+  const tg = app()
+  if (!tg?.openTelegramLink || !tg.isVersionAtLeast('6.1')) return false
+  tg.openTelegramLink(url)
+  return true
+}
+
+// Asks before the Mini App is closed (swipe down, ✕); see unsaved.ts.
+export function setClosingConfirmation(on: boolean): void {
+  const tg = app()
+  if (!tg || !tg.isVersionAtLeast('6.2')) return
+  if (on) tg.enableClosingConfirmation?.()
+  else tg.disableClosingConfirmation?.()
 }

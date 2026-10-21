@@ -1,12 +1,12 @@
 // The review session: cached queue, current card, ratings applied locally
 // and queued for upload, undo.
-import { dayKey, type Card, type CardState, type QueueItem, type Rating } from '@recall/core'
+import { dayKey, type Card, type CardState, type QueueItem, type Rating, type Word } from '@recall/core'
 import { api, flushNow, kv, outbox, scheduleFlush, status } from './app.svelte.ts'
 import { AuthError, NetworkError } from './api.ts'
 import { getDecks } from './decks.ts'
 import { fsrs } from './fsrs.ts'
-import { applyRating, buildQueue, emptyQueue, LEARN_AHEAD_MS, nextItem, waiting, type QueueState } from './queue.ts'
-import type { DeckSettings } from './types.ts'
+import { applyRating, buildQueue, dropWord, emptyQueue, LEARN_AHEAD_MS, nextItem, patchWord, waiting, type QueueState } from './queue.ts'
+import type { DeckSettings, DeckWithCounts, WordItem } from './types.ts'
 import { haptic } from './telegram.ts'
 import { uuid } from './uuid.ts'
 
@@ -97,8 +97,13 @@ class ReviewSession {
   }
 
   // Uploads pending ratings, then fetches today's queue from the server.
-  async refresh() {
-    if (this.refreshing) return
+  async refresh(): Promise<void> {
+    // Asked again mid-flight (e.g. a setting changed): one more round after
+    // this one, so the change isn't missed.
+    if (this.refreshing) {
+      this.again = true
+      return
+    }
     this.refreshing = true
     try {
       await flushNow()
@@ -118,7 +123,12 @@ class ReviewSession {
     } finally {
       this.refreshing = false
     }
+    if (this.again) {
+      this.again = false
+      return this.refresh()
+    }
   }
+  private again = false
 
   // Re-applies the queue rules to today's items, e.g. after a deck setting
   // changed; the card on screen stays if it's still in the queue.
@@ -151,6 +161,58 @@ class ReviewSession {
   applyDeck(d: DeckSettings) {
     this.decks = { ...this.decks, [d.id]: d }
     this.rebuild(true)
+  }
+
+  // A word was saved elsewhere (the editor opened from the card): the card on
+  // screen shows the fix at once and stays where it was, revealed or not.
+  // Suspending or deactivating it takes it out of today's queue.
+  patchWord(w: WordItem) {
+    const { cards, deckName: _, ...word } = w
+    const suspended = new Set([cards.forward, cards.reverse].filter((c) => c?.suspended).map((c) => c!.id))
+    this.replaceItems((list) => patchWord(list, word as Word, suspended))
+  }
+
+  // A word deleted elsewhere: none of its cards stay queued.
+  dropWord(id: string) {
+    this.replaceItems((list) => dropWord(list, id))
+  }
+
+  private replaceItems(fix: (list: QueueItem[]) => QueueItem[]) {
+    this.items = fix(this.items)
+    this.queue = { ...this.queue, main: fix(this.queue.main), learning: fix(this.queue.learning) }
+    const cur = this.current
+    if (cur) {
+      const fresh = [...this.queue.learning, ...this.queue.main].find((x) => x.card.id === cur.card.id)
+      if (fresh) this.current = fresh
+      else this.pick()
+    }
+    this.persist()
+  }
+
+  // Reviews due tomorrow (server forecast, after this device's ratings are
+  // uploaded); the last answer is reused offline the same day. null: unknown.
+  private forecast: { day: string; at: number; n: number } | null = null
+  async tomorrow(): Promise<number | null> {
+    const day = dayKey(new Date(), status.day)
+    const f = this.forecast
+    if (f && f.day === day && Date.now() - f.at < 5 * 60_000) return f.n
+    try {
+      await flushNow()
+      const days = await api.forecast()
+      const n = days[1]?.due
+      if (typeof n !== 'number') return null
+      this.forecast = { day, at: Date.now(), n }
+      return n
+    } catch {
+      return f && f.day === day ? f.n : null
+    }
+  }
+
+  // Words in the collection, from the cached deck counts; null until known.
+  get wordCount(): number | null {
+    const ds = Object.values(this.decks) as Partial<DeckWithCounts>[]
+    if (!ds.length || ds.some((d) => !d.counts)) return null
+    return ds.reduce((n, d) => n + (d.counts?.total ?? 0), 0)
   }
 
   // Something changed server-side (e.g. words approved); refetch on next visit.

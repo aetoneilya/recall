@@ -12,29 +12,33 @@ The product is **Mnemosyne** (the Greek goddess of memory) everywhere a person s
 
 ## Users
 
-One person, the owner. Reviews on an iPhone held in one hand, in short sessions through the day: in transit, in a queue, before sleep. Also adds and vets notes, usually on the same phone. Has used Anki-style apps before and left an Obsidian flashcard plugin because reviewing in it was inconvenient.
+The owner plus a few invited Telegram accounts, each with a separate collection. Someone learning English vocabulary (Russian native), on an iPhone held in one hand, in short sessions through the day: in transit, in a queue, before sleep. Words met while reading get added on the same phone, by hand in the app or by messaging the bot. The owner left an earlier flashcard tool because using it was inconvenient, so every daily action has to take the fewest taps, the least waiting and the least thinking.
 
 ## Product Purpose
 
-Mnemosyne is a personal spaced-repetition system. The review screen is the product: the owner spends about 95% of their time there. Success is that reviewing feels effortless enough to do every day: open, tap, rate, done, without friction or thinking about the tool.
+A personal English↔Russian vocabulary trainer on spaced repetition. The review screen is the product: open, reveal, rate, done, without thinking about the tool. Around it: adding a word in seconds (✨ Claude fills in translations, IPA, examples), vetting words the bot or Claude proposed, and seeing the vocabulary grow (an estimate of how many English words one knows).
 
 ## Positioning
 
-Notes are written mostly by Claude through an MCP server and land in an inbox for the owner to vet; the app is where they're approved and studied. Scheduling is FSRS (`@recall/core`), works offline, and syncs to a single SQLite database on the owner's VPS.
+Words come from three places: typed into the app with autofill, sent to the Telegram bot (a word, a list, a sentence or a photo of a page), or proposed by Claude through the MCP server. Proposals land in an inbox; the app is where they're vetted and studied. Scheduling is FSRS (`@recall/core`), works offline, and syncs to one SQLite database on a VPS.
 
 ## Operating Context
 
-- Content: English↔Russian vocabulary (word / translation, IPA in `extra`, a tag naming the source book or article); Java and distributed-systems interview Q&A with inline code, code blocks and tables; long cloze texts about English grammar (one note, many deletions, mixed English and Russian).
-- Imported notes come from the Obsidian Decks plugin and can still contain `[[wikilinks]]` and "Header: value" lines in `extra`.
-- Used as an installed PWA (standalone, safe areas, no browser chrome) and inside Telegram, which supplies `themeParams`, a native BackButton and haptics.
-- Often offline or on a bad connection; ratings queue locally and upload later.
+- Content: a word or phrase (`term`, part of speech, translations, General American IPA, up to five examples with translations, a usage note in Russian, the source book or article). Two cards per word: EN → RU (recognise) and RU → EN (recall, optionally typed).
+- Imported words (from the Obsidian Decks plugin) can have `other` as part of speech and older IPA.
+- Used as an installed PWA (standalone, safe areas, no browser chrome) and inside Telegram, which supplies `themeParams`, a native BackButton, haptics and closing confirmation.
+- Often offline or on a bad connection: today's queue, the word list and progress are cached on the device; ratings and added words queue locally and upload later.
 
 ## Capabilities and Constraints
 
-- Review: tap or Space to reveal; four ratings (Again, Hard, Good, Easy) labelled with the next interval; after reveal, swipe right = Good, left = Hard, down = Again, up = Easy; keys 1–4; undo.
-- Inbox: Claude's proposals as a swipeable stack (right approve, left reject), edit, approve all.
-- Login and Settings will gain Telegram login and personal tokens (multi-user work in progress on the server); their flows belong to that work, design passes there are visual only.
-- Browse decks and notes with search; note editor with live card previews; stats; settings.
+- Review: tap or Space to reveal; four ratings (Again, Hard, Good, Easy) labelled with the next interval; after reveal, swipe right = Good, left = Hard, down = Again, up = Easy; keys 1–4; undo. Typed answers per deck (RU → EN, or both) with a verdict and a suggested rating. The pencil on a revealed card edits the word and comes back to the same card.
+- The end of a session says what's next: tomorrow's reviews, the inbox, adding words. A new account with no words sees "Add your first words" and the bot.
+- Add word: one field, autofill once typing pauses, Enter adds (even before the draft has arrived: it's added as soon as it does) and the field is ready for the next word; an optional sentence where the word was met picks the sense and becomes the first example; the last source is remembered; duplicates are caught inline.
+- Inbox: proposals as a swipeable stack (right approve, left reject), edit, approve all; paints from the device's copy.
+- Words: the whole collection cached on the device, instant search and filters. Word editor with both cards' state.
+- Progress: vocabulary estimate, scale, growth, streaks; a 3-minute vocabulary test.
+- Settings: what's studied daily (directions, new words per day, typed answers) first; reminders; one-time setup (Claude connector, tokens) and scheduling folded away.
+- Updates install themselves: a new version applies at the next moment nothing is in progress and says "Updated".
 - UI strings are English; card content is English and Russian (Cyrillic) plus IPA glyphs.
 - No new runtime dependencies without a clear reason; the app shell is precached by a service worker, so any font must be precached and cover Cyrillic and IPA.
 - Scheduling always goes through `@recall/core`; the web app never reimplements FSRS.
@@ -46,6 +50,7 @@ Notes are written mostly by Claude through an MCP server and land in an inbox fo
 3. Nothing the owner reads moves unless it has to: the question stays put when the answer appears.
 4. Feedback is immediate and quiet: haptics and short motion, never waiting on choreography.
 5. Offline is normal, not an error.
+6. Nothing reversible asks for confirmation; it happens at once with Undo. Every screen paints from the device first and refreshes behind.
 
 ## Accessibility & Inclusion
 

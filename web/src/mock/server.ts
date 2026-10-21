@@ -35,7 +35,7 @@ const D = 24 * H
 // after the first poll; password: recall), `nobot` signed out with the bot
 // off (password only), `denied` a Telegram account that isn't allowed,
 // `bearer` signed in with an API token (no token management), `noautofill`
-// autofill not configured (503).
+// autofill not configured (503), `empty` a new account with no words yet.
 const variant = new URLSearchParams(location.search).get('mock') ?? ''
 
 export const mockControl = {
@@ -139,6 +139,7 @@ function seed() {
     createdAt: iso(now - 150 * D),
   }
   db.decks.push(eng)
+  if (variant === 'empty') return
   const inboxCount = seedWords.filter((s) => s.plan === 'inbox' || s.plan === 'rejected').length
   let inboxK = 0
   seedWords.forEach((s: SeedWord, k) => {
@@ -1107,6 +1108,20 @@ function handle(method: string, url: URL, body: unknown): unknown {
 
   // ---------- progress ----------
 
+  if (p === '/api/stats') {
+    const deck = mustDeck(url.searchParams.get('deck'))
+    const active = new Set(db.words.filter((w) => w.deckId === deck.id && w.status === 'active').map((w) => w.id))
+    const cards = db.cards.filter((c) => active.has(c.wordId) && !c.suspended && enabled(deck, c.direction) && c.schedule.state !== 0)
+    const start = nextDayStart(now, DAY).getTime() - D
+    const forecast = Array.from({ length: 14 }, (_, i) => ({
+      day: dayKey(new Date(start + i * D + H), DAY),
+      due: cards.filter((c) => {
+        const t = new Date(c.schedule.due).getTime()
+        return (i === 0 || t >= start + i * D) && t < start + (i + 1) * D
+      }).length,
+    }))
+    return { forecast }
+  }
   if (p === '/api/dashboard') return dashboard(mustDeck(url.searchParams.get('deck')), now)
   if (p === '/api/vocab-test' && method === 'POST') return new Reply(201, createTest(now))
   if (a === 'vocab-test' && b && c === 'answers' && method === 'POST') {

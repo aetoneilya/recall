@@ -130,6 +130,8 @@ Card 20px, panels and grouped lists 14px, buttons and inputs 12px, rating button
 
 - **Rating bar:** four equal 66px buttons, tinted fill + same-hue label and interval, tabular numerals. Press: scale 0.95 with a deeper fill. While a swipe is in progress, the button it would commit lights up (scale 1.04, deeper fill). The bar and the swipe pill share one set of interval labels (FSRS fuzz depends on the moment, so they're computed once per card).
 - **Show answer:** full-width 66px card-coloured button with the card's shadow, a 66px undo square beside it.
+- **Edit on the card:** once the answer shows, a faint 18px pencil in a 44px target at the card's top-right corner (the context row keeps 48px clear for it, so nothing shifts on reveal); pressed, accent on accent-soft. It opens the word's editor; Back returns to the same revealed card with the fix applied.
+- **Session summary:** the check, the tally, a clock line ("Tomorrow: N reviews", or learning cards back in N min), then a grouped list of next steps (Vet N new words in the inbox · Add words) and the Undo / Check for more buttons. A collection with no words yet gets "Add your first words" instead: an accent-soft disc with the sparkle, one primary "Add a word" button and a row for the Telegram bot.
 - **Cloze marks:** front blank is an accent-soft pill with a 1px accent ring showing the hint or "…" (inline, so punctuation stays attached; the card scrolls to it). Back answer is accent text on accent-soft.
 - **Wikilinks:** `[[x]]` renders as a small muted chip, not body text.
 - **Context row:** deck (600) · tags · New pill, 13px muted.
@@ -138,7 +140,8 @@ Card 20px, panels and grouped lists 14px, buttons and inputs 12px, rating button
 - **Segmented control, stepper, switch:** iOS shapes; selected segment is the card colour with a soft shadow.
 - **Empty / error states:** a 40px line icon, a bold one-line title, one sentence that teaches the place, and the next action.
 - **Loading:** skeleton blocks in the shape of the content (pulse 1.1s), never a centred spinner.
-- **Toast:** ink pill at the top safe area, drops in 16px and leaves the same way.
+- **Toast:** ink pill at the top safe area, drops in 16px and leaves the same way. "Updated" after the app has updated itself.
+- **Disclosures in Settings:** one-time setup (Connect Claude) and scheduling (Advanced) are single grouped rows with a chevron that turns; the daily settings stay above them.
 
 ## Motion
 

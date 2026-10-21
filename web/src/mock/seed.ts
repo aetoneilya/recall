@@ -293,3 +293,41 @@ export const irregularVerbs: SeedVerb[] = [
   { verb: 'learn', past: ['learned', 'learnt'], participle: ['learned', 'learnt'], translation: 'учить, узнавать', example: { text: 'I learned to swim when I was six.', translation: 'Я научился плавать в шесть лет.' }, note: 'learnt — британский вариант' },
   { verb: 'strive', past: ['strove', 'strived'], participle: ['striven', 'strived'], translation: 'стремиться', example: { text: 'We strive to answer every email.', translation: 'Мы стараемся отвечать на каждое письмо.' }, note: null },
 ]
+
+// A "Grammar" topic: invented rules, each with a small exercise pool, so the
+// exercise review is demoable (the owner's real rules stay private).
+export interface SeedRule {
+  title: string
+  rule: string
+  plan: Plan
+  items: { type: 'gap' | 'fix' | 'rewrite'; prompt: string; answer: string; accepted: string[]; explain: string | null }[]
+}
+
+export const grammar: SeedRule[] = [
+  {
+    title: 'Third person -s',
+    rule: 'В Present Simple после **he / she / it** и единственного числа глагол получает **-s**: *She **works** here.*\nВ вопросах и отрицаниях -s уходит в **does**: *Does she **work**?*',
+    plan: 'due',
+    items: [
+      { type: 'gap', prompt: 'My brother ___ in a bank. (work)', answer: 'works', accepted: [], explain: 'my brother = he → -s' },
+      { type: 'gap', prompt: 'The service ___ every request twice. (log)', answer: 'logs', accepted: [], explain: 'the service = it → -s' },
+      { type: 'gap', prompt: '___ your sister speak French? (do)', answer: 'Does', accepted: [], explain: 'вопрос к she — does, глагол без -s' },
+      { type: 'fix', prompt: 'She don\'t like coffee.', answer: "She doesn't like coffee.", accepted: ['She does not like coffee.'], explain: 'she → does not' },
+      { type: 'fix', prompt: 'The build take ten minutes.', answer: 'The build takes ten minutes.', accepted: [], explain: 'the build = it → takes' },
+      { type: 'rewrite', prompt: 'I watch the news every evening. → My dad ___', answer: 'watches the news every evening', accepted: [], explain: 'watch → watches после he' },
+    ],
+  },
+  {
+    title: 'since vs for',
+    rule: '**since** + точка во времени (*since Monday, since 2019*), **for** + отрезок (*for two weeks*). Оба — с Present Perfect: *I have lived here **for** years.*',
+    plan: 'new',
+    items: [
+      { type: 'gap', prompt: "I've known her ___ 2015. (since / for)", answer: 'since', accepted: [], explain: '2015 — точка' },
+      { type: 'gap', prompt: 'The server has been down ___ three hours. (since / for)', answer: 'for', accepted: [], explain: 'three hours — отрезок' },
+      { type: 'gap', prompt: "We haven't spoken ___ the meeting. (since / for)", answer: 'since', accepted: [], explain: 'the meeting — момент' },
+      { type: 'fix', prompt: 'She has worked here since five years.', answer: 'She has worked here for five years.', accepted: [], explain: 'five years — отрезок → for' },
+      { type: 'gap', prompt: 'He has been waiting ___ ages. (since / for)', answer: 'for', accepted: [], explain: 'ages — отрезок' },
+      { type: 'rewrite', prompt: 'I started this job in March. → I have had this job ___', answer: 'since March', accepted: [], explain: 'March — точка → since' },
+    ],
+  },
+]

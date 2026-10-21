@@ -49,6 +49,8 @@ export function toFact(r: FactRow): Fact {
 export interface FactItem extends Fact {
   deckName: string
   card: CardSummary | null
+  // A rule with an exercise pool (exercises.ts); absent without one.
+  exercises?: { active: number; flagged: number; needsReview: number }
 }
 
 export function getFact(db: Db, userId: string, id: string): Fact | null {
@@ -226,10 +228,18 @@ export function factItems(db: Db, userId: string, rows: FactRow[], now: Date): F
     const chunk = rows.slice(i, i + 500).map((r) => r.id)
     for (const c of db.prepare(`SELECT * FROM cards WHERE fact_id IN (${chunk.map(() => '?').join(',')})`).all(...chunk) as unknown as CardRow[]) cards.set(c.fact_id!, c)
   }
+  const pools = new Map<string, { active: number; flagged: number; needsReview: number }>()
+  for (let i = 0; i < rows.length; i += 500) {
+    const chunk = rows.slice(i, i + 500).map((r) => r.id)
+    const ps = db.prepare(`SELECT fact_id, sum(status = 'active') AS active, sum(status = 'flagged') AS flagged, sum(needs_review = 1) AS needs_review
+      FROM fact_exercises WHERE fact_id IN (${chunk.map(() => '?').join(',')}) GROUP BY fact_id`).all(...chunk) as { fact_id: string; active: number; flagged: number; needs_review: number }[]
+    for (const p of ps) pools.set(p.fact_id, { active: p.active, flagged: p.flagged, needsReview: p.needs_review })
+  }
   return rows.map((r) => {
     const deck = decks.get(r.deck_id)!
     const c = cards.get(r.id)
-    return { ...toFact(r), deckName: deck.name, card: c ? cardSummary(toCard(c), deck, now) : null }
+    const pool = pools.get(r.id)
+    return { ...toFact(r), deckName: deck.name, card: c ? cardSummary(toCard(c), deck, now) : null, ...(pool ? { exercises: pool } : {}) }
   })
 }
 

@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { checkAnswer, formatInterval, preview, type AnswerCheck, type Rating } from '@recall/core'
-  import { flushSync, onMount } from 'svelte'
+  import { checkAnswer, checkExercise, exerciseRating, formatInterval, preview, type AnswerCheck, type ExerciseAttempt, type ExerciseCheck, type Rating } from '@recall/core'
+  import { flushSync, onMount, untrack } from 'svelte'
+  import ExerciseCard from '../components/ExerciseCard.svelte'
   import FactCard from '../components/FactCard.svelte'
   import Icon from '../components/Icon.svelte'
   import RatingBar from '../components/RatingBar.svelte'
@@ -43,12 +44,76 @@
   let answer = $state('')
   let check = $state<AnswerCheck | null>(null)
   let input: HTMLInputElement | undefined = $state()
-  // A new card (or the same one back) starts with an empty answer.
+  // A rule with exercises: three items to type, checked one by one, then a
+  // summary whose rating comes from the results.
+  const exercises = $derived(item?.kind === 'fact' && item.exercises?.length ? item.exercises : null)
+  let exIndex = $state(0)
+  let exResults = $state<ExerciseAttempt[]>([])
+  let exCheck = $state<ExerciseCheck | null>(null)
+  let exAnswer = $state('')
+  let exInput: HTMLInputElement | undefined = $state()
+  const exTyping = $derived(!!exercises && !session.revealed)
+  // The rating to take on Enter / one tap: the typed answer's, or the exercises'.
+  const suggested = $derived<Rating | null>(exercises ? (exResults.length ? exerciseRating(exResults) : null) : check?.suggestedRating ?? null)
+
+  // A new card (or the same one back) starts with an empty answer. Back
+  // after an undo, an exercise card shows how its items went.
   $effect.pre(() => {
     void cardKey
     answer = ''
     check = null
+    exIndex = 0
+    exCheck = null
+    exAnswer = ''
+    exResults = untrack(() => {
+      const cur = session.current
+      return cur && session.revealed ? [...(session.exerciseResults[cur.card.id] ?? [])] : []
+    })
   })
+
+  function checkItem() {
+    const ex = exercises?.[exIndex]
+    if (!ex || exCheck) return
+    exCheck = checkExercise(exAnswer, ex)
+    exResults = [...exResults.slice(0, exIndex), { id: ex.id, given: exAnswer.trim(), correct: exCheck.correct }]
+    haptic.notify(exCheck.correct ? 'success' : 'error')
+  }
+
+  // Next item, or the summary after the last one.
+  function nextItem() {
+    if (!exercises || !exCheck) return
+    if (exIndex + 1 < exercises.length) {
+      exIndex++
+      exCheck = null
+      exAnswer = ''
+      exInput?.focus()
+    } else session.reveal()
+  }
+
+  // "I was right": counted as right, and the item is marked for a look.
+  function overrule() {
+    const r = exResults[exIndex]
+    if (!r || r.correct) return
+    exResults = exResults.map((x, i) => (i === exIndex ? { ...x, correct: true, overridden: true } : x))
+    exCheck = exCheck && { ...exCheck, correct: true }
+  }
+
+  // "Bad item": out of the pool, not graded.
+  function badItem() {
+    const r = exResults[exIndex]
+    if (!r) return
+    exResults = exResults.map((x, i) => (i === exIndex ? { ...x, bad: true } : x))
+    haptic.select()
+  }
+
+  function onExerciseKey(e: KeyboardEvent) {
+    if (e.key !== 'Enter') return
+    e.preventDefault()
+    if (!exCheck) checkItem()
+    else nextItem()
+  }
+
+  const commit = (r: Rating) => session.rate(r, exercises && exResults.length ? { exercises: exResults } : {})
 
   const intervals = $derived.by(() => {
     if (!item) return null
@@ -93,11 +158,12 @@
 
   function rate(r: Rating) {
     if (leaving) return
-    if (!session.rate(r)) return
+    if (!commit(r)) return
     // Render the next card now, still inside the tap, so focusing its answer
     // field keeps the iOS keyboard up instead of dropping and reopening it.
     flushSync()
     if (typed) input?.focus()
+    else if (exercises && !session.revealed) exInput?.focus()
   }
 
   function reveal() {
@@ -114,7 +180,7 @@
     if (e.key === 'Enter') {
       e.preventDefault()
       if (!session.revealed) reveal()
-      else rate(check?.suggestedRating ?? 3)
+      else rate(suggested ?? 3)
     } else if (session.revealed && ['1', '2', '3', '4'].includes(e.key)) {
       e.preventDefault()
       rate(Number(e.key) as Rating)
@@ -122,7 +188,8 @@
   }
 
   function tapCard() {
-    if (typed && !session.revealed) input?.focus()
+    if (exTyping) exInput?.focus()
+    else if (typed && !session.revealed) input?.focus()
     else reveal()
   }
 
@@ -157,7 +224,7 @@
       leaving = null
       dx = dy = 0
       axis = null
-      session.rate(byDir[d])
+      commit(byDir[d])
     }, 200)
   }
 
@@ -166,10 +233,13 @@
     if (t.closest('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return
     if (e.key === ' ' || e.key === 'Enter') {
       e.preventDefault()
-      if (!session.revealed) {
+      if (exTyping) {
+        if (exCheck && e.key === 'Enter') nextItem()
+        else exInput?.focus()
+      } else if (!session.revealed) {
         if (typed) input?.focus()
         else reveal()
-      } else rate(check?.suggestedRating ?? 3)
+      } else rate(suggested ?? 3)
     } else if (session.revealed && ['1', '2', '3', '4'].includes(e.key)) {
       rate(Number(e.key) as Rating)
     } else if (e.key === 'z' || e.key === 'u' || e.key === 'Backspace') {
@@ -214,7 +284,7 @@
           style="transform: {transform}"
           role="button"
           tabindex="-1"
-          aria-label={session.revealed ? 'Card' : typed ? 'Card, type the answer below' : 'Show answer'}
+          aria-label={session.revealed ? 'Card' : typed || exTyping ? 'Card, type the answer below' : 'Show answer'}
           onclick={tapCard}
           onkeydown={() => {}}
           use:swipe={{
@@ -230,7 +300,9 @@
             onend: onSwipeEnd,
           }}
         >
-          {#if item.kind === 'fact'}
+          {#if item.kind === 'fact' && exercises}
+            <ExerciseCard {item} index={exIndex} results={exResults} check={exCheck} given={exAnswer} revealed={session.revealed} onbad={badItem} onedit={() => navigate(`/fact/${item.fact.id}?from=/`)} />
+          {:else if item.kind === 'fact'}
             <FactCard {item} revealed={session.revealed} onedit={() => navigate(`/fact/${item.fact.id}?from=/`)} />
           {:else}
             <WordCard {item} revealed={session.revealed} typed={answer} {check} {langs} onedit={() => navigate(`/word/${item.word.id}?from=/`)} />
@@ -285,8 +357,41 @@
           <button type="button" class="check" onclick={reveal} onmousedown={(e) => e.preventDefault()}>{answer.trim() ? 'Check' : "Don't know"}</button>
         </form>
       {/if}
-      {#if session.revealed}
-        <RatingBar state={item.card.schedule} onrate={rate} {lean} suggested={check?.suggestedRating ?? null} keepFocus={typed} {intervals} />
+      {#if exTyping}
+        <form class="type-row" onsubmit={(e) => e.preventDefault()}>
+          {#if exCheck}
+            {#if !exCheck.correct && !exResults[exIndex]?.overridden && exResults[exIndex]?.given}
+              <button type="button" class="soft" onclick={overrule} onmousedown={(e) => e.preventDefault()}>I was right</button>
+            {/if}
+            <button type="button" class="check grow" onclick={nextItem} onmousedown={(e) => e.preventDefault()}>{exIndex + 1 < (exercises?.length ?? 0) ? 'Next' : 'Done'}</button>
+          {:else}
+            <button type="button" class="undo small" onclick={() => session.undo()} onmousedown={(e) => e.preventDefault()} disabled={!session.canUndo} aria-label="Undo last rating">
+              <Icon name="undo" size={20} />
+            </button>
+          {/if}
+          <!-- svelte-ignore a11y_autofocus -->
+          <input
+            class:gone={!!exCheck}
+            bind:this={exInput}
+            bind:value={exAnswer}
+            onkeydown={onExerciseKey}
+            placeholder={exercises?.[exIndex]?.type === 'fix' ? 'Type the corrected sentence' : 'Type the answer'}
+            lang="en"
+            autocomplete="off"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+            enterkeyhint={exCheck ? 'next' : 'done'}
+            aria-label="Your answer"
+            readonly={!!exCheck}
+            autofocus
+          />
+          {#if !exCheck}
+            <button type="button" class="check" onclick={checkItem} onmousedown={(e) => e.preventDefault()}>{exAnswer.trim() ? 'Check' : "Don't know"}</button>
+          {/if}
+        </form>
+      {:else if session.revealed}
+        <RatingBar state={item.card.schedule} onrate={rate} {lean} {suggested} keepFocus={typed} {intervals} />
       {:else if !typed}
         <div class="pre">
           <button class="undo" onclick={() => session.undo()} disabled={!session.canUndo} aria-label="Undo last rating">
@@ -642,6 +747,31 @@
     transition: transform var(--t-press) var(--ease-out);
   }
   .check:active {
+    transform: scale(0.97);
+  }
+  .check.grow {
+    flex: 1;
+  }
+  /* Checked: the field steps out of view but keeps the focus (and the keyboard). */
+  .type-row input.gone {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+  }
+  .soft {
+    flex: none;
+    height: 66px;
+    padding: 0 16px;
+    border-radius: 18px;
+    font-weight: 600;
+    font-size: 15px;
+    color: var(--text);
+    background: var(--surface);
+    transition: transform var(--t-press) var(--ease-out);
+  }
+  .soft:active {
     transform: scale(0.97);
   }
   .undo.small {

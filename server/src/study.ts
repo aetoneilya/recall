@@ -9,6 +9,7 @@ import {
   type Card, type CardState, type DayOptions, type DeckKind, type Direction, type QueueItem, type Rating, type ReviewInput, type ReviewLog,
 } from '@recall/core'
 import { tx, type Db } from './db.ts'
+import { exercisesForQueue, recordAttempts, revertAttempts } from './exercises.ts'
 import { toFact, type FactRow } from './facts.ts'
 import { userScheduler } from './fsrs.ts'
 import {
@@ -196,9 +197,11 @@ export function buildQueue(db: Db, userId: string, opts: DayOptions, now: Date, 
       for (const row of db.prepare(`SELECT * FROM ${table} WHERE id IN (${chunk.map(() => '?').join(',')})`).all(...chunk) as unknown as (WordRow & FactRow)[]) map.set(row.id, row)
     }
   }
+  // Rules with an exercise pool: this review's items, picked now.
+  const exercises = exercisesForQueue(db, [...facts.keys()])
   return {
     items: page.map((r): QueueItem => r.kind === 'fact'
-      ? { kind: 'fact', card: toCard(r), fact: toFact(facts.get(r.item_id)!), deckName: r.deck_name }
+      ? { kind: 'fact', card: toCard(r), fact: toFact(facts.get(r.item_id)!), deckName: r.deck_name, ...(exercises.has(r.item_id) ? { exercises: exercises.get(r.item_id)! } : {}) }
       : { kind: 'word', card: toCard(r), word: toWord(words.get(r.item_id)!), deckName: r.deck_name }),
     counts: { new: fresh.length, learning: learning.length, review: reviews.length },
     decks,
@@ -266,6 +269,7 @@ export function applyReviews(db: Db, userId: string, inputs: ReviewInput[]): App
       const after = review(before, r.rating, at, f)
       update.run(...stateValues(after), r.cardId)
       insert.run(r.id, r.cardId, r.rating, at.toISOString(), r.durationMs ?? null, JSON.stringify(before), JSON.stringify(after))
+      if (r.exercises?.length && row.fact_id) recordAttempts(db, r.id, row.fact_id, r.exercises, at.toISOString())
       touched.set(r.cardId, toCard(getCard.get(r.cardId, userId) as unknown as CardRow))
       applied++
     }
@@ -283,6 +287,7 @@ export function undoReview(db: Db, userId: string, logId: string): Card {
     if (latest.id !== logId) throw new HttpError(409, 'only the latest review of a card can be undone')
     const before = JSON.parse(log.before) as CardState
     db.prepare(`UPDATE cards SET ${STATE_COLUMNS} WHERE id = ?`).run(...stateValues(before), log.card_id)
+    revertAttempts(db, logId)
     db.prepare('DELETE FROM review_logs WHERE id = ?').run(logId)
     return toCard(db.prepare('SELECT * FROM cards WHERE id = ?').get(log.card_id) as unknown as CardRow)
   })

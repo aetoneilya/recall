@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { cleanFact, formatInterval, type ReviewLog } from '@recall/core'
+  import { cleanExercise, cleanFact, formatInterval, type ExerciseType, type ReviewLog } from '@recall/core'
+  import ConfirmButton from '../components/ConfirmButton.svelte'
   import { onDestroy, tick } from 'svelte'
   import Header from '../components/Header.svelte'
   import Icon from '../components/Icon.svelte'
@@ -13,7 +14,7 @@
   import { haptic } from '../lib/telegram.ts'
   import { setUnsaved } from '../lib/unsaved.ts'
   import { errorText, showToast } from '../lib/toast.svelte.ts'
-  import type { FactItem } from '../lib/types.ts'
+  import type { ExerciseInfo, FactItem } from '../lib/types.ts'
   import { dirState } from '../lib/wordFilter.ts'
 
   // One fact: its topic, question, answer (Markdown, with a preview) and
@@ -90,6 +91,63 @@
       saved = key(form)
     }
   })
+
+  // The rule's exercise pool (empty for a plain fact): the list, flag /
+  // unflag / delete, and a form to add one.
+  let pool = $state.raw<ExerciseInfo[]>([])
+  let poolOpen = $state(false)
+  let draft = $state({ type: 'gap' as ExerciseType, prompt: '', answer: '', accepted: '', explain: '' })
+  let draftError = $state('')
+  const poolActive = $derived(pool.filter((e) => e.status === 'active').length)
+  async function loadPool() {
+    if (isNew) return
+    try {
+      pool = await api.exercises(id)
+    } catch {
+      // Offline: the section stays as it was.
+    }
+  }
+  void loadPool()
+  async function setFlag(e: ExerciseInfo, flagged: boolean) {
+    try {
+      const x = await api.patchExercise(e.id, flagged ? { status: 'flagged' } : { status: 'active', needsReview: false })
+      pool = pool.map((p) => (p.id === x.id ? x : p))
+      session.markStale()
+    } catch (err) {
+      showToast(errorText(err))
+    }
+  }
+  async function removeItem(e: ExerciseInfo) {
+    try {
+      await api.deleteExercise(e.id)
+      pool = pool.filter((p) => p.id !== e.id)
+      session.markStale()
+    } catch (err) {
+      showToast(errorText(err))
+    }
+  }
+  async function addItem() {
+    const input = { type: draft.type, prompt: draft.prompt, answer: draft.answer, accepted: draft.accepted.split(';').map((a) => a.trim()).filter(Boolean), explain: draft.explain || null }
+    const c = cleanExercise(input)
+    if ('error' in c) {
+      draftError = c.error
+      return
+    }
+    try {
+      const r = await api.addExercises(id, [c.item])
+      if (r.duplicates.length) {
+        draftError = 'The pool already has this prompt.'
+        return
+      }
+      pool = r.exercises
+      draft = { ...draft, prompt: '', answer: '', accepted: '', explain: '' }
+      draftError = ''
+      session.markStale()
+    } catch (err) {
+      draftError = errorText(err)
+    }
+  }
+  const TYPE_NAMES: Record<ExerciseType, string> = { gap: 'Gap', fix: 'Fix', rewrite: 'Rewrite' }
 
   async function load() {
     if (isNew) return
@@ -401,6 +459,47 @@
         </div>
       {/if}
       {#if fact && !inbox}
+        <div class="section-label">Exercises{#if pool.length}&nbsp;<span class="faint-n">{poolActive} active{pool.length > poolActive ? ` · ${pool.length - poolActive} flagged` : ''}</span>{/if}</div>
+        {#if pool.length}
+          <div class="group pool">
+            {#each poolOpen ? pool : pool.slice(0, 5) as e (e.id)}
+              <div class="row ex" class:flagged={e.status === 'flagged'}>
+                <div class="exmain">
+                  <div class="exprompt"><span class="extype">{TYPE_NAMES[e.type]}</span>{e.prompt}</div>
+                  <div class="exans">→ {e.answer}{#if e.accepted.length}<span class="faint-n"> · {e.accepted.join(' · ')}</span>{/if}</div>
+                  <div class="exstats">
+                    {#if e.status === 'flagged'}<span class="chip">flagged</span>{/if}
+                    {#if e.needsReview}<span class="chip review">“I was right”</span>{/if}
+                    <span>{e.shownCount ? `shown ${e.shownCount} · ✓ ${e.correctCount} · ✗ ${e.wrongCount}` : 'not shown yet'}</span>
+                  </div>
+                </div>
+                <div class="exactions">
+                  <button class="btn small" onclick={() => setFlag(e, e.status !== 'flagged')}>{e.status === 'flagged' ? 'Unflag' : 'Flag'}</button>
+                  <ConfirmButton class="btn small danger" onconfirm={() => void removeItem(e)} confirmLabel="Delete?"><Icon name="trash" size={15} /></ConfirmButton>
+                </div>
+              </div>
+            {/each}
+            {#if pool.length > 5}
+              <button class="row more" onclick={() => (poolOpen = !poolOpen)}>{poolOpen ? 'Show fewer' : `Show all ${pool.length}`}</button>
+            {/if}
+          </div>
+        {/if}
+        <form class="add-ex" onsubmit={(ev) => { ev.preventDefault(); void addItem() }}>
+          <div class="add-row">
+            <select bind:value={draft.type} aria-label="Type">
+              <option value="gap">Gap</option>
+              <option value="fix">Fix</option>
+              <option value="rewrite">Rewrite</option>
+            </select>
+            <input bind:value={draft.prompt} placeholder={draft.type === 'gap' ? 'She ___ here. (live)' : draft.type === 'fix' ? 'A sentence with one mistake' : 'Sentence. → Cue ___'} aria-label="Prompt" autocomplete="off" />
+          </div>
+          <input bind:value={draft.answer} placeholder="Answer" aria-label="Answer" autocomplete="off" autocapitalize="off" />
+          <input bind:value={draft.accepted} placeholder="Also accepted (separate with ;)" aria-label="Also accepted" autocomplete="off" autocapitalize="off" />
+          <input bind:value={draft.explain} placeholder="Why (one line, optional)" aria-label="Why" autocomplete="off" />
+          {#if draftError}<p class="problem">{draftError}</p>{/if}
+          <button class="btn" type="submit" disabled={!draft.prompt.trim() || !draft.answer.trim()}><Icon name="plus" size={16} stroke={2.2} /> Add exercise</button>
+          {#if !pool.length}<p class="hint">With three or more, this card is reviewed through three of them at a time instead of question and answer.</p>{/if}
+        </form>
         <button class="btn danger block delete" onclick={remove}><Icon name="trash" size={18} /> Delete card</button>
       {/if}
     {/if}
@@ -601,6 +700,98 @@
   }
   .r4 {
     background: var(--easy);
+  }
+  .faint-n {
+    color: var(--faint);
+    font-weight: 400;
+  }
+  .ex {
+    align-items: flex-start;
+    gap: 10px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+  .ex.flagged .exmain {
+    opacity: 0.55;
+  }
+  .exmain {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 15px;
+    line-height: 1.4;
+  }
+  .exprompt {
+    overflow-wrap: anywhere;
+  }
+  .extype {
+    display: inline-block;
+    margin-right: 6px;
+    padding: 0 6px;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 18px;
+    vertical-align: 1px;
+    color: var(--muted);
+    background: var(--surface-2);
+  }
+  .exans {
+    color: var(--good);
+    font-weight: 500;
+    overflow-wrap: anywhere;
+  }
+  .exstats {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .chip.review {
+    color: var(--hard);
+  }
+  .exactions {
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-items: stretch;
+  }
+  .more {
+    justify-content: center;
+    color: var(--accent);
+    font-weight: 500;
+  }
+  .add-ex {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .add-row {
+    display: flex;
+    gap: 8px;
+  }
+  .add-row select {
+    flex: none;
+    width: 108px;
+  }
+  .add-row input {
+    flex: 1;
+    min-width: 0;
+  }
+  .add-ex .btn {
+    align-self: flex-start;
+  }
+  .hint {
+    margin: 0 4px;
+    font-size: 13px;
+    color: var(--faint);
   }
   .btn.small {
     min-height: 36px;

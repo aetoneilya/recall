@@ -1,3 +1,5 @@
+import type { ExerciseAttempt, ExerciseItem } from './exercises.ts'
+
 // Shared shapes for the server, the web app and the MCP tools. Dates travel
 // as ISO strings; the server stores them the same way.
 
@@ -146,6 +148,8 @@ export interface ReviewInput {
   rating: Rating
   reviewedAt: string
   durationMs?: number
+  // An exercise review: how each item went (stored with the log).
+  exercises?: ExerciseAttempt[]
 }
 
 export interface ReviewLog extends ReviewInput {
@@ -169,6 +173,9 @@ export interface FactQueueItem {
   card: Card
   fact: Fact
   deckName: string
+  // A rule with an exercise pool: this review's items (3), picked by the
+  // server; absent for a plain question/answer fact.
+  exercises?: ExerciseItem[]
 }
 
 // The word or fact behind a queue item: siblings share it.

@@ -7,6 +7,7 @@ import { z } from 'zod'
 import type { AppContext } from './context.ts'
 import { dashboard } from './dashboard.ts'
 import { addPack, listPacks } from './packs.ts'
+import { addExercises, listExercises } from './exercises.ts'
 import { addFacts, deleteFact, factItem, searchFacts, setFactSuspended, updateFact, type FactItem } from './facts.ts'
 import { tx } from './db.ts'
 import { lexiconOf } from './lexicon.ts'
@@ -315,6 +316,30 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
     const r = addPack(db, uid, id, ctx.now())
     return { deck: { id: r.deck.id, name: r.deck.name }, added: r.added, alreadyAdded: r.alreadyAdded, duplicates: r.duplicates }
   }))
+
+  const EXERCISE_RULES = 'Each item practises the fact\'s rule (read it with search_facts first) and has exactly one clearly correct answer, plus any equally right variants in `accepted`. gap: a sentence with one "___" and a hint in parentheses — the base verb, a tense cue — e.g. "The list of jobs ___ longer. (be)", answer "is". fix: a sentence with exactly one mistake; answer = the whole corrected sentence. rewrite: "sentence → cue ___", answer = what completes the cue. `explain`: one short line on why, in Russian. Vary contexts, subjects and the item types; no answer may hinge on punctuation or spelling.'
+
+  server.registerTool('list_exercises', {
+    title: 'List exercises',
+    description: 'The exercise pool of a fact (a grammar rule): every item with its type, prompt, answer, accepted variants, explain, status (active / flagged: taken out of the pool by the user as a bad item), needsReview (the user said "I was right" on it), and how it went: shownCount, correctCount, wrongCount, lastShownAt. A fact with at least 3 active items is reviewed through 3 of them at a time. Use it to see what is there before add_exercises and to spot items that need fixing.',
+    inputSchema: { factId: z.string().describe('Fact id, e.g. ft_abc123.') },
+    annotations: { readOnlyHint: true },
+  }, guard(({ factId }) => listExercises(db, uid, factId)))
+
+  server.registerTool('add_exercises', {
+    title: 'Add exercises',
+    description: `Adds up to 50 exercise items to a fact's pool (the fact becomes a rule reviewed through its exercises once it has 3 active items). They are active at once. An item whose prompt (normalised) is already in the pool is not added: it is reported under duplicates with the existing id and status. Invalid items (a gap without exactly one "___", a rewrite without "→ … ___", a fix whose answer equals the prompt) are reported under errors. ${EXERCISE_RULES}`,
+    inputSchema: {
+      factId: z.string(),
+      items: z.array(z.object({
+        type: z.enum(['gap', 'fix', 'rewrite']),
+        prompt: z.string().min(1).max(500),
+        answer: z.string().min(1).max(300),
+        accepted: z.array(z.string()).max(10).optional().describe('Other answers that are just as right.'),
+        explain: z.string().max(500).optional(),
+      })).min(1).max(50),
+    },
+  }, guard((a) => addExercises(db, uid, a.factId, a.items, 'claude', ctx.now())))
 
   server.registerTool('review_stats', {
     title: 'Review stats',

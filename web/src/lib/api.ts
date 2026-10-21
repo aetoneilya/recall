@@ -1,10 +1,11 @@
-import type { QueueItem, ReviewInput } from '@recall/core'
+import type { ExerciseInput, QueueItem, ReviewInput } from '@recall/core'
 import type {
   ApiToken,
   AutofillResult,
   Dashboard,
   DeckPatch,
   DeckWithCounts,
+  ExerciseInfo,
   FactDetail,
   FactItem,
   FactPatch,
@@ -171,6 +172,12 @@ export function createApi(opts: ApiOptions = {}) {
     addPack: (id: string) => post<{ added: number; alreadyAdded: number; duplicates: number; packs: PackInfo[] }>(`/api/packs/${enc(id)}`),
 
     fact: (id: string) => get<FactDetail>(`/api/facts/${enc(id)}`),
+    exercises: async (factId: string) => list<ExerciseInfo>(await get<unknown>(`/api/facts/${enc(factId)}/exercises`), 'exercises'),
+    addExercises: (factId: string, items: ExerciseInput[]) =>
+      post<{ created: { index: number; id: string }[]; duplicates: { index: number }[]; errors: { index: number; error: string }[]; exercises: ExerciseInfo[] }>(`/api/facts/${enc(factId)}/exercises`, { items }),
+    patchExercise: async (id: string, p: Partial<ExerciseInput> & { status?: 'active' | 'flagged'; needsReview?: boolean }) =>
+      unwrap<ExerciseInfo>(await request<Json>('PATCH', `/api/exercises/${enc(id)}`, p), 'exercise'),
+    deleteExercise: (id: string) => request<unknown>('DELETE', `/api/exercises/${enc(id)}`),
     // A duplicate question is HttpError 409 with data.existing.
     createFact: async (f: NewFact) => unwrap<FactItem>(await post<Json>('/api/facts', f), 'fact'),
     updateFact: async (id: string, p: FactPatch) => unwrap<FactItem>(await request<Json>('PATCH', `/api/facts/${enc(id)}`, p), 'fact'),

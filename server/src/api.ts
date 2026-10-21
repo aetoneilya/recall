@@ -9,6 +9,7 @@ import { isTime, isTimeZone } from './config.ts'
 import type { AppContext } from './context.ts'
 import { dashboard } from './dashboard.ts'
 import { addPack, listPacks } from './packs.ts'
+import { addExercises, deleteExercise, listExercises, updateExercise } from './exercises.ts'
 import { createFact, deleteFact, factInboxCount, factItem, getFact, inboxFacts, searchFacts, setFactSuspended, updateFact } from './facts.ts'
 import { fsrsInfo, optimizeNow, REQUEST_RETENTION } from './fsrs.ts'
 import { lexiconOf } from './lexicon.ts'
@@ -35,6 +36,13 @@ const ReviewsBody = z.array(z.object({
   rating: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
   reviewedAt: z.iso.datetime({ offset: true }),
   durationMs: z.number().int().min(0).optional(),
+  exercises: z.array(z.object({
+    id: z.string().min(1).max(100),
+    given: z.string().max(500),
+    correct: z.boolean(),
+    overridden: z.boolean().optional(),
+    bad: z.boolean().optional(),
+  })).max(10).optional(),
 })).max(5000)
 
 const ExampleBody = z.object({ text: z.string(), translation: z.string().nullable().optional() })
@@ -74,6 +82,15 @@ const factStatusSchema = z.enum(tuple<FactStatus>(FACT_STATUSES))
 const FactFields = { front: z.string().max(5000), back: z.string().max(50000), tags: z.array(z.string()).optional() }
 const FactBody = z.object({ deckId: z.string().min(1), ...FactFields }).strict()
 const FactPatchBody = z.object({ ...FactFields, status: factStatusSchema, deckId: z.string().min(1) }).partial().strict()
+const ExerciseFields = {
+  type: z.enum(['gap', 'fix', 'rewrite']),
+  prompt: z.string().max(1000),
+  answer: z.string().max(500),
+  accepted: z.array(z.string().max(500)).max(20).optional(),
+  explain: z.string().max(1000).nullable().optional(),
+}
+const ExercisesBody = z.object({ items: z.array(z.object(ExerciseFields).strict()).min(1).max(100) }).strict()
+const ExercisePatchBody = z.object({ ...ExerciseFields, status: z.enum(['active', 'flagged']), needsReview: z.boolean() }).partial().strict()
 const AutofillBody = z.object({ deckId: z.string().optional(), term: z.string().min(1).max(200), hint: z.string().max(300).optional() })
 const AnswersBody = z.object({ answers: z.array(z.object({ id: z.string(), known: z.boolean() })).max(1000) })
 const time = z.string().refine(isTime, 'must be HH:MM (24 h)')
@@ -342,6 +359,27 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
 
   r.delete('/facts/:id', (req, res) => {
     deleteFact(db, uid(req), req.params.id as string)
+    res.json({ ok: true })
+  })
+
+  // ---------- exercises ----------
+
+  r.get('/facts/:id/exercises', (req, res) => {
+    res.json({ exercises: listExercises(db, uid(req), req.params.id as string) })
+  })
+
+  r.post('/facts/:id/exercises', (req, res) => {
+    const { items } = parse(ExercisesBody, req.body)
+    const out = addExercises(db, uid(req), req.params.id as string, items, 'user', ctx.now())
+    res.status(out.created.length ? 201 : 200).json({ ...out, exercises: listExercises(db, uid(req), req.params.id as string) })
+  })
+
+  r.patch('/exercises/:id', (req, res) => {
+    res.json({ exercise: updateExercise(db, uid(req), req.params.id as string, parse(ExercisePatchBody, req.body)) })
+  })
+
+  r.delete('/exercises/:id', (req, res) => {
+    deleteExercise(db, uid(req), req.params.id as string)
     res.json({ ok: true })
   })
 

@@ -1,6 +1,6 @@
 // The review session: cached queue, current card, ratings applied locally
 // and queued for upload, undo.
-import { dayKey, itemOf, type Card, type CardState, type DeckKind, type Fact, type QueueItem, type Rating, type Word } from '@recall/core'
+import { dayKey, itemOf, type Card, type CardState, type DeckKind, type ExerciseAttempt, type Fact, type QueueItem, type Rating, type Word } from '@recall/core'
 import { api, flushNow, kv, outbox, scheduleFlush, status } from './app.svelte.ts'
 import { AuthError, NetworkError, normalizeItem } from './api.ts'
 import { getDecks } from './decks.ts'
@@ -302,7 +302,10 @@ class ReviewSession {
     this.lock()
   }
 
-  rate(rating: Rating): boolean {
+  // An exercise review's items, by card, for showing them again after an undo.
+  exerciseResults: Record<string, ExerciseAttempt[]> = {}
+
+  rate(rating: Rating, extra: { exercises?: ExerciseAttempt[] } = {}): boolean {
     const item = this.current
     if (!item || !this.revealed || this.locked()) return false
     const now = new Date()
@@ -315,7 +318,9 @@ class ReviewSession {
       rating,
       reviewedAt: now.toISOString(),
       durationMs: Math.min(MAX_DURATION_MS, Math.max(0, now.getTime() - this.shownAt)),
+      ...(extra.exercises?.length ? { exercises: extra.exercises } : {}),
     }
+    if (extra.exercises?.length) this.exerciseResults[item.card.id] = extra.exercises
     outbox.add(input)
     this.history = [...this.history.slice(-49), { id: input.id, ...before }]
     this.local = { ...this.local, [item.card.id]: after }

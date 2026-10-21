@@ -151,6 +151,49 @@ export const MIGRATIONS: Migration[] = [
   `,
   // v6: topic decks of Q&A facts next to the language decks.
   { before: backupBefore(6, (db) => hasRows(db, 'cards')), run: topicDecks },
+  // v7: grammar exercises. A fact with a pool of items reviews through three
+  // of them at a time; each review's items are kept with its log.
+  `
+  CREATE TABLE fact_exercises (
+    id TEXT PRIMARY KEY,
+    fact_id TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+    type TEXT NOT NULL CHECK (type IN ('gap', 'fix', 'rewrite')),
+    prompt TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    accepted TEXT NOT NULL DEFAULT '[]',
+    explain TEXT,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'flagged')),
+    needs_review INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL,
+    import_ref TEXT,
+    created_at TEXT NOT NULL,
+    shown_count INTEGER NOT NULL DEFAULT 0,
+    last_shown_at TEXT,
+    correct_count INTEGER NOT NULL DEFAULT 0,
+    wrong_count INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE UNIQUE INDEX fact_exercises_dedupe ON fact_exercises(fact_id, dedupe_key);
+  CREATE INDEX fact_exercises_fact ON fact_exercises(fact_id, status, last_shown_at);
+  CREATE INDEX fact_exercises_import_ref ON fact_exercises(import_ref);
+  CREATE TABLE exercise_attempts (
+    review_log_id TEXT NOT NULL REFERENCES review_logs(id) ON DELETE CASCADE,
+    exercise_id TEXT NOT NULL REFERENCES fact_exercises(id) ON DELETE CASCADE,
+    given TEXT NOT NULL,
+    correct INTEGER NOT NULL,
+    overridden INTEGER NOT NULL DEFAULT 0,
+    bad INTEGER NOT NULL DEFAULT 0,
+    at TEXT NOT NULL,
+    PRIMARY KEY (review_log_id, exercise_id)
+  );
+  CREATE INDEX exercise_attempts_exercise ON exercise_attempts(exercise_id);
+  -- Claude top-ups of a pool: one attempt per fact per day.
+  CREATE TABLE exercise_topups (
+    fact_id TEXT PRIMARY KEY REFERENCES facts(id) ON DELETE CASCADE,
+    attempted_at TEXT NOT NULL,
+    result TEXT
+  );
+  `,
 ]
 
 // The file a connection works on; '' for :memory:.

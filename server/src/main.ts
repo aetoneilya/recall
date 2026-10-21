@@ -5,6 +5,7 @@ import { loadConfig } from './config.ts'
 import type { AppContext } from './context.ts'
 import { openDb, type Db } from './db.ts'
 import { startFsrsJob } from './fsrs.ts'
+import { startExerciseTopups } from './topup.ts'
 import { lexiconOf } from './lexicon.ts'
 import { currentPacks, usePackDir } from './pack-data.ts'
 import { syncFreqRanks } from './repo.ts'
@@ -43,6 +44,7 @@ const server = createApp(ctx).listen(cfg.port, host, () => {
 const bot = startBot(ctx)
 const stopBackups = cfg.backupDir ? startBackups(db, cfg.backupDir) : () => {}
 const stopFsrs = startFsrsJob(ctx)
+const stopTopups = startExerciseTopups(ctx)
 
 let stopping = false
 async function shutdown(signal: string) {
@@ -51,6 +53,7 @@ async function shutdown(signal: string) {
   console.log(`${signal}: shutting down`)
   stopBackups()
   stopFsrs()
+  stopTopups()
   await bot?.stop().catch(() => {})
   server.close(() => {
     db.close()

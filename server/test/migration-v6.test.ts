@@ -123,3 +123,19 @@ describe('migration to v6', () => {
     fs.rmSync(dir, { recursive: true })
   })
 })
+
+describe('migration to v7', () => {
+  it('adds the exercise tables, touching nothing else', () => {
+    const db = new DatabaseSync(':memory:')
+    v5(db)
+    migrate(db, ENV, 6)
+    const before = Object.fromEntries([...TABLES, 'decks', 'cards', 'facts'].map((t) => [t, dump(db, t)]))
+    migrate(db, ENV, 7)
+    expect(schemaVersion(db)).toBe(7)
+    for (const t of Object.keys(before)) expect(dump(db, t)).toEqual(before[t])
+    db.exec('PRAGMA foreign_keys = ON')
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    expect(dump(db, 'fact_exercises')).toEqual([])
+    expect(() => db.exec("INSERT INTO fact_exercises(id, fact_id, type, prompt, answer, created_by, dedupe_key, created_at) VALUES ('ex_1', 'ft_none', 'gap', 'p', 'a', 'user', 'p', 'now')")).toThrow(/FOREIGN KEY/)
+  })
+})

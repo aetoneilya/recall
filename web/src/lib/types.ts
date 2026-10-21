@@ -1,7 +1,7 @@
 // Shapes of the REST API responses as the web app uses them (DESIGN.md
 // "REST API"). Entities come from @recall/core; these are the envelopes and
 // the server-side shapes (repo.ts, dashboard.ts, vocab.ts) around them.
-import type { Card, Cefr, Deck, DeckKind, Direction, Example, Fact, FactInput, FactStatus, PartOfSpeech, QueueItem, ReviewLog, Word, WordInput, WordStatus } from '@recall/core'
+import type { Card, Cefr, Deck, DeckKind, Direction, Example, ExerciseItem, Fact, FactInput, FactStatus, PartOfSpeech, QueueItem, ReviewLog, Word, WordInput, WordStatus } from '@recall/core'
 
 export interface MeUser {
   id: string
@@ -180,6 +180,21 @@ export interface PackInfo {
 export interface FactItem extends Fact {
   deckName: string
   card: CardSummary | null
+  // A rule with an exercise pool.
+  exercises?: { active: number; flagged: number; needsReview: number }
+}
+
+// One item of a rule's exercise pool, with how it has gone.
+export interface ExerciseInfo extends ExerciseItem {
+  factId: string
+  status: 'active' | 'flagged'
+  needsReview: boolean
+  createdBy: string
+  createdAt: string
+  shownCount: number
+  lastShownAt: string | null
+  correctCount: number
+  wrongCount: number
 }
 
 export interface FactDetail {

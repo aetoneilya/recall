@@ -141,6 +141,7 @@
                 <span class="sub">
                   <span class="state {s ?? 'none'}">{s ? STATE_NAMES[s] : 'No card'}</span>
                   {#if x.status !== 'active'}<span class="chip status {x.status}">{x.status}</span>{/if}
+                  {#if x.exercises}<span class="tag">{x.exercises.active} exercises</span>{/if}
                   {#each x.tags as t (t)}<span class="tag">{t}</span>{/each}
                 </span>
               </span>

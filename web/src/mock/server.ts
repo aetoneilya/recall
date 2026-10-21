@@ -5,11 +5,13 @@
 // exercise every screen; topic decks of facts join the same session.
 // Loaded via dynamic import only in mock mode.
 import {
+  cleanExercise,
   cleanFact,
   cleanWord,
   DEFAULT_WEIGHTS,
   dayKey,
   dedupeKey,
+  exerciseKey,
   factKey,
   newCardState,
   nextDayStart,
@@ -20,6 +22,7 @@ import {
   type CardState,
   type Deck,
   type Direction,
+  type ExerciseInput,
   type Fact,
   type FactInput,
   formsLine,
@@ -30,8 +33,8 @@ import {
   type Word,
   type WordInput,
 } from '@recall/core'
-import type { CardSummary, Dashboard, Draft, FactItem, Placement, ScalePoint, TestResult, TypeAnswer, VocabEstimate, WordItem } from '../lib/types.ts'
-import { autofillDictionary, baselineSrs, irregularVerbs, pseudowords, scale, testBands, topics as seedTopics, words as seedWords, type Plan, type SeedWord } from './seed.ts'
+import type { CardSummary, Dashboard, Draft, ExerciseInfo, FactItem, Placement, ScalePoint, TestResult, TypeAnswer, VocabEstimate, WordItem } from '../lib/types.ts'
+import { autofillDictionary, baselineSrs, grammar, irregularVerbs, pseudowords, scale, testBands, topics as seedTopics, words as seedWords, type Plan, type SeedWord } from './seed.ts'
 
 const DAY = { timeZone: 'Europe/Moscow', startHour: 4 }
 const H = 3600_000
@@ -70,6 +73,7 @@ const db = {
   decks: [] as MockDeck[],
   words: [] as Word[],
   facts: [] as Fact[],
+  exercises: [] as ExerciseInfo[],
   cards: [] as Card[],
   logs: [] as ReviewLog[],
   tests: [] as TestRow[],
@@ -178,6 +182,22 @@ function seed() {
       const p = planState(plans[i]!, k * 2 + i, now)
       db.cards.push({ id: id('cd'), wordId: word.id, factId: null, direction, suspended: p.suspended, schedule: p.state })
     })
+  })
+  // Grammar: rules reviewed through their exercises.
+  const gdeck: MockDeck = {
+    id: 'dk_grammar', kind: 'topic', name: 'Grammar', targetLang: null, nativeLang: null, newPerDay: 5, inReview: true,
+    forwardEnabled: true, reverseEnabled: true, reverseAfterDays: null, typeAnswer: 'off', createdAt: iso(now - 30 * D),
+  }
+  db.decks.push(gdeck)
+  grammar.forEach((r, k) => {
+    const createdAt = iso(now - (20 - k) * D)
+    const fact: Fact = { id: id('ft'), deckId: gdeck.id, front: r.title, back: r.rule, tags: [], status: 'active', createdBy: 'import', createdAt, updatedAt: createdAt }
+    db.facts.push(fact)
+    const ps = planState(r.plan, 200 + k, now)
+    db.cards.push({ id: id('cd'), wordId: null, factId: fact.id, direction: 'forward', suspended: false, schedule: ps.state })
+    for (const it of r.items) {
+      db.exercises.push({ ...it, id: id('ex'), factId: fact.id, status: 'active', needsReview: false, createdBy: 'import', createdAt, shownCount: 0, lastShownAt: null, correctCount: 0, wrongCount: 0 })
+    }
   })
   seedTopics.forEach((t, ti) => {
     const deck: MockDeck = {
@@ -422,7 +442,9 @@ function buildQueue(now: Date, limit: number, deckId?: string) {
   const items: QueueItem[] = session.slice(0, limit).map((c): QueueItem => {
     const o = owners.get(ownerKey(c))!
     const deckName = deckOf(o.deckId).name
-    return c.factId ? { kind: 'fact', card: c, fact: o as Fact, deckName } : { kind: 'word', card: c, word: formsOf(o as Word), deckName }
+    if (!c.factId) return { kind: 'word', card: c, word: formsOf(o as Word), deckName }
+    const exercises = pickExercises(c.factId)
+    return { kind: 'fact', card: c, fact: o as Fact, deckName, ...(exercises ? { exercises } : {}) }
   })
   const count = (st: number[]) => session.filter((c) => st.includes(c.schedule.state)).length
   return {
@@ -491,7 +513,22 @@ function createWord(body: Body, now: Date): Word {
 
 function factItem(f: Fact, now: Date): FactItem {
   const c = db.cards.find((x) => x.factId === f.id)
-  return { ...f, deckName: deckOf(f.deckId).name, card: c ? summary(c, now) : null }
+  const pool = db.exercises.filter((e) => e.factId === f.id)
+  const exercises = pool.length
+    ? { exercises: { active: pool.filter((e) => e.status === 'active').length, flagged: pool.filter((e) => e.status === 'flagged').length, needsReview: pool.filter((e) => e.needsReview).length } }
+    : {}
+  return { ...f, deckName: deckOf(f.deckId).name, card: c ? summary(c, now) : null, ...exercises }
+}
+
+// Three items for a review: least recently shown first, at most two of a type (as the server does).
+function pickExercises(factId: string) {
+  const pool = db.exercises.filter((e) => e.factId === factId && e.status === 'active')
+  if (pool.length < 3) return null
+  const order = pool.map((e) => ({ e, r: Math.random() })).sort((a, b) => (a.e.lastShownAt ?? '').localeCompare(b.e.lastShownAt ?? '') || a.r - b.r).map((x) => x.e)
+  const out: ExerciseInfo[] = []
+  for (const e of order) if (out.length < 3 && out.filter((x) => x.type === e.type).length < 2) out.push(e)
+  for (const e of order) if (out.length < 3 && !out.includes(e)) out.push(e)
+  return out.map(({ id, type, prompt, answer, accepted, explain }) => ({ id, type, prompt, answer, accepted, explain }))
 }
 
 function createFact(body: Body, now: Date): Fact {
@@ -1101,6 +1138,15 @@ function handle(method: string, url: URL, body: unknown): unknown {
       const after = review(before, r.rating, new Date(r.reviewedAt))
       card.schedule = after
       db.logs.push({ ...r, before, after })
+      for (const a of r.exercises ?? []) {
+        const e = db.exercises.find((x) => x.id === a.id && x.factId === card.factId)
+        if (!e) continue
+        e.shownCount++
+        e.lastShownAt = r.reviewedAt
+        if (!a.bad) a.correct ? e.correctCount++ : e.wrongCount++
+        if (a.overridden) e.needsReview = true
+        if (a.bad) e.status = 'flagged'
+      }
       touched.set(card.id, card)
       applied++
     }
@@ -1202,6 +1248,20 @@ function handle(method: string, url: URL, body: unknown): unknown {
     return { deck, added, alreadyAdded: irregularVerbs.length - added, duplicates: 0, packs: [packInfo()] }
   }
 
+  if (a === 'exercises' && b) {
+    const e = db.exercises.find((x) => x.id === b)
+    if (!e) throw new Fail(404, `exercise ${b} not found`)
+    if (method === 'DELETE') {
+      db.exercises = db.exercises.filter((x) => x.id !== b)
+      return { ok: true }
+    }
+    if (method === 'PATCH') {
+      if ('status' in B) e.status = B.status as ExerciseInfo['status']
+      if ('needsReview' in B) e.needsReview = !!B.needsReview
+      return { exercise: e }
+    }
+  }
+
   // ---------- facts ----------
 
   if (a === 'facts') {
@@ -1217,6 +1277,21 @@ function handle(method: string, url: URL, body: unknown): unknown {
     if (!b && method === 'POST') return new Reply(201, { fact: factItem(createFact(B, now), now) })
     const f = db.facts.find((x) => x.id === b)
     if (!f) throw new Fail(404, `fact ${b} not found`)
+    if (c === 'exercises' && method === 'GET') return { exercises: db.exercises.filter((e) => e.factId === f.id) }
+    if (c === 'exercises' && method === 'POST') {
+      const created: { index: number; id: string }[] = []
+      const duplicates: { index: number }[] = []
+      const errors: { index: number; error: string }[] = []
+      ;((B.items ?? []) as ExerciseInput[]).forEach((x, index) => {
+        const r = cleanExercise(x)
+        if ('error' in r) return void errors.push({ index, error: r.error })
+        if (db.exercises.some((e) => e.factId === f.id && exerciseKey(e.prompt) === exerciseKey(r.item.prompt))) return void duplicates.push({ index })
+        const e: ExerciseInfo = { ...r.item, id: id('ex'), factId: f.id, status: 'active', needsReview: false, createdBy: 'user', createdAt: now.toISOString(), shownCount: 0, lastShownAt: null, correctCount: 0, wrongCount: 0 }
+        db.exercises.push(e)
+        created.push({ index, id: e.id })
+      })
+      return new Reply(created.length ? 201 : 200, { created, duplicates, errors, exercises: db.exercises.filter((e) => e.factId === f.id) })
+    }
     if (method === 'POST' && (c === 'approve' || c === 'reject')) {
       f.status = c === 'approve' ? 'active' : 'rejected'
       f.updatedAt = now.toISOString()

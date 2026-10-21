@@ -285,3 +285,15 @@ describe('facts in the queue', () => {
     expect(ids(buildQueue([normalizeItem(old)], {}, {}, now, day).main)).toEqual(['c'])
   })
 })
+
+describe('exercise items in the queue', () => {
+  it('keep their exercises through building, rating and normalising', async () => {
+    const { normalizeItem } = await import('./api.ts')
+    const exercises = [{ id: 'ex_1', type: 'gap' as const, prompt: 'She ___ here. (live)', answer: 'lives', accepted: [], explain: null }]
+    const it = { ...factItem('f1', 'ft1', newCardState(now)), exercises } as QueueItem
+    const q = buildQueue([normalizeItem(it)], {}, {}, now, day)
+    expect(q.main[0]).toMatchObject({ kind: 'fact', exercises })
+    const r = applyRating(q, q.main[0]!, 3, now, day)
+    expect(r.item).toMatchObject({ exercises })
+  })
+})

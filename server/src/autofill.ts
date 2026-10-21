@@ -65,8 +65,10 @@ export const AUTOFILL_SCHEMA = {
 }
 
 export function systemPrompt(deck: Pick<Deck, 'targetLang' | 'nativeLang'>): string {
-  const target = LANGUAGE_NAMES[deck.targetLang] ?? deck.targetLang
-  const native = LANGUAGE_NAMES[deck.nativeLang] ?? deck.nativeLang
+  const t = deck.targetLang ?? 'en'
+  const n = deck.nativeLang ?? 'ru'
+  const target = LANGUAGE_NAMES[t] ?? t
+  const native = LANGUAGE_NAMES[n] ?? n
   return `You are a bilingual ${target}–${native} lexicographer filling in a learner's vocabulary card.
 Given a ${target} term (and maybe a hint about the intended sense), return:
 - term: the dictionary base form (verbs as "to …"; keep phrasal verbs and idioms whole; fix obvious typos);

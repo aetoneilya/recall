@@ -1,7 +1,7 @@
 // Local review queue: what to show next and how a rating changes the queue.
 // Pure functions over immutable state so undo is just "restore the previous
 // state" and the logic is testable without a DOM.
-import { nextDayStart, review, type CardState, type DayOptions, type QueueItem, type Rating, type Word } from '@recall/core'
+import { itemOf, nextDayStart, review, type CardState, type DayOptions, type Fact, type QueueItem, type Rating, type Word } from '@recall/core'
 import type { Scheduler } from './fsrs.ts'
 
 export interface QueueState {
@@ -10,8 +10,9 @@ export interface QueueState {
   // Time-gated cards (learning/relearning, or anything due again later
   // today), sorted by due. Shown once due, or early when nothing else is left.
   learning: QueueItem[]
-  // wordId → the card of that word reviewed today. Its other direction is
-  // buried until tomorrow; the card itself may come back while learning.
+  // word (or fact) id → the card of it reviewed today. A word's other
+  // direction is buried until tomorrow; the card itself may come back while
+  // learning.
   buried: Record<string, string>
 }
 
@@ -60,15 +61,16 @@ export function buildQueue(
     const l = local[raw.card.id]
     if (l && later(l.lastReview, raw.card.schedule.lastReview)) item = { ...raw, card: { ...raw.card, schedule: l } }
     if (due(item) >= dayEnd) continue
-    const mine = buried[raw.word.id]
+    const owner = itemOf(raw).id
+    const mine = buried[owner]
     // Learning cards are mid-flight and never buried (same rule as the
     // server); review and new cards wait for tomorrow when a sibling was
     // reviewed today or is earlier in this queue.
     if (!isLearning(item.card.schedule)) {
       if (mine && mine !== raw.card.id) continue
-      if (words.has(raw.word.id)) continue
+      if (words.has(owner)) continue
     }
-    words.add(raw.word.id)
+    words.add(owner)
     if (isLearning(item.card.schedule) || mine) q.learning = insertByDue(q.learning, item)
     else q.main.push(item)
   }
@@ -92,9 +94,9 @@ export interface Rated {
 
 export function applyRating(q: QueueState, item: QueueItem, rating: Rating, now: Date, day: DayOptions, f?: Scheduler): Rated {
   const after = review(item.card.schedule, rating, now, f)
-  const wordId = item.word.id
+  const wordId = itemOf(item).id
   // Drops the card itself and its review/new sibling; a learning sibling stays.
-  const keep = (x: QueueItem) => x.word.id !== wordId || (x.card.id !== item.card.id && isLearning(x.card.schedule))
+  const keep = (x: QueueItem) => itemOf(x).id !== wordId || (x.card.id !== item.card.id && isLearning(x.card.schedule))
   const updated: QueueItem = { ...item, card: { ...item.card, schedule: after } }
   let learning = q.learning.filter(keep)
   if (new Date(after.due).getTime() < nextDayStart(now, day).getTime()) learning = insertByDue(learning, updated)
@@ -105,7 +107,13 @@ export function applyRating(q: QueueState, item: QueueItem, rating: Rating, now:
   }
 }
 
-export function counts(q: QueueState) {
+export interface Counts {
+  new: number
+  learning: number
+  review: number
+}
+
+export function counts(q: QueueState): Counts {
   let n = 0
   let r = 0
   for (const it of q.main) {
@@ -115,6 +123,18 @@ export function counts(q: QueueState) {
   }
   const learning = q.learning.length + q.main.filter((it) => isLearning(it.card.schedule)).length
   return { new: n, learning, review: r }
+}
+
+// What's left today per deck id, counted like counts().
+export function deckCounts(q: QueueState): Record<string, Counts> {
+  const out: Record<string, Counts> = {}
+  const of = (it: QueueItem) => (out[itemOf(it).deckId] ??= { new: 0, learning: 0, review: 0 })
+  for (const it of q.learning) of(it).learning++
+  for (const it of q.main) {
+    const s = it.card.schedule
+    of(it)[s.state === 0 ? 'new' : isLearning(s) ? 'learning' : 'review']++
+  }
+  return out
 }
 
 export function remaining(q: QueueState): number {
@@ -140,13 +160,22 @@ export function allItems(q: QueueState): QueueItem[] {
 export function patchWord(list: QueueItem[], word: Word, suspended: ReadonlySet<string> = new Set()): QueueItem[] {
   const gone = word.status !== 'active'
   return list.flatMap((it) => {
-    if (it.word.id !== word.id) return [it]
+    if (it.kind === 'fact' || it.word.id !== word.id) return [it]
     if (gone || suspended.has(it.card.id)) return []
     return [{ ...it, word }]
   })
 }
 
-// A word deleted here: none of its cards stay queued.
-export function dropWord(list: QueueItem[], wordId: string): QueueItem[] {
-  return list.filter((it) => it.word.id !== wordId)
+// The same for a fact edited from its card.
+export function patchFact(list: QueueItem[], fact: Fact, suspended = false): QueueItem[] {
+  const gone = fact.status !== 'active' || suspended
+  return list.flatMap((it) => {
+    if (it.kind !== 'fact' || it.fact.id !== fact.id) return [it]
+    return gone ? [] : [{ ...it, fact }]
+  })
+}
+
+// A word or fact deleted here: none of its cards stay queued.
+export function dropWord(list: QueueItem[], id: string): QueueItem[] {
+  return list.filter((it) => itemOf(it).id !== id)
 }

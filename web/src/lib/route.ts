@@ -30,8 +30,11 @@ export function parseRoute(hash: string): Route {
   const first = parts[0] ?? ''
   // Pushed screens belong to the tab they were opened from.
   const from = q.get('from') ?? ''
+  // A fact's editor is only ever opened from its review card.
   const tab: Tab =
-    first === 'words' || (first === 'word' && from !== '/')
+    first === 'fact'
+      ? 'review'
+      : first === 'words' || (first === 'word' && from !== '/')
       ? 'words'
       : first === 'word'
         ? 'review'

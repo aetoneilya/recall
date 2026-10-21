@@ -2,12 +2,15 @@
 // Implements the queue rules (learning first, reviews, new interleaved,
 // one card per word per day, new-per-day, disabled directions, the reverse
 // gate), autofill, the dashboard and the vocabulary test closely enough to
-// exercise every screen. Loaded via dynamic import only in mock mode.
+// exercise every screen; topic decks of facts join the same session.
+// Loaded via dynamic import only in mock mode.
 import {
+  cleanFact,
   cleanWord,
   DEFAULT_WEIGHTS,
   dayKey,
   dedupeKey,
+  factKey,
   newCardState,
   nextDayStart,
   normalizeTerm,
@@ -17,6 +20,8 @@ import {
   type CardState,
   type Deck,
   type Direction,
+  type Fact,
+  type FactInput,
   type QueueItem,
   type Rating,
   type ReviewInput,
@@ -24,8 +29,8 @@ import {
   type Word,
   type WordInput,
 } from '@recall/core'
-import type { CardSummary, Dashboard, Draft, Placement, ScalePoint, TestResult, TypeAnswer, VocabEstimate, WordItem } from '../lib/types.ts'
-import { autofillDictionary, baselineSrs, pseudowords, scale, testBands, words as seedWords, type Plan, type SeedWord } from './seed.ts'
+import type { CardSummary, Dashboard, Draft, FactItem, Placement, ScalePoint, TestResult, TypeAnswer, VocabEstimate, WordItem } from '../lib/types.ts'
+import { autofillDictionary, baselineSrs, pseudowords, scale, testBands, topics as seedTopics, words as seedWords, type Plan, type SeedWord } from './seed.ts'
 
 const DAY = { timeZone: 'Europe/Moscow', startHour: 4 }
 const H = 3600_000
@@ -63,6 +68,7 @@ interface TestRow {
 const db = {
   decks: [] as MockDeck[],
   words: [] as Word[],
+  facts: [] as Fact[],
   cards: [] as Card[],
   logs: [] as ReviewLog[],
   tests: [] as TestRow[],
@@ -128,10 +134,12 @@ function seed() {
   const now = Date.now()
   const eng: MockDeck = {
     id: 'dk_english',
+    kind: 'language',
     name: 'English',
     targetLang: 'en',
     nativeLang: 'ru',
     newPerDay: 10,
+    inReview: true,
     forwardEnabled: true,
     reverseEnabled: true,
     reverseAfterDays: null,
@@ -167,7 +175,21 @@ function seed() {
     const plans: [Plan, Plan] = Array.isArray(s.plan) ? s.plan : ['new', 'new']
     ;(['forward', 'reverse'] as const).forEach((direction, i) => {
       const p = planState(plans[i]!, k * 2 + i, now)
-      db.cards.push({ id: id('cd'), wordId: word.id, direction, suspended: p.suspended, schedule: p.state })
+      db.cards.push({ id: id('cd'), wordId: word.id, factId: null, direction, suspended: p.suspended, schedule: p.state })
+    })
+  })
+  seedTopics.forEach((t, ti) => {
+    const deck: MockDeck = {
+      id: `dk_topic${ti}`, kind: 'topic', name: t.name, targetLang: null, nativeLang: null, newPerDay: t.newPerDay, inReview: t.inReview,
+      forwardEnabled: true, reverseEnabled: true, reverseAfterDays: null, typeAnswer: 'off', createdAt: iso(now - (90 - ti) * D),
+    }
+    db.decks.push(deck)
+    t.facts.forEach((f, k) => {
+      const createdAt = iso(now - (60 - ti * 10 - k) * D)
+      const fact: Fact = { id: id('ft'), deckId: deck.id, front: f.front, back: f.back, tags: f.tags ?? [], status: 'active', createdBy: 'import', createdAt, updatedAt: createdAt }
+      db.facts.push(fact)
+      const ps = planState(f.plan, 100 + ti * 10 + k, now)
+      db.cards.push({ id: id('cd'), wordId: null, factId: fact.id, direction: 'forward', suspended: ps.suspended, schedule: ps.state })
     })
   })
   for (const [k, e] of Object.entries(autofillDictionary)) if (e.freqRank !== null) ranks.set(k, e.freqRank)
@@ -205,7 +227,10 @@ seed()
 
 const deckOf = (deckId: string) => db.decks.find((d) => d.id === deckId)!
 const wordOf = (wordId: string) => db.words.find((w) => w.id === wordId)!
+const factOf = (factId: string) => db.facts.find((f) => f.id === factId)!
 const cardsOf = (wordId: string) => db.cards.filter((c) => c.wordId === wordId)
+// The word or fact a card belongs to.
+const ownerOf = (c: Card): Word | Fact => (c.factId ? factOf(c.factId) : wordOf(c.wordId!))
 const today = (now: Date) => dayKey(now, DAY)
 const isToday = (at: string, now: Date) => dayKey(new Date(at), DAY) === today(now)
 const enabled = (deck: Deck, dir: Direction) => (dir === 'forward' ? deck.forwardEnabled : deck.reverseEnabled)
@@ -226,7 +251,7 @@ function mustDeck(ref: string | null | undefined): MockDeck {
 
 function summary(card: Card, now: Date): CardSummary {
   const s = card.schedule
-  const deck = deckOf(wordOf(card.wordId).deckId)
+  const deck = deckOf(ownerOf(card).deckId)
   return {
     id: card.id,
     direction: card.direction,
@@ -270,9 +295,14 @@ function lemma(term: string): string | null {
 
 // --- queue -----------------------------------------------------------------
 
+// Today's cards of every deck (or of one), then the session: those of decks
+// in review. Budgets are per deck and burying per word, so a deck's share
+// doesn't depend on the others.
 function buildQueue(now: Date, limit: number, deckId?: string) {
   const dayEnd = nextDayStart(now, DAY).getTime()
-  const words = new Map(db.words.filter((w) => w.status === 'active' && (!deckId || w.deckId === deckId)).map((w) => [w.id, w]))
+  const owners = new Map<string, Word | Fact>()
+  for (const o of [...db.words, ...db.facts]) if (o.status === 'active' && (!deckId || o.deckId === deckId)) owners.set(o.id, o)
+  const ownerKey = (c: Card) => (c.factId ?? c.wordId)!
   const reviewedToday = new Map<string, Set<string>>()
   const firstLog = new Map<string, string>()
   for (const l of db.logs) {
@@ -281,13 +311,14 @@ function buildQueue(now: Date, limit: number, deckId?: string) {
     if (!isToday(l.reviewedAt, now)) continue
     const c = db.cards.find((x) => x.id === l.cardId)
     if (!c) continue
-    if (!reviewedToday.has(c.wordId)) reviewedToday.set(c.wordId, new Set())
-    reviewedToday.get(c.wordId)!.add(c.id)
+    if (!reviewedToday.has(ownerKey(c))) reviewedToday.set(ownerKey(c), new Set())
+    reviewedToday.get(ownerKey(c))!.add(c.id)
   }
   const cards = db.cards.filter((c) => {
-    const w = words.get(c.wordId)
-    return w && !c.suspended && enabled(deckOf(w.deckId), c.direction)
+    const o = owners.get(ownerKey(c))
+    return o && !c.suspended && (c.factId !== null || enabled(deckOf(o.deckId), c.direction))
   })
+  const deckIdOf = (c: Card) => owners.get(ownerKey(c))!.deckId
   const dueT = (c: Card) => new Date(c.schedule.due).getTime()
   const learning = cards.filter((c) => (c.schedule.state === 1 || c.schedule.state === 3) && dueT(c) < dayEnd).sort((a, b) => dueT(a) - dueT(b))
   const reviews = cards.filter((c) => c.schedule.state === 2 && dueT(c) < dayEnd).sort((a, b) => dueT(a) - dueT(b))
@@ -295,36 +326,33 @@ function buildQueue(now: Date, limit: number, deckId?: string) {
   const introduced = new Map<string, number>()
   for (const c of cards) {
     const f = firstLog.get(c.id)
-    if (f && isToday(f, now)) {
-      const d = words.get(c.wordId)!.deckId
-      introduced.set(d, (introduced.get(d) ?? 0) + 1)
-    }
+    if (f && isToday(f, now)) introduced.set(deckIdOf(c), (introduced.get(deckIdOf(c)) ?? 0) + 1)
   }
   const budget = new Map(db.decks.map((d) => [d.id, Math.max(0, d.newPerDay - (introduced.get(d.id) ?? 0))]))
   // The reverse gate: a new reverse card waits until its forward card is
   // out of the new state and stable enough (ignored while forward is off).
   const gated = (c: Card) => {
-    if (c.direction !== 'reverse') return false
-    const deck = deckOf(words.get(c.wordId)!.deckId)
+    if (c.direction !== 'reverse' || !c.wordId) return false
+    const deck = deckOf(deckIdOf(c))
     if (deck.reverseAfterDays === null || !deck.forwardEnabled) return false
     const fwd = cardsOf(c.wordId).find((x) => x.direction === 'forward')
     return !fwd || fwd.schedule.state === 0 || fwd.schedule.stability < deck.reverseAfterDays
   }
   const fresh = cards
     .filter((c) => c.schedule.state === 0 && !gated(c))
-    .sort((a, b) => words.get(a.wordId)!.createdAt.localeCompare(words.get(b.wordId)!.createdAt) || (a.direction === 'forward' ? -1 : 1))
+    .sort((a, b) => owners.get(ownerKey(a))!.createdAt.localeCompare(owners.get(ownerKey(b))!.createdAt) || (a.direction === 'forward' ? -1 : 1))
 
   const out: Card[] = []
   const seenWords = new Set<string>()
   // One card per word per day: skip a card whose sibling was reviewed today
   // or is earlier in this queue.
   const ok = (c: Card) => {
-    const r = reviewedToday.get(c.wordId)
+    const r = reviewedToday.get(ownerKey(c))
     if (r && !r.has(c.id)) return false
-    return !seenWords.has(c.wordId)
+    return !seenWords.has(ownerKey(c))
   }
   const push = (c: Card) => {
-    seenWords.add(c.wordId)
+    seenWords.add(ownerKey(c))
     out.push(c)
   }
   // Learning cards are mid-flight and never buried.
@@ -333,7 +361,7 @@ function buildQueue(now: Date, limit: number, deckId?: string) {
   const nextNew = () => {
     while (ni < fresh.length) {
       const c = fresh[ni++]!
-      const d = words.get(c.wordId)!.deckId
+      const d = deckIdOf(c)
       if (ok(c) && (budget.get(d) ?? 0) > 0) {
         budget.set(d, budget.get(d)! - 1)
         return c
@@ -353,25 +381,36 @@ function buildQueue(now: Date, limit: number, deckId?: string) {
   }
   for (let n = nextNew(); n; n = nextNew()) push(n)
 
-  const items: QueueItem[] = out.slice(0, limit).map((c) => {
-    const word = words.get(c.wordId)!
-    return { card: c, word, deckName: deckOf(word.deckId).name }
+  const tally = (cs: Card[], d: string) => ({
+    new: cs.filter((c) => deckIdOf(c) === d && c.schedule.state === 0).length,
+    learning: cs.filter((c) => deckIdOf(c) === d && (c.schedule.state === 1 || c.schedule.state === 3)).length,
+    review: cs.filter((c) => deckIdOf(c) === d && c.schedule.state === 2).length,
   })
-  const count = (s: number[]) => out.filter((c) => s.includes(c.schedule.state)).length
+  const decks = db.decks.filter((d) => !deckId || d.id === deckId)
+    .sort((a, b) => Number(a.kind === 'topic') - Number(b.kind === 'topic'))
+    .map((d) => ({ id: d.id, name: d.name, kind: d.kind, inReview: d.inReview, counts: tally(out, d.id) }))
+  const session = out.filter((c) => deckId || deckOf(deckIdOf(c)).inReview)
+  const items: QueueItem[] = session.slice(0, limit).map((c): QueueItem => {
+    const o = owners.get(ownerKey(c))!
+    const deckName = deckOf(o.deckId).name
+    return c.factId ? { kind: 'fact', card: c, fact: o as Fact, deckName } : { kind: 'word', card: c, word: o as Word, deckName }
+  })
+  const count = (st: number[]) => session.filter((c) => st.includes(c.schedule.state)).length
   return {
     out,
     items,
     counts: { new: count([0]), learning: count([1, 3]), review: count([2]) },
     inbox: db.words.filter((w) => w.status === 'inbox' && (!deckId || w.deckId === deckId)).length,
+    decks,
   }
 }
 
 function deckCounts(deck: MockDeck, now: Date) {
   const dayEnd = nextDayStart(now, DAY).getTime()
-  const words = db.words.filter((w) => w.deckId === deck.id)
+  const words: (Word | Fact)[] = deck.kind === 'topic' ? db.facts.filter((f) => f.deckId === deck.id) : db.words.filter((w) => w.deckId === deck.id)
   const active = new Set(words.filter((w) => w.status === 'active').map((w) => w.id))
-  const cards = db.cards.filter((c) => active.has(c.wordId) && !c.suspended && enabled(deck, c.direction))
-  const knownWords = new Set(cards.filter((c) => known(c.schedule, now)).map((c) => c.wordId))
+  const cards = db.cards.filter((c) => active.has((c.factId ?? c.wordId)!) && !c.suspended && (deck.kind === 'topic' || enabled(deck, c.direction)))
+  const knownWords = new Set(cards.filter((c) => known(c.schedule, now)).map((c) => c.factId ?? c.wordId))
   return {
     total: words.length,
     active: active.size,
@@ -399,6 +438,7 @@ function dupError(existing: Word): Fail {
 
 function createWord(body: Body, now: Date): Word {
   const deck = mustDeck(body.deckId as string | undefined)
+  if (deck.kind === 'topic') throw new Fail(400, `"${deck.name}" is a topic deck; words go into a language deck`)
   const r = cleanWord(body as unknown as WordInput)
   if ('error' in r) throw new Fail(400, r.error)
   const dup = duplicateOf(deck.id, r.word.term, r.word.pos)
@@ -414,8 +454,39 @@ function createWord(body: Body, now: Date): Word {
     updatedAt: now.toISOString(),
   }
   db.words.push(word)
-  for (const direction of ['forward', 'reverse'] as const) db.cards.push({ id: id('cd'), wordId: word.id, direction, suspended: false, schedule: newCardState(now) })
+  for (const direction of ['forward', 'reverse'] as const) db.cards.push({ id: id('cd'), wordId: word.id, factId: null, direction, suspended: false, schedule: newCardState(now) })
   return word
+}
+
+// --- facts ------------------------------------------------------------------
+
+function factItem(f: Fact, now: Date): FactItem {
+  const c = db.cards.find((x) => x.factId === f.id)
+  return { ...f, deckName: deckOf(f.deckId).name, card: c ? summary(c, now) : null }
+}
+
+function createFact(body: Body, now: Date): Fact {
+  const deck = mustDeck(body.deckId as string | undefined)
+  if (deck.kind !== 'topic') throw new Fail(400, `"${deck.name}" is a language deck; facts go into a topic deck`)
+  const r = cleanFact(body as unknown as FactInput)
+  if ('error' in r) throw new Fail(400, r.error)
+  const dup = db.facts.find((f) => f.deckId === deck.id && factKey(f.front) === factKey(r.fact.front))
+  if (dup) throw new Fail(409, `"${dup.front}" is already in this deck`, { existing: dup })
+  const fact: Fact = { id: id('ft'), deckId: deck.id, ...r.fact, status: 'active', createdBy: 'user', createdAt: now.toISOString(), updatedAt: now.toISOString() }
+  db.facts.push(fact)
+  db.cards.push({ id: id('cd'), wordId: null, factId: fact.id, direction: 'forward', suspended: false, schedule: newCardState(now) })
+  return fact
+}
+
+function updateFact(f: Fact, body: Body, now: Date): Fact {
+  for (const k of Object.keys(body)) if (!['front', 'back', 'tags', 'status'].includes(k)) throw new Fail(400, `Unrecognized key: "${k}"`)
+  const r = cleanFact({ front: (body.front as string) ?? f.front, back: (body.back as string) ?? f.back, tags: (body.tags as string[]) ?? f.tags })
+  if ('error' in r) throw new Fail(400, r.error)
+  const dup = db.facts.find((x) => x.id !== f.id && x.deckId === f.deckId && factKey(x.front) === factKey(r.fact.front))
+  if (dup) throw new Fail(409, `"${dup.front}" is already in this deck`, { existing: dup })
+  if ('status' in body) f.status = body.status as Fact['status']
+  Object.assign(f, r.fact, { updatedAt: now.toISOString() })
+  return f
 }
 
 const PATCH_KEYS = ['term', 'pos', 'translations', 'ipa', 'examples', 'note', 'tags', 'cefr', 'status']
@@ -695,7 +766,7 @@ function dashboard(deck: MockDeck, now: Date): Dashboard {
   const words = db.words.filter((w) => w.deckId === deck.id)
   const active = words.filter((w) => w.status === 'active')
   const activeIds = new Set(active.map((w) => w.id))
-  const cards = db.cards.filter((c) => activeIds.has(c.wordId))
+  const cards = db.cards.filter((c) => c.wordId && activeIds.has(c.wordId))
   const directions = {
     forward: { enabled: deck.forwardEnabled, new: 0, learning: 0, known: 0, fading: 0, suspended: 0 },
     reverse: { enabled: deck.reverseEnabled, new: 0, learning: 0, known: 0, fading: 0, suspended: 0 },
@@ -711,8 +782,8 @@ function dashboard(deck: MockDeck, now: Date): Dashboard {
     else if (known(s, now)) d.known++
     else d.fading++
     if (!enabled(deck, c.direction)) continue
-    if (!c.suspended && known(s, now)) knownWords.add(c.wordId)
-    stable.set(c.wordId, (stable.get(c.wordId) ?? true) && s.state === 2 && s.stability >= 21)
+    if (!c.suspended && known(s, now)) knownWords.add(c.wordId!)
+    stable.set(c.wordId!, (stable.get(c.wordId!) ?? true) && s.state === 2 && s.stability >= 21)
   }
   const knownNow = knownWords.size
 
@@ -721,14 +792,13 @@ function dashboard(deck: MockDeck, now: Date): Dashboard {
     return { date: iso(now.getTime() - (25 - i) * 7 * D).slice(0, 10), known: Math.round(knownNow * (0.12 + 0.88 * x ** 1.3)) }
   })
 
-  // Activity from the logs, per study day.
+  // Activity from every log (words and facts, any deck), per study day.
   const keys: string[] = []
   for (let i = 89; i >= 0; i--) keys.push(dayKey(new Date(now.getTime() - i * D), DAY))
   const perDay = new Map(keys.map((k) => [k, { day: k, reviews: 0, again: 0, timeMs: 0 }]))
   const studied = new Set<string>()
-  const deckCards = new Set(db.cards.filter((c) => wordOf(c.wordId).deckId === deck.id).map((c) => c.id))
+  const deckCards = new Set(db.cards.filter((c) => c.wordId && wordOf(c.wordId).deckId === deck.id).map((c) => c.id))
   for (const l of db.logs) {
-    if (!deckCards.has(l.cardId)) continue
     const k = dayKey(new Date(l.reviewedAt), DAY)
     studied.add(k)
     const d = perDay.get(k)
@@ -884,10 +954,13 @@ function patchMe(body: Body) {
   Object.assign(settings, body)
 }
 
-const DECK_KEYS = ['name', 'newPerDay', 'forwardEnabled', 'reverseEnabled', 'reverseAfterDays', 'typeAnswer']
+const DECK_KEYS = ['name', 'newPerDay', 'inReview', 'forwardEnabled', 'reverseEnabled', 'reverseAfterDays', 'typeAnswer']
+const LANGUAGE_ONLY = ['forwardEnabled', 'reverseEnabled', 'reverseAfterDays', 'typeAnswer']
 
 function patchDeck(d: MockDeck, body: Body) {
   for (const k of Object.keys(body)) if (!DECK_KEYS.includes(k)) throw new Fail(400, `Unrecognized key: "${k}"`)
+  if (d.kind === 'topic') for (const k of Object.keys(body)) if (LANGUAGE_ONLY.includes(k)) throw new Fail(400, `${k} does not apply to a topic deck`)
+  if ('inReview' in body && typeof body.inReview !== 'boolean') throw new Fail(400, 'inReview must be a boolean')
   if ('newPerDay' in body && (!Number.isInteger(body.newPerDay) || (body.newPerDay as number) < 0 || (body.newPerDay as number) > 999)) throw new Fail(400, 'newPerDay must be 0..999')
   if ('reverseAfterDays' in body && body.reverseAfterDays !== null && (typeof body.reverseAfterDays !== 'number' || body.reverseAfterDays < 1 || body.reverseAfterDays > 365))
     throw new Fail(400, 'reverseAfterDays must be 1..365 or null')
@@ -978,8 +1051,8 @@ function handle(method: string, url: URL, body: unknown): unknown {
   if (p === '/api/queue') {
     const ref = url.searchParams.get('deck')
     const deckId = ref ? (resolveDeck(ref)?.id ?? '-') : undefined
-    const { items, counts, inbox } = buildQueue(now, Number(url.searchParams.get('limit') ?? 200), deckId)
-    return { items, counts, inbox }
+    const { items, counts, inbox, decks } = buildQueue(now, Number(url.searchParams.get('limit') ?? 200), deckId)
+    return { items, counts, inbox, decks }
   }
 
   if (p === '/api/reviews' && method === 'POST') {
@@ -1016,17 +1089,33 @@ function handle(method: string, url: URL, body: unknown): unknown {
   // ---------- decks ----------
 
   if (a === 'decks') {
-    if (!b && method === 'GET') return { decks: db.decks.map((d) => ({ ...d, counts: deckCounts(d, now) })) }
+    if (!b && method === 'GET') {
+      const sorted = [...db.decks].sort((x, y) => Number(x.kind === 'topic') - Number(y.kind === 'topic'))
+      return { decks: sorted.map((d) => ({ ...d, counts: deckCounts(d, now) })) }
+    }
+    if (!b && method === 'POST' && B.kind === 'topic') {
+      const name = String(B.name ?? '').replace(/\s+/g, ' ').trim()
+      if (!name) throw new Fail(400, 'deck name is empty')
+      if (db.decks.some((d) => d.name.toLowerCase() === name.toLowerCase())) throw new Fail(409, `deck "${name}" already exists`)
+      const d: MockDeck = {
+        id: id('dk'), kind: 'topic', name, targetLang: null, nativeLang: null, newPerDay: Number(B.newPerDay ?? 15), inReview: B.inReview !== false,
+        forwardEnabled: true, reverseEnabled: true, reverseAfterDays: null, typeAnswer: 'off', createdAt: now.toISOString(),
+      }
+      db.decks.push(d)
+      return new Reply(201, { deck: d })
+    }
     if (!b && method === 'POST') {
       const lang = String(B.targetLang ?? '').toLowerCase()
       if (!lang) throw new Fail(400, 'targetLang is required')
       if (db.decks.some((d) => d.targetLang === lang)) throw new Fail(409, `a deck for ${lang} already exists`)
       const d: MockDeck = {
         id: id('dk'),
+        kind: 'language',
         name: String(B.name ?? lang.toUpperCase()),
         targetLang: lang,
         nativeLang: String(B.nativeLang ?? 'ru'),
         newPerDay: Number(B.newPerDay ?? 15),
+        inReview: true,
         forwardEnabled: true,
         reverseEnabled: true,
         reverseAfterDays: null,
@@ -1036,11 +1125,49 @@ function handle(method: string, url: URL, body: unknown): unknown {
       db.decks.push(d)
       return new Reply(201, { deck: d })
     }
+    if (b && method === 'DELETE') {
+      const d = db.decks.find((x) => x.id === b)
+      if (!d) throw new Fail(404, 'deck not found')
+      if (d.kind !== 'topic') throw new Fail(400, 'only topic decks can be deleted')
+      if (db.facts.some((f) => f.deckId === d.id)) throw new Fail(409, `deck "${d.name}" still has facts`)
+      db.decks = db.decks.filter((x) => x.id !== d.id)
+      return { ok: true }
+    }
     if (b && method === 'PATCH') {
       const d = db.decks.find((x) => x.id === b)
       if (!d) throw new Fail(404, 'deck not found')
       patchDeck(d, B)
       return { deck: d }
+    }
+  }
+
+  // ---------- facts ----------
+
+  if (a === 'facts') {
+    if (!b && method === 'GET') {
+      const ref = url.searchParams.get('deck')
+      const deck = ref ? resolveDeck(ref) : null
+      const q = (url.searchParams.get('q') ?? '').trim().toLowerCase()
+      const facts = db.facts
+        .filter((f) => (!ref || f.deckId === deck?.id) && (!q || `${f.front}\n${f.back}\n${f.tags.join(' ')}`.toLowerCase().includes(q)))
+        .map((f) => factItem(f, now))
+      return { facts, total: facts.length }
+    }
+    if (!b && method === 'POST') return new Reply(201, { fact: factItem(createFact(B, now), now) })
+    const f = db.facts.find((x) => x.id === b)
+    if (!f) throw new Fail(404, `fact ${b} not found`)
+    if (method === 'GET') {
+      const card = db.cards.find((x) => x.factId === f.id)
+      const logs = db.logs.filter((l) => l.cardId === card?.id).sort((x, y) => y.reviewedAt.localeCompare(x.reviewedAt)).slice(0, 20)
+      return { fact: factItem(f, now), logs }
+    }
+    if (method === 'PATCH') return { fact: factItem(updateFact(f, B, now), now) }
+    if (method === 'DELETE') {
+      const card = db.cards.find((x) => x.factId === f.id)
+      db.facts = db.facts.filter((x) => x.id !== f.id)
+      db.cards = db.cards.filter((x) => x.factId !== f.id)
+      db.logs = db.logs.filter((l) => l.cardId !== card?.id)
+      return { ok: true }
     }
   }
 
@@ -1107,10 +1234,15 @@ function handle(method: string, url: URL, body: unknown): unknown {
 
   // ---------- progress ----------
 
+  // Without ?deck= the forecast covers every deck in review, words and facts.
   if (p === '/api/stats') {
-    const deck = mustDeck(url.searchParams.get('deck'))
-    const active = new Set(db.words.filter((w) => w.deckId === deck.id && w.status === 'active').map((w) => w.id))
-    const cards = db.cards.filter((c) => active.has(c.wordId) && !c.suspended && enabled(deck, c.direction) && c.schedule.state !== 0)
+    const ref = url.searchParams.get('deck')
+    const only = ref ? mustDeck(ref) : null
+    const cards = db.cards.filter((c) => {
+      const o = ownerOf(c)
+      const deck = deckOf(o.deckId)
+      return (only ? deck.id === only.id : deck.inReview) && o.status === 'active' && !c.suspended && (!!c.factId || enabled(deck, c.direction)) && c.schedule.state !== 0
+    })
     const start = nextDayStart(now, DAY).getTime() - D
     const forecast = Array.from({ length: 14 }, (_, i) => ({
       day: dayKey(new Date(start + i * D + H), DAY),

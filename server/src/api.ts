@@ -1,5 +1,5 @@
 import {
-  CEFR_LEVELS, PARTS_OF_SPEECH, WORD_STATUSES, type Cefr, type PartOfSpeech, type WordStatus,
+  CEFR_LEVELS, FACT_STATUSES, PARTS_OF_SPEECH, WORD_STATUSES, type Cefr, type FactStatus, type PartOfSpeech, type WordStatus,
 } from '@recall/core'
 import { Router, type Request, type Response } from 'express'
 import { z } from 'zod'
@@ -8,15 +8,16 @@ import { autofill } from './autofill.ts'
 import { isTime, isTimeZone } from './config.ts'
 import type { AppContext } from './context.ts'
 import { dashboard } from './dashboard.ts'
+import { createFact, deleteFact, factItem, getFact, searchFacts, updateFact } from './facts.ts'
 import { fsrsInfo, optimizeNow, REQUEST_RETENTION } from './fsrs.ts'
 import { lexiconOf } from './lexicon.ts'
 import { createLoginNonce, pollLoginNonce, START_PREFIX } from './login.ts'
 import {
-  approveAll, cardSummary, createDeck, createWord, defaultDeck, deleteWord, getDeck, HttpError, inboxWords, mustGetWord, resolveDeck,
+  approveAll, cardSummary, createDeck, createTopicDeck, createWord, defaultDeck, deleteDeck, deleteWord, getDeck, HttpError, inboxWords, mustBeKind, mustGetWord, resolveDeck,
   searchWords, setSuspended, setWordStatus, setWordSuspended, syncFreqRanks, TYPE_ANSWERS, updateDeck, updateWord, withCards, WORD_SORTS,
   type TypeAnswer, type WordRow, type WordSort,
 } from './repo.ts'
-import { applyReviews, buildQueue, decksWithCounts, inboxCount, stats, studyDay, undoReview, wordLogs } from './study.ts'
+import { applyReviews, buildQueue, decksWithCounts, factLogs, inboxCount, stats, studyDay, undoReview, wordLogs } from './study.ts'
 import { createApiToken, deleteApiToken, listApiTokens } from './tokens.ts'
 import { allowedUser, isOwner, ownerUser, updateUserSettings, userDayOptions, type User } from './users.ts'
 import { answerVocabTest, createVocabTest, listVocabTests } from './vocab.ts'
@@ -49,15 +50,29 @@ const WordFields = {
 const WordBody = z.object({ deckId: z.string().optional(), ...WordFields })
 const WordPatchBody = z.object({ ...WordFields, status: statusSchema }).partial()
 const typeAnswerSchema = z.enum(tuple<TypeAnswer>(TYPE_ANSWERS))
-const DeckBody = z.object({ name: z.string().optional(), targetLang: z.string(), nativeLang: z.string(), newPerDay: z.number().int().optional(), typeAnswer: typeAnswerSchema.optional() })
+const LanguageDeckBody = z.object({
+  kind: z.literal('language').optional(),
+  name: z.string().optional(),
+  targetLang: z.string(),
+  nativeLang: z.string(),
+  newPerDay: z.number().int().optional(),
+  typeAnswer: typeAnswerSchema.optional(),
+}).strict()
+const TopicDeckBody = z.object({ kind: z.literal('topic'), name: z.string(), newPerDay: z.number().int().optional(), inReview: z.boolean().optional() }).strict()
+const DeckBody = z.union([TopicDeckBody, LanguageDeckBody])
 const DeckPatchBody = z.object({
   name: z.string(),
   newPerDay: z.number().int(),
+  inReview: z.boolean(),
   forwardEnabled: z.boolean(),
   reverseEnabled: z.boolean(),
   reverseAfterDays: z.number().nullable(),
   typeAnswer: typeAnswerSchema,
 }).partial().strict()
+const factStatusSchema = z.enum(tuple<FactStatus>(FACT_STATUSES))
+const FactFields = { front: z.string().max(5000), back: z.string().max(50000), tags: z.array(z.string()).optional() }
+const FactBody = z.object({ deckId: z.string().min(1), ...FactFields }).strict()
+const FactPatchBody = z.object({ ...FactFields, status: factStatusSchema }).partial().strict()
 const AutofillBody = z.object({ deckId: z.string().optional(), term: z.string().min(1).max(200), hint: z.string().max(300).optional() })
 const AnswersBody = z.object({ answers: z.array(z.object({ id: z.string(), known: z.boolean() })).max(1000) })
 const time = z.string().refine(isTime, 'must be HH:MM (24 h)')
@@ -97,12 +112,13 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
     syncFreqRanks(db, l)
     return l
   }
-  // ?deck= / deckId: an id, a name or a language code; default the user's English deck.
+  // ?deck= / deckId: an id, a name or a language code; default the user's
+  // English deck. Everything that takes it is about words: a topic deck is 400.
   const deckFor = (req: Request, ref: string | undefined) => {
     if (!ref) return defaultDeck(db, uid(req), ctx.now())
     const d = resolveDeck(db, uid(req), ref)
     if (!d) throw new HttpError(404, 'deck not found')
-    return d
+    return mustBeKind(d, 'language')
   }
   const item = (req: Request, id: string) => {
     const row = db.prepare('SELECT * FROM words WHERE id = ? AND user_id = ?').get(id, uid(req)) as WordRow | undefined
@@ -262,11 +278,57 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
   })
 
   r.post('/decks', (req, res) => {
-    res.status(201).json({ deck: createDeck(db, uid(req), parse(DeckBody, req.body), ctx.now()) })
+    const b = parse(DeckBody, req.body)
+    const deck = b.kind === 'topic' ? createTopicDeck(db, uid(req), b, ctx.now()) : createDeck(db, uid(req), b, ctx.now())
+    res.status(201).json({ deck })
   })
 
   r.patch('/decks/:id', (req, res) => {
     res.json({ deck: updateDeck(db, uid(req), req.params.id as string, parse(DeckPatchBody, req.body)) })
+  })
+
+  // Only an empty topic deck.
+  r.delete('/decks/:id', (req, res) => {
+    deleteDeck(db, uid(req), req.params.id as string)
+    res.json({ ok: true })
+  })
+
+  // ---------- facts ----------
+
+  r.get('/facts', (req, res) => {
+    const q = req.query
+    const status = qstr(q.status)
+    res.json(searchFacts(db, uid(req), {
+      deck: qstr(q.deck),
+      q: qstr(q.q),
+      status: status ? parse(factStatusSchema, status) : undefined,
+      limit: qint(q.limit, 50),
+      offset: qint(q.offset, 0),
+    }, ctx.now()))
+  })
+
+  r.get('/facts/:id', (req, res) => {
+    const fact = factItem(db, uid(req), req.params.id as string, ctx.now())
+    res.json({ fact, logs: factLogs(db, uid(req), fact.id, 20) })
+  })
+
+  // Written in the app: active at once. A duplicate question is 409 {error, existing}.
+  r.post('/facts', (req, res) => {
+    const { deckId, ...fact } = parse(FactBody, req.body)
+    const deck = resolveDeck(db, uid(req), deckId)
+    if (!deck) throw new HttpError(404, 'deck not found')
+    const { fact: f } = createFact(db, uid(req), { deckId: deck.id, fact, status: 'active', createdBy: 'user' }, ctx.now())
+    res.status(201).json({ fact: factItem(db, uid(req), f.id, ctx.now()) })
+  })
+
+  r.patch('/facts/:id', (req, res) => {
+    const f = updateFact(db, uid(req), req.params.id as string, parse(FactPatchBody, req.body), ctx.now())
+    res.json({ fact: factItem(db, uid(req), f.id, ctx.now()) })
+  })
+
+  r.delete('/facts/:id', (req, res) => {
+    deleteFact(db, uid(req), req.params.id as string)
+    res.json({ ok: true })
   })
 
   // ---------- words ----------
@@ -334,7 +396,8 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
     })
     r.post(`/cards/:id/${action}`, (req, res) => {
       const card = setSuspended(db, uid(req), req.params.id as string, flag)
-      const deck = getDeck(db, uid(req), mustGetWord(db, uid(req), card.wordId).deckId)!
+      const owner = card.wordId ? mustGetWord(db, uid(req), card.wordId) : getFact(db, uid(req), card.factId!)!
+      const deck = getDeck(db, uid(req), owner.deckId)!
       res.json({ card: { ...card, summary: cardSummary(card, deck, ctx.now()) } })
     })
   }

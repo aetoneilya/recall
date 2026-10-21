@@ -74,6 +74,8 @@ describe('migration to v4', () => {
     // The app reads it as before, with the new fields.
     expect(getUser(db, 'us_a')).toMatchObject({ name: 'A', eveningReminderTime: '20:00', morningSentDay: '2026-10-21', weeklyReport: true, weeklyReportDay: 0,
       weeklyReportTime: '19:00', requestRetention: 0.9, fsrsWeights: null })
+    // The rest of the app reads the current schema (v6: deck kinds, study_cards).
+    migrate(db, ENV)
     expect(listDecks(db, 'us_a')).toMatchObject([{ id: 'dk_a', newPerDay: 20, reverseAfterDays: 7, typeAnswer: 'off' }])
     expect(searchWords(db, 'us_b', {}, NOW).words).toMatchObject([{ id: 'wd_2', status: 'inbox', cards: { reverse: { enabled: false } } }])
     expect(applyReviews(db, 'us_a', [{ id: 'r2', cardId: 'cd_1f', rating: 3, reviewedAt: '2026-10-25T09:00:00.000Z' }])).toMatchObject({ applied: 1 })
@@ -105,15 +107,15 @@ describe('migration to v5', () => {
         ('wd_4', 'us_a', 'dk_a', 'bleak', 'adjective', '["мрачный"]', NULL, '[]', NULL, '  ', '[]', NULL, NULL, 'active', 'user', 'bleak|adjective', NULL, '2026-07-12T00:00:00.000Z', '2026-07-12T00:00:00.000Z');
     `)
     const before = dump(db, 'words')
-    migrate(db, ENV)
+    migrate(db, ENV, 5)
     expect(schemaVersion(db)).toBe(5)
-    expect(MIGRATIONS.length).toBe(5)
     const after = dump(db, 'words')
     expect(after.every((w: Record<string, unknown>) => !('source' in w))).toBe(true)
     expect(after.map((w: Record<string, unknown>) => [w.id, JSON.parse(w.tags as string)])).toEqual([
       ['wd_1', ['vocab', 'book']], ['wd_2', []], ['wd_3', ['wuthering heights', 'vocab']], ['wd_4', []],
     ])
     expect(without(after, ['tags'])).toEqual(without(before, ['tags', 'source']))
+    migrate(db, ENV)
     expect(searchWords(db, 'us_a', { tag: 'book' }, NOW).words.map((w) => w.id)).toEqual(['wd_1'])
   })
 })

@@ -107,7 +107,7 @@ export function weeklyData(ctx: AppContext, user: User, now: Date, deck: DeckInf
     .get(user.id, deck.id, weekAgo, nowIso) as { n: number }).n
   const g = dash.growth
   const estimate = dash.vocabulary.current?.adjusted ?? null
-  const code = (l: string) => l.toUpperCase()
+  const code = (l: string | null) => (l ?? '').toUpperCase()
   return {
     reviews: count(weekAgo, nowIso),
     lastWeekReviews: count(twoAgo, weekAgo),

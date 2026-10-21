@@ -8,7 +8,7 @@ Architecture, data model, API and MCP tools: [DESIGN.md](DESIGN.md). Visual desi
 
 | | |
 |---|---|
-| `packages/core` | Types, FSRS wrapper, note → cards, study-day math. Imported as TS source by both sides. |
+| `packages/core` | Types (words, facts, decks, cards), FSRS wrapper, word → card faces, study-day math. Imported as TS source by both sides. |
 | `server` | Node 24 + Express 5 + `node:sqlite`: REST API, `/mcp`, OAuth for claude.ai, Telegram bot, Decks importer, nightly backups. Runs `.ts` directly (type stripping). |
 | `web` | Svelte 5 + Vite PWA. Offline queue in IndexedDB, ratings applied locally and synced through an outbox. |
 | `deploy`, `scripts/deploy.sh` | systemd unit, nginx server block, deploy script for the exit VPS. |
@@ -26,10 +26,10 @@ npm run check                     # typecheck + tests in all workspaces
 npm run build                     # web/dist
 ```
 
-Import from the Obsidian Decks plugin into one user's collection (reads the source read-only; re-running skips what's already imported; `--user` defaults to `OWNER_TELEGRAM_ID`):
+Import from the Obsidian Decks plugin into one user's collection (reads the source read-only; re-running skips what's already imported and adds what's new; `--user` defaults to `OWNER_TELEGRAM_ID`). Vocabulary goes into the English deck; Decks decks named `<prefix><topic>` become topic decks of Q&A facts (`--topics` defaults to `"Revolut — "`, so "Revolut — Java Core" → "Java Core", tagged `revolut`; `--topics ""` imports no topics):
 
 ```bash
-node server/src/import-decks.ts --from <vault>/.obsidian/plugins/decks/flashcards.db --db ./server/recall.db --user <telegram-id> --dry-run
+node server/src/import-decks.ts --from <vault>/.obsidian/plugins/decks/flashcards.db --db ./server/recall.db --user <telegram-id> [--topics "Revolut — "] --dry-run
 ```
 
 ## Deploy (small VPS, no Docker)

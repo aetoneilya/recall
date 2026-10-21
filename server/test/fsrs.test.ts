@@ -196,7 +196,7 @@ describe('scheduling with the user’s parameters', () => {
     const before = cardsOf(ctx, addWord(ctx, 'bone').id)[0]!
     rate(ctx, before.id, 3, at)
     rate(ctx, before.id, 3, new Date(at.getTime() + 10 * 60_000))
-    const state = cardsOf(ctx, before.wordId)[0]!.schedule
+    const state = cardsOf(ctx, before.wordId!)[0]!.schedule
     const at90 = review(state, 3, later, scheduler({ weights: W, requestRetention: 0.9 }))
     updateUserSettings(ctx.db, ctx.user.id, { requestRetention: 0.8 })
     const r = rate(ctx, before.id, 3, later).cards[0]!.schedule

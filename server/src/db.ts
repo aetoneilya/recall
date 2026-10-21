@@ -115,7 +115,7 @@ export const MIGRATIONS: Migration[] = [
   );
   `,
   multiUser,
-  { before: backupBefore(3), run: vocabularyWords },
+  { before: backupBefore(3, (db) => hasRows(db, 'notes')), run: vocabularyWords },
   // v4: words from the bot (drafts behind inline buttons), the weekly report,
   // per-user FSRS parameters, typed answers per deck. Columns only, no rebuilds.
   `
@@ -149,6 +149,8 @@ export const MIGRATIONS: Migration[] = [
       AND NOT EXISTS (SELECT 1 FROM json_each(words.tags) WHERE lower(value) = lower(trim(words.source)));
   ALTER TABLE words DROP COLUMN source;
   `,
+  // v6: topic decks of Q&A facts next to the language decks.
+  { before: backupBefore(6, (db) => hasRows(db, 'cards')), run: topicDecks },
 ]
 
 // The file a connection works on; '' for :memory:.
@@ -157,15 +159,16 @@ export function dbFile(db: Db): string {
   return rows.find((r) => r.name === 'main')?.file ?? ''
 }
 
-// VACUUM INTO <db dir>/backups/pre-v<N>-<timestamp>.db before a destructive
-// migration, unless the database is in memory or holds no notes yet.
-function backupBefore(version: number): MigrationFn {
+const hasRows = (db: Db, table: string) =>
+  !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) && !!db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get()
+
+// VACUUM INTO <db dir>/backups/pre-v<N>-<timestamp>.db before a migration that
+// rebuilds tables, unless the database is in memory or `worth` says there is
+// nothing to keep yet.
+function backupBefore(version: number, worth: (db: Db) => boolean): MigrationFn {
   return (db, env) => {
     const file = dbFile(db)
-    if (!file) return
-    const hasNotes = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'notes'").get()
-      && db.prepare('SELECT 1 FROM notes LIMIT 1').get()
-    if (!hasNotes) return
+    if (!file || !worth(db)) return
     const dir = env.backupDir ?? path.join(path.dirname(file), 'backups')
     fs.mkdirSync(dir, { recursive: true })
     const stamp = (env.now ?? new Date()).toISOString().replace(/[:.]/g, '-')
@@ -314,6 +317,99 @@ function multiUser(db: Db, env: MigrationEnv) {
     confirmed_at TEXT,
     used_at TEXT
   );
+  `)
+}
+
+// v6: decks get a kind (language | topic) and an in-review switch; topic
+// decks have no languages. Facts (Q&A, Markdown) live in topic decks with one
+// card each, so a card belongs to a word or a fact. decks and cards are
+// rebuilt (new, copy, drop, rename, as in v2/v3); ids and every row are kept.
+// study_cards is every card with its owner, deck and item: the view the
+// queue, reviews and stats read, so they see words and facts alike. A later
+// rebuild of cards, words or facts must drop and recreate it.
+function topicDecks(db: Db) {
+  db.exec(`
+  CREATE TABLE decks_v6 (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    kind TEXT NOT NULL DEFAULT 'language' CHECK (kind IN ('language', 'topic')),
+    name TEXT NOT NULL,
+    target_lang TEXT,
+    native_lang TEXT,
+    new_per_day INTEGER NOT NULL DEFAULT 15,
+    in_review INTEGER NOT NULL DEFAULT 1 CHECK (in_review IN (0, 1)),
+    forward_enabled INTEGER NOT NULL DEFAULT 1,
+    reverse_enabled INTEGER NOT NULL DEFAULT 1,
+    reverse_after_days REAL,
+    type_answer TEXT NOT NULL DEFAULT 'off' CHECK (type_answer IN ('off', 'reverse', 'both')),
+    created_at TEXT NOT NULL,
+    UNIQUE (id, user_id),
+    CHECK ((kind = 'language' AND target_lang IS NOT NULL AND native_lang IS NOT NULL)
+        OR (kind = 'topic' AND target_lang IS NULL AND native_lang IS NULL))
+  );
+  INSERT INTO decks_v6(id, user_id, kind, name, target_lang, native_lang, new_per_day, in_review, forward_enabled, reverse_enabled, reverse_after_days, type_answer, created_at)
+    SELECT id, user_id, 'language', name, target_lang, native_lang, new_per_day, 1, forward_enabled, reverse_enabled, reverse_after_days, type_answer, created_at FROM decks;
+
+  CREATE TABLE facts (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    deck_id TEXT NOT NULL,
+    front TEXT NOT NULL,
+    back TEXT NOT NULL,
+    tags TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL CHECK (status IN ('inbox', 'active', 'rejected')),
+    created_by TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL,
+    import_ref TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (deck_id, user_id) REFERENCES decks_v6(id, user_id)
+  );
+
+  CREATE TABLE cards_v6 (
+    id TEXT PRIMARY KEY,
+    word_id TEXT REFERENCES words(id) ON DELETE CASCADE,
+    fact_id TEXT REFERENCES facts(id) ON DELETE CASCADE,
+    direction TEXT NOT NULL CHECK (direction IN ('forward', 'reverse')),
+    suspended INTEGER NOT NULL DEFAULT 0,
+    due TEXT NOT NULL,
+    stability REAL NOT NULL,
+    difficulty REAL NOT NULL,
+    elapsed_days REAL NOT NULL,
+    scheduled_days REAL NOT NULL,
+    learning_steps INTEGER NOT NULL,
+    reps INTEGER NOT NULL,
+    lapses INTEGER NOT NULL,
+    state INTEGER NOT NULL,
+    last_review TEXT,
+    CHECK ((word_id IS NULL) <> (fact_id IS NULL)),
+    CHECK (fact_id IS NULL OR direction = 'forward'),
+    UNIQUE (word_id, direction),
+    UNIQUE (fact_id)
+  );
+  INSERT INTO cards_v6(id, word_id, fact_id, direction, suspended, due, stability, difficulty, elapsed_days, scheduled_days, learning_steps, reps, lapses, state, last_review)
+    SELECT id, word_id, NULL, direction, suspended, due, stability, difficulty, elapsed_days, scheduled_days, learning_steps, reps, lapses, state, last_review FROM cards;
+
+  -- words keeps pointing at "decks", review_logs at "cards".
+  DROP TABLE cards;
+  DROP TABLE decks;
+  ALTER TABLE decks_v6 RENAME TO decks;
+  ALTER TABLE cards_v6 RENAME TO cards;
+
+  CREATE UNIQUE INDEX decks_user_name ON decks(user_id, name COLLATE NOCASE);
+  CREATE UNIQUE INDEX decks_user_lang ON decks(user_id, target_lang) WHERE kind = 'language';
+  CREATE INDEX cards_state_due ON cards(state, due);
+  CREATE UNIQUE INDEX facts_dedupe ON facts(deck_id, dedupe_key);
+  CREATE INDEX facts_user_status ON facts(user_id, status, created_at);
+  CREATE INDEX facts_deck_status ON facts(deck_id, status);
+  CREATE INDEX facts_import_ref ON facts(user_id, import_ref);
+
+  CREATE VIEW study_cards AS
+    SELECT c.*, 'word' AS kind, c.word_id AS item_id, w.user_id, w.deck_id, w.status AS item_status, w.created_at AS item_created_at
+      FROM cards c JOIN words w ON w.id = c.word_id
+    UNION ALL
+    SELECT c.*, 'fact', c.fact_id, f.user_id, f.deck_id, f.status, f.created_at
+      FROM cards c JOIN facts f ON f.id = c.fact_id;
   `)
 }
 

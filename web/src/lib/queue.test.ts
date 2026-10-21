@@ -1,6 +1,6 @@
-import { newCardState, type CardState, type Direction, type QueueItem, type Word } from '@recall/core'
+import { newCardState, type CardState, type Direction, type Fact, type QueueItem, type Word, type WordQueueItem } from '@recall/core'
 import { describe, expect, it } from 'vitest'
-import { applyRating, buildQueue, counts, dropWord, emptyQueue, LEARN_AHEAD_MS, nextItem, patchWord, waiting } from './queue.ts'
+import { applyRating, buildQueue, counts, deckCounts, dropWord, emptyQueue, LEARN_AHEAD_MS, nextItem, patchFact, patchWord, waiting } from './queue.ts'
 
 const day = { timeZone: 'Europe/Moscow', startHour: 4 }
 // 13:00 MSK; the study day ends at 04:00 MSK tomorrow.
@@ -48,7 +48,7 @@ function learningState(dueAt: Date): CardState {
 
 function item(cardId: string, wordId: string, schedule: CardState, ordinal = 0): QueueItem {
   const direction: Direction = ordinal ? 'reverse' : 'forward'
-  return { card: { id: cardId, wordId, direction, suspended: false, schedule }, word: word(wordId), deckName: 'English' }
+  return { kind: 'word', card: { id: cardId, wordId, factId: null, direction, suspended: false, schedule }, word: word(wordId), deckName: 'English' }
 }
 
 const ids = (xs: QueueItem[]) => xs.map((x) => x.card.id)
@@ -223,8 +223,8 @@ describe('patchWord / dropWord', () => {
     const edited = { ...word('n1'), translations: ['нахмуриться', 'хмуриться'] }
     const out = patchWord(list, edited)
     expect(ids(out)).toEqual(['c1', 'c2', 'c3'])
-    expect(out[0].word.translations[0]).toBe('нахмуриться')
-    expect(out[1].word).toBe(edited)
+    expect((out[0] as WordQueueItem).word.translations[0]).toBe('нахмуриться')
+    expect((out[1] as WordQueueItem).word).toBe(edited)
     expect(out[2]).toBe(list[2])
   })
 
@@ -235,5 +235,53 @@ describe('patchWord / dropWord', () => {
 
   it('drops every card of a deleted word', () => {
     expect(ids(dropWord(list, 'n1'))).toEqual(['c3'])
+  })
+})
+
+function fact(id: string, deckId = 'dk_t'): Fact {
+  return { id, deckId, front: 'What is CAS?', back: 'Compare-and-swap.', tags: [], status: 'active', createdBy: 'import', createdAt: now.toISOString(), updatedAt: now.toISOString() }
+}
+
+function factItem(cardId: string, factId: string, schedule: CardState, deckId = 'dk_t'): QueueItem {
+  return { kind: 'fact', card: { id: cardId, wordId: null, factId, direction: 'forward', suspended: false, schedule }, fact: fact(factId, deckId), deckName: 'Concurrency' }
+}
+
+describe('facts in the queue', () => {
+  it('queues facts next to words and buries by the fact', () => {
+    const items = [item('w1', 'n1', reviewState(min(-60))), factItem('f1', 'ft1', reviewState(min(-30))), factItem('f2', 'ft2', newCardState(now))]
+    const q = buildQueue(items, {}, {}, now, day)
+    expect(ids(q.main)).toEqual(['w1', 'f1', 'f2'])
+    const r = applyRating(q, q.main[1]!, 3, now, day)
+    expect(r.queue.buried).toEqual({ ft1: 'f1' })
+    expect(ids(r.queue.main)).toEqual(['w1', 'f2'])
+    // The queue rebuilt later today keeps the rated fact out unless it's learning again.
+    expect(ids(buildQueue(items, r.queue.buried, {}, now, day).main)).toEqual(['w1', 'f2'])
+  })
+
+  it('counts what is left per deck', () => {
+    const items = [item('w1', 'n1', reviewState(min(-60))), factItem('f1', 'ft1', learningState(min(-1))), factItem('f2', 'ft2', newCardState(now)), factItem('f3', 'ft3', newCardState(now), 'dk_u')]
+    expect(deckCounts(buildQueue(items, {}, {}, now, day))).toEqual({
+      dk_1: { new: 0, learning: 0, review: 1 },
+      dk_t: { new: 1, learning: 1, review: 0 },
+      dk_u: { new: 1, learning: 0, review: 0 },
+    })
+  })
+
+  it('patches an edited fact, drops it when suspended, and leaves words alone', () => {
+    const list = [item('w1', 'n1', reviewState(min(-5))), factItem('f1', 'ft1', reviewState(min(-1)))]
+    const edited = { ...fact('ft1'), back: 'CAS: compare-and-set.' }
+    const out = patchFact(list, edited)
+    expect(out[0]).toBe(list[0])
+    expect(out[1]).toMatchObject({ kind: 'fact', fact: { back: 'CAS: compare-and-set.' } })
+    expect(ids(patchFact(list, edited, true))).toEqual(['w1'])
+    expect(ids(patchWord(list, word('n1')))).toEqual(['w1', 'f1'])
+    expect(ids(dropWord(list, 'ft1'))).toEqual(['w1'])
+  })
+
+  it('reads items cached before facts existed as words', async () => {
+    const { normalizeItem } = await import('./api.ts')
+    const old = { card: { id: 'c', wordId: 'n1', direction: 'forward', suspended: false, schedule: newCardState(now) }, word: word('n1'), deckName: 'English' } as unknown as QueueItem
+    expect(normalizeItem(old).kind).toBe('word')
+    expect(ids(buildQueue([normalizeItem(old)], {}, {}, now, day).main)).toEqual(['c'])
   })
 })

@@ -84,8 +84,10 @@ const CANDIDATES_SCHEMA = {
 }
 
 export function extractPrompt(deck: Pick<Deck, 'targetLang' | 'nativeLang'>, level: LearnerLevel, image: boolean): string {
-  const target = LANGUAGE_NAMES[deck.targetLang] ?? deck.targetLang
-  const native = LANGUAGE_NAMES[deck.nativeLang] ?? deck.nativeLang
+  const t = deck.targetLang ?? 'en'
+  const n = deck.nativeLang ?? 'ru'
+  const target = LANGUAGE_NAMES[t] ?? t
+  const native = LANGUAGE_NAMES[n] ?? n
   const where = image ? `the ${target} text in the image (a book page, a screenshot)` : `a ${target} text`
   const lvl = [
     level.cefr ? `about CEFR ${level.cefr}` : null,

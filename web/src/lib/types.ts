@@ -1,7 +1,7 @@
 // Shapes of the REST API responses as the web app uses them (DESIGN.md
 // "REST API"). Entities come from @recall/core; these are the envelopes and
 // the server-side shapes (repo.ts, dashboard.ts, vocab.ts) around them.
-import type { Card, Cefr, Deck, Direction, Example, PartOfSpeech, QueueItem, ReviewLog, Word, WordInput, WordStatus } from '@recall/core'
+import type { Card, Cefr, Deck, DeckKind, Direction, Example, Fact, FactInput, FactStatus, PartOfSpeech, QueueItem, ReviewLog, Word, WordInput, WordStatus } from '@recall/core'
 
 export interface MeUser {
   id: string
@@ -81,10 +81,21 @@ export interface QueueCounts {
   review: number
 }
 
+// Today's counts of one deck, whether in review or not (the deck chips).
+export interface QueueDeck {
+  id: string
+  name: string
+  kind: DeckKind
+  inReview: boolean
+  counts: QueueCounts
+}
+
 export interface QueueResponse {
   items: QueueItem[]
   counts: QueueCounts
   inbox: number
+  // Every deck; older servers send none.
+  decks: QueueDeck[]
 }
 
 export interface ReviewsResult {
@@ -101,7 +112,7 @@ export interface DeckSettings extends Deck {
 }
 
 export interface DeckCounts {
-  // Words by status.
+  // Words (facts in a topic deck) by status.
   total: number
   active: number
   inbox: number
@@ -117,7 +128,7 @@ export interface DeckWithCounts extends DeckSettings {
   counts: DeckCounts
 }
 
-export type DeckPatch = Partial<Pick<DeckSettings, 'name' | 'newPerDay' | 'forwardEnabled' | 'reverseEnabled' | 'reverseAfterDays' | 'typeAnswer'>>
+export type DeckPatch = Partial<Pick<DeckSettings, 'name' | 'newPerDay' | 'inReview' | 'forwardEnabled' | 'reverseEnabled' | 'reverseAfterDays' | 'typeAnswer'>>
 
 export type CardStateName = 'new' | 'learning' | 'review' | 'relearning'
 
@@ -153,6 +164,19 @@ export interface WordDetail {
 }
 
 export type NewWord = WordInput & { deckId?: string }
+
+export interface FactItem extends Fact {
+  deckName: string
+  card: CardSummary | null
+}
+
+export interface FactDetail {
+  fact: FactItem
+  logs: ReviewLog[]
+}
+
+export type NewFact = FactInput & { deckId: string }
+export type FactPatch = Partial<FactInput> & { status?: FactStatus }
 export type WordPatch = Partial<WordInput> & { status?: WordStatus }
 
 export interface WordQuery {

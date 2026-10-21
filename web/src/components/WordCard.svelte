@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { answerDiff, wordFace, type AnswerCheck, type QueueItem } from '@recall/core'
+  import { answerDiff, wordFace, type AnswerCheck, type WordQueueItem } from '@recall/core'
   import { tick } from 'svelte'
   import { markTerm } from '../lib/mark.ts'
   import Icon from './Icon.svelte'
@@ -15,7 +15,7 @@
     check = null,
     langs = ['en', 'ru'],
     onedit,
-  }: { item: QueueItem; revealed: boolean; typed?: string; check?: AnswerCheck | null; langs?: [string, string]; onedit?: () => void } = $props()
+  }: { item: WordQueueItem; revealed: boolean; typed?: string; check?: AnswerCheck | null; langs?: [string, string]; onedit?: () => void } = $props()
 
   const f = $derived(wordFace(item.word, item.card.direction))
   const forward = $derived(item.card.direction === 'forward')

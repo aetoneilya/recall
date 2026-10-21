@@ -111,7 +111,7 @@ The name is **Mnemosyne**. The icon is the app's own object: a white index card 
 
 ## Layout
 
-Phone-first single column. 16px side gutters plus safe-area insets (12px on the review screen so the card is as wide as possible). Spacing steps 4 · 8 · 12 · 16 · 24 · 32. Review screen: counts row (40px) + 3px progress, the card fills the rest, then the action row (66px buttons) directly above the tab bar, which sits on the home-indicator inset. Inbox: filter chips, a stacked deck of cards with two peeking 9px below, round reject / edit / approve buttons, then Approve all. Editors keep their primary action in a bottom bar.
+Phone-first single column. 16px side gutters plus safe-area insets (12px on the review screen so the card is as wide as possible). Spacing steps 4 · 8 · 12 · 16 · 24 · 32. Review screen: counts row (40px), deck chips (30px, only with several decks) + 3px progress, the card fills the rest, then the action row (66px buttons) directly above the tab bar, which sits on the home-indicator inset. Inbox: filter chips, a stacked deck of cards with two peeking 9px below, round reject / edit / approve buttons, then Approve all. Editors keep their primary action in a bottom bar.
 
 Code blocks and tables bleed 10px into the card padding and scroll sideways on their own; the card scrolls vertically.
 
@@ -133,8 +133,10 @@ Card 20px, panels and grouped lists 14px, buttons and inputs 12px, rating button
 - **Edit on the card:** once the answer shows, a faint 18px pencil in a 44px target at the card's top-right corner (the context row keeps 48px clear for it, so nothing shifts on reveal); pressed, accent on accent-soft. It opens the word's editor; Back returns to the same revealed card with the fix applied.
 - **Session summary:** the check, the tally, a clock line ("Tomorrow: N reviews", or learning cards back in N min), then a grouped list of next steps (Vet N new words in the inbox · Add words) and the Undo / Check for more buttons. A collection with no words yet gets "Add your first words" instead: an accent-soft disc with the sparkle, one primary "Add a word" button and a row for the Telegram bot.
 - **Cloze marks:** front blank is an accent-soft pill with a 1px accent ring showing the hint or "…" (inline, so punctuation stays attached; the card scrolls to it). Back answer is accent text on accent-soft.
-- **Wikilinks:** `[[x]]` renders as a small muted chip, not body text.
-- **Context row:** deck (600) · tags · New pill, 13px muted.
+- **Wikilinks:** `[[x|alias]]` on a fact renders as the alias in muted italic, not as a link.
+- **Context row:** direction (word) or deck name (fact), 600 · tags · New pill, 13px muted.
+- **Fact card:** the question in the Question style, left-aligned, 12% down; the answer is body text under the divider. Code blocks: SF Mono 13px on paper shade, 10px radius, scrolling sideways; inline code 0.84em on paper shade.
+- **Deck chips (Review):** a scrolling row under the counts, 30px pills, name + count in 650. In the session: accent text on accent-soft; out of it: faint text in a hairline ring. Tap toggles at once (select haptic). Hidden with a single deck.
 - **Grouped list rows:** 52px min, inset hairlines, pressed state is the shade fill (not opacity).
 - **Buttons:** primary = accent fill; secondary = paper shade; danger = again-coloured text. Press = scale 0.97.
 - **Segmented control, stepper, switch:** iOS shapes; selected segment is the card colour with a soft shadow.

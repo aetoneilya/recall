@@ -1,7 +1,7 @@
 import { createHmac } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
-import type { PartOfSpeech, Rating, WordInput, WordStatus } from '@recall/core'
+import type { PartOfSpeech, QueueItem, Rating, Word, WordInput, WordStatus } from '@recall/core'
 import { createApp } from '../src/app.ts'
 import type { AutofillClient } from '../src/autofill.ts'
 import { loadConfig, type Config } from '../src/config.ts'
@@ -84,6 +84,12 @@ export function deck(ctx: TestCtx, newPerDay = 15, userId = ctx.user.id) {
 // A second language deck.
 export function otherDeck(ctx: TestCtx, targetLang = 'de', newPerDay = 15, userId = ctx.user.id) {
   return createDeck(ctx.db, userId, { targetLang, nativeLang: 'ru', newPerDay }, ctx.now())
+}
+
+// A queue item that must be a word's card.
+export function wordOf(it: QueueItem): Word {
+  if (it.kind !== 'word') throw new Error(`card ${it.card.id} is a fact's`)
+  return it.word
 }
 
 let seq = 0

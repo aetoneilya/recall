@@ -9,13 +9,15 @@ import { dashboard } from './dashboard.ts'
 import { tx } from './db.ts'
 import { lexiconOf } from './lexicon.ts'
 import {
-  addWords, defaultDeck, deleteWord, HttpError, resolveDeck, searchWords, setWordStatus, setWordSuspended, syncFreqRanks,
+  addWords, defaultDeck, deleteWord, HttpError, mustBeKind, resolveDeck, searchWords, setWordStatus, setWordSuspended, syncFreqRanks,
   updateWord, withCards, type WordListItem, type WordRow,
 } from './repo.ts'
 import { decksWithCounts, leeches, stats, wordLogs } from './study.ts'
 import { userDayOptions, type User } from './users.ts'
 
 const INSTRUCTIONS = `Mnemosyne is the user's personal vocabulary trainer (spaced repetition, FSRS). The user is a Russian speaker learning English; each language they learn is one deck ("English": English terms, Russian translations).
+
+Topic decks (kind "topic" in list_decks) hold question/answer flashcards on a subject instead of words; the word tools don't apply to them.
 
 Each word has two cards: forward (English → Russian, recognition) and reverse (Russian → English, production; its prompt shows the translations and the first example with the term blanked out as "___"). A deck can turn a direction off or delay reverse cards until the forward card is stable.
 
@@ -104,7 +106,7 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
 
   server.registerTool('list_decks', {
     title: 'List decks',
-    description: 'Lists the user\'s decks (one per language being learnt) with settings and counts. Words: total, active (being studied), inbox (proposals awaiting approval), known (a card in review with recall probability ≥ 90% now). Cards today: learning, due (learning + review), new (available today after the daily limit newPerDay). forwardEnabled / reverseEnabled: which directions are studied; reverseAfterDays: reverse cards start only once the forward card is that stable (null = immediately).',
+    description: 'Lists the user\'s decks with settings and counts. kind "language": vocabulary, one deck per language being learnt (the word tools work on these); kind "topic": question/answer flashcards on a subject (e.g. Java Core, Databases), no languages. inReview: whether the deck\'s cards are in the daily review session. Counts — items (words, or facts in a topic deck): total, active (being studied), inbox (proposals awaiting approval), known (a card in review with recall probability ≥ 90% now). Cards today: learning, due (learning + review), new (available today after the daily limit newPerDay). Language decks only: forwardEnabled / reverseEnabled: which directions are studied; reverseAfterDays: reverse cards start only once the forward card is that stable (null = immediately).',
     annotations: { readOnlyHint: true },
   }, guard(() => {
     defaultDeck(db, uid, ctx.now())
@@ -230,7 +232,7 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
     annotations: { readOnlyHint: true },
   }, guard((a) => {
     const l = lex()
-    const deck = deckOf(a.deck)
+    const deck = mustBeKind(deckOf(a.deck), 'language')
     const d = dashboard(db, uid, deck, l, opts, ctx.now())
     const v = d.vocabulary
     const cur = v.current

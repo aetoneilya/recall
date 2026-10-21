@@ -66,8 +66,8 @@ const dayNumber = (key: string) => Math.round(Date.parse(`${key}T00:00:00Z`) / 8
 export function reviewHistories(db: Db, userId: string, opts: DayOptions): { histories: HistoryReview[][]; reviews: number } {
   const rows = db.prepare(`
     SELECT l.card_id, l.rating, l.reviewed_at, json_extract(l."before", '$.state') AS before_state
-    FROM review_logs l JOIN cards c ON c.id = l.card_id JOIN words w ON w.id = c.word_id
-    WHERE w.user_id = ? ORDER BY l.card_id, l.reviewed_at, l.rowid`).all(userId) as { card_id: string; rating: number; reviewed_at: string; before_state: number }[]
+    FROM review_logs l JOIN study_cards c ON c.id = l.card_id
+    WHERE c.user_id = ? ORDER BY l.card_id, l.reviewed_at, l.rowid`).all(userId) as { card_id: string; rating: number; reviewed_at: string; before_state: number }[]
   const histories: HistoryReview[][] = []
   let reviews = 0
   let i = 0
@@ -217,7 +217,7 @@ export async function trainUser(ctx: AppContext, user: User): Promise<TrainResul
 
 // Usable reviews since the last attempt, cheaply: all of the user's logs.
 function reviewCount(db: Db, userId: string): number {
-  return (db.prepare('SELECT count(*) AS n FROM review_logs l JOIN cards c ON c.id = l.card_id JOIN words w ON w.id = c.word_id WHERE w.user_id = ?').get(userId) as { n: number }).n
+  return (db.prepare('SELECT count(*) AS n FROM review_logs l JOIN study_cards c ON c.id = l.card_id WHERE c.user_id = ?').get(userId) as { n: number }).n
 }
 
 // Should the background job train this user now: enough reviews, nothing

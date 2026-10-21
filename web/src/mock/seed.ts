@@ -166,3 +166,96 @@ export const scale = {
 // What the owner "knows in the app" beyond these few seeded words: lemmas
 // per 1000-rank band, so the app-only estimate looks like a real collection (~2,100).
 export const baselineSrs: number[] = [520, 410, 300, 230, 170, 130, 95, 70, 52, 38, 27, 19, 13, 9, 6, 4, 3, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+// Topic decks of Q&A facts (Markdown). `inReview: false` shows an off chip.
+export interface SeedFact {
+  front: string
+  back: string
+  tags?: string[]
+  plan: Plan
+}
+
+export interface SeedTopic {
+  name: string
+  newPerDay: number
+  inReview: boolean
+  facts: SeedFact[]
+}
+
+export const topics: SeedTopic[] = [
+  {
+    name: 'Concurrency',
+    newPerDay: 3,
+    inReview: true,
+    facts: [
+      {
+        front: 'What is a race condition?',
+        back: 'The result depends on thread scheduling: several threads read and modify shared state without synchronization. Classic example — `x++`, which is a **read-modify-write** of three steps, so increments get lost.\n\nFixes: `synchronized`, `Lock`, atomics (CAS), immutability, thread confinement.\n\n[[race condition]] [[data race]]',
+        tags: ['revolut'],
+        plan: 'due',
+      },
+      {
+        front: 'What is a deadlock and how do you prevent it?',
+        back: 'Threads wait for each other in a cycle, forever.\n\nCoffman conditions — break any one of them:\n1. mutual exclusion\n2. hold-and-wait\n3. no preemption\n4. circular wait\n\nMain technique: **consistent lock ordering**:\n\n```java\nvoid transfer(Account a, Account b, long amount) {\n    Account first = a.id() < b.id() ? a : b;\n    Account second = first == a ? b : a;\n    synchronized (first) {\n        synchronized (second) {\n            a.withdraw(amount);\n            b.deposit(amount);\n        }\n    }\n}\n```',
+        tags: ['revolut'],
+        plan: 'learning',
+      },
+      {
+        front: 'How does `volatile` differ from `synchronized`?',
+        back: '`volatile` gives **visibility** and prevents reordering, but no mutual exclusion — good for status flags and publishing a value.\n\n`synchronized` gives mutual exclusion plus visibility via *happens-before*. Needed for compound operations and invariants.\n\nNote: `volatile int x; x++` is **not atomic**.',
+        tags: ['revolut'],
+        plan: 'new',
+      },
+      {
+        front: 'How does livelock differ from deadlock?',
+        back: 'Deadlock — threads are **stuck** (BLOCKED/WAITING), CPU is low, visible in a thread dump.\n\nLivelock — threads are RUNNABLE, **CPU is burning**, but nothing progresses: they keep reacting to each other.\n\nFix: randomized backoff / jitter.',
+        tags: ['revolut'],
+        plan: 'new',
+      },
+    ],
+  },
+  {
+    name: 'Java Core',
+    newPerDay: 2,
+    inReview: true,
+    facts: [
+      {
+        front: 'What is the contract between `equals` and `hashCode`?',
+        back: 'Equal objects **must** have equal hash codes; unequal objects may collide.\n\n- override both or neither\n- use the same fields in both\n- keep them stable while the object is a key in a `HashMap`\n\n```java\n@Override public int hashCode() {\n    return Objects.hash(id, email);\n}\n```',
+        tags: ['revolut'],
+        plan: 'later',
+      },
+      {
+        front: 'What happens when a `HashMap` bucket gets too long?',
+        back: 'Since Java 8 a bucket with more than 8 entries (and a table of at least 64) turns into a **red-black tree**: lookups go from O(n) to O(log n). It turns back into a list below 6.',
+        tags: ['revolut'],
+        plan: 'due',
+      },
+      {
+        front: 'Checked vs unchecked exceptions?',
+        back: '*Checked* (`Exception` but not `RuntimeException`) must be declared or caught — recoverable conditions, e.g. `IOException`.\n\n*Unchecked* (`RuntimeException`, `Error`) — programming errors, e.g. `NullPointerException`.',
+        tags: ['revolut'],
+        plan: 'new',
+      },
+    ],
+  },
+  {
+    name: 'Databases',
+    newPerDay: 3,
+    inReview: false,
+    facts: [
+      {
+        front: 'How does a phantom read differ from a non-repeatable read?',
+        back: '**Non-repeatable** — the contents of a row you already read changed (UPDATE + COMMIT between your reads).\n\n**Phantom** — the *set* of rows matching a predicate changed (INSERT/DELETE).\n\n[[Non-Repeatable Read]] · [[Phantom Read]]',
+        tags: ['revolut'],
+        plan: 'due',
+      },
+      {
+        front: 'How do you size a connection pool?',
+        back: '**Bigger is not better**: roughly `cores × 2 + spindles` active connections — dozens, not hundreds. Total across instances must stay under `max_connections`, otherwise put PgBouncer in front.',
+        tags: ['revolut'],
+        plan: 'new',
+      },
+    ],
+  },
+]

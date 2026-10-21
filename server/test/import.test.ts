@@ -1,9 +1,10 @@
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
 import { openDb, type Db } from '../src/db.ts'
-import { importDecks } from '../src/import-decks.ts'
-import { searchWords, wordCards } from '../src/repo.ts'
-import { wordLogs } from '../src/study.ts'
+import { importDecks, topicTag } from '../src/import-decks.ts'
+import { factCard, searchFacts } from '../src/facts.ts'
+import { createTopicDeck, listDecks, searchWords, wordCards } from '../src/repo.ts'
+import { factLogs, wordLogs } from '../src/study.ts'
 import { ensureUser } from '../src/users.ts'
 import { testLexicon } from './helpers.ts'
 
@@ -72,6 +73,7 @@ describe('Decks importer', () => {
       cards: { forward: 2, reverse: 2, new: 3, review: 1, suspended: 0 },
       logs: { imported: 1, alreadyImported: 0, orphaned: 1 },
       skipped: { cloze: 2, notWords: 1, unsupportedType: 0 },
+      topics: { prefix: 'Revolut — ', decks: { created: [], existing: [] }, facts: { created: 0, alreadyImported: 0, duplicates: 0 }, cards: { new: 0, review: 0, suspended: 0 }, skipped: 0 },
     })
 
     const words = searchWords(db, uid, { sort: 'alpha', limit: 100 }, NOW).words
@@ -96,6 +98,60 @@ describe('Decks importer', () => {
     expect(again.words).toMatchObject({ created: 0, alreadyImported: 2 })
     expect(again.logs).toEqual({ imported: 0, alreadyImported: 1, orphaned: 1 })
     expect(searchWords(db, uid, {}, NOW).total).toBe(2)
+  })
+
+  it('imports Q&A decks named with the topics prefix as topic decks of facts', () => {
+    const src = decksDb()
+    src.exec("INSERT INTO decks VALUES ('deck_c', 'Revolut — Concurrency'), ('deck_j', 'Revolut — Java Core')")
+    const add = src.prepare(`INSERT INTO flashcards(id, deck_id, front, back, type, breadcrumb, state, due_date, interval, repetitions, stability, difficulty, last_reviewed, created, modified, tags)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '2026-07-28 19:36:35', ?)`)
+    const race = 'The result depends on thread scheduling. Classic example — `x++`.\n\nFixes: `synchronized`, atomics (CAS).\n\n[[race condition]] [[data race]]'
+    add.run('card_race', 'deck_c', 'What is a race condition?', race, 'header-paragraph', 'Revolut — Concurrency', 'review', '2026-07-31T01:00:00.000Z', 3321.36, 1, 2.3065, 5.2, '2026-07-28T19:59:53.836Z', '2026-07-28 19:36:35', '')
+    add.run('card_dead', 'deck_c', 'What is a deadlock?', 'Threads wait for each other in a cycle.', 'header-paragraph', 'Revolut — Concurrency > Locks', 'new', '2026-07-28T19:36:35.883Z', 0, 0, 0, 5, null, '2026-07-28 19:36:36', 'interview')
+    add.run('card_jmm', 'deck_j', 'What is the JMM?', 'Happens-before.', 'header-paragraph', 'Revolut — Java Core', 'new', '2026-07-28T19:36:35.883Z', 0, 0, 0, 5, null, '2026-07-28 19:36:37', '')
+    add.run('ccard_j', 'deck_j', 'Fill in', 'A ==volatile== field.', 'cloze', 'Revolut — Java Core', 'new', '2026-07-28T19:36:35.883Z', 0, 0, 0, 5, null, '2026-07-28 19:36:37', '')
+    src.exec(`INSERT INTO review_logs VALUES ('log_race', 'card_race', '2026-07-28T19:36:35.883Z', '2026-07-28T19:59:53.836Z', 3, 8000, 'new', 0, 0, 0, 5, 'review', 1, 0, 2.3065, 5.2, 0, 3321, '2026-07-28T19:36:35.883Z', '2026-07-31T01:00:00.000Z', 0)`)
+
+    const db = openDb(':memory:')
+    const uid = userOf(db)
+    // A topic deck that already exists is filled, not duplicated.
+    createTopicDeck(db, uid, { name: 'Java Core' }, NOW)
+    const dry = importDecks(src, db, uid, { now: NOW, dryRun: true })
+    expect(dry.topics.facts.created).toBe(3)
+    expect(listDecks(db, uid).map((d) => d.name)).toEqual(['Java Core'])
+
+    const s = importDecks(src, db, uid, { now: NOW })
+    expect(s.topics).toEqual({
+      prefix: 'Revolut — ',
+      decks: { created: ['Concurrency'], existing: ['Java Core'] },
+      facts: { created: 3, alreadyImported: 0, duplicates: 0 },
+      cards: { new: 2, review: 1, suspended: 0 },
+      skipped: 1,
+    })
+    // The vocabulary side is as before: the Q&A rows didn't count as non-words.
+    expect(s.words.created).toBe(2)
+    expect(s.skipped).toEqual({ cloze: 2, notWords: 1, unsupportedType: 0 })
+    expect(s.logs).toEqual({ imported: 2, alreadyImported: 0, orphaned: 1 })
+    expect(listDecks(db, uid).map((d) => [d.name, d.kind])).toEqual([['English', 'language'], ['Concurrency', 'topic'], ['Java Core', 'topic']])
+
+    const facts = searchFacts(db, uid, { deck: 'Concurrency' }, NOW).facts
+    expect(facts.map((f) => [f.front, f.tags])).toEqual([['What is a race condition?', ['revolut']], ['What is a deadlock?', ['revolut', 'Locks', 'interview']]])
+    expect(facts[0]).toMatchObject({ back: race, status: 'active', createdBy: 'import', createdAt: '2026-07-28T19:36:35.000Z' })
+    expect(factCard(db, uid, facts[0]!.id)!.schedule).toMatchObject({ state: 2, reps: 1, stability: 2.3065, due: '2026-07-31T01:00:00.000Z' })
+    expect(factLogs(db, uid, facts[0]!.id)).toMatchObject([{ id: 'log_race', rating: 3, before: { state: 0 }, after: { state: 2 } }])
+
+    // Again: nothing new; a new Decks card is added.
+    add.run('card_live', 'deck_c', 'What is a livelock?', 'Busy, but no progress.', 'header-paragraph', 'Revolut — Concurrency', 'new', '2026-07-28T19:36:35.883Z', 0, 0, 0, 5, null, '2026-08-01 10:00:00', '')
+    const again = importDecks(src, db, uid, { now: NOW })
+    expect(again.topics.facts).toEqual({ created: 1, alreadyImported: 3, duplicates: 0 })
+    expect(again.logs).toMatchObject({ imported: 0, alreadyImported: 2 })
+    expect(searchFacts(db, uid, {}, NOW).total).toBe(4)
+
+    // Another prefix (or none) leaves them alone.
+    const fresh = openDb(':memory:')
+    expect(importDecks(src, fresh, userOf(fresh), { now: NOW, topics: '', dryRun: true }).topics.facts.created).toBe(0)
+    expect(topicTag('Revolut — ')).toBe('revolut')
+    expect(topicTag('Interview: ')).toBe('interview')
   })
 
   it('writes nothing on a dry run', () => {

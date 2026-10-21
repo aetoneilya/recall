@@ -8,6 +8,7 @@
   import { checkpoint } from './lib/update.ts'
   import AddWord from './screens/AddWord.svelte'
   import Dashboard from './screens/Dashboard.svelte'
+  import FactEditor from './screens/FactEditor.svelte'
   import Denied from './screens/Denied.svelte'
   import Inbox from './screens/Inbox.svelte'
   import Login from './screens/Login.svelte'
@@ -67,6 +68,8 @@
         {#key b}<WordEditor id={b} inbox />{/key}
       {:else if a === 'inbox'}
         <Inbox />
+      {:else if a === 'fact' && b}
+        {#key b}<FactEditor id={b} />{/key}
       {:else if a === 'word' && b}
         {#key b}<WordEditor id={b} />{/key}
       {:else if a === 'words'}

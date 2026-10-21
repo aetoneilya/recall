@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { getDeck, setWordSuspended, updateDeck } from '../src/repo.ts'
 import { buildQueue, decksWithCounts, reviewedOn, stats, studyDay, wordLogs } from '../src/study.ts'
-import { addWord, cardsOf, deck, makeCtx, otherDeck, rate, TZ } from './helpers.ts'
+import { addWord, cardsOf, deck, makeCtx, otherDeck, rate, TZ, wordOf } from './helpers.ts'
 
 describe('study day', () => {
   it('spans 04:00 to 04:00 Moscow time', () => {
@@ -37,20 +37,20 @@ describe('queue', () => {
     let q = buildQueue(ctx.db, ctx.user.id, TZ, ctx.now())
     expect(q.counts).toEqual({ new: 3, learning: 0, review: 0 })
     // One card per word per day: forward cards of a1 and a2.
-    expect(q.items.filter((i) => i.word.deckId === en.id).map((i) => [i.word.term, i.card.direction])).toEqual([['a1', 'forward'], ['a2', 'forward']])
+    expect(q.items.filter((i) => wordOf(i).deckId === en.id).map((i) => [wordOf(i).term, i.card.direction])).toEqual([['a1', 'forward'], ['a2', 'forward']])
     expect(q.items[0]!.deckName).toBe('English')
 
     // Introducing a1 uses one of English's two slots; it comes back as a learning card.
     rate(ctx, cardsOf(ctx, words[0]!.id)[0]!.id, 1, ctx.now())
     q = buildQueue(ctx.db, ctx.user.id, TZ, ctx.now())
     expect(q.counts).toEqual({ new: 2, learning: 1, review: 0 })
-    expect(q.items[0]!.word.term).toBe('a1')
-    expect(q.items.filter((i) => i.card.schedule.state === 0 && i.word.deckId === en.id).map((i) => i.word.term)).toEqual(['a2'])
+    expect(wordOf(q.items[0]!).term).toBe('a1')
+    expect(q.items.filter((i) => i.card.schedule.state === 0 && wordOf(i).deckId === en.id).map((i) => wordOf(i).term)).toEqual(['a2'])
 
     // Next study day: the budget resets (a1's reverse card stays buried by its forward card, still learning).
     ctx.clock.t = new Date('2026-10-22T09:00:00Z')
     q = buildQueue(ctx.db, ctx.user.id, TZ, ctx.now())
-    expect(q.items.filter((i) => i.card.schedule.state === 0 && i.word.deckId === en.id).map((i) => i.word.term)).toEqual(['a2', 'a3'])
+    expect(q.items.filter((i) => i.card.schedule.state === 0 && wordOf(i).deckId === en.id).map((i) => wordOf(i).term)).toEqual(['a2', 'a3'])
   })
 
   it('buries siblings across directions: one card per word per day', () => {
@@ -90,7 +90,7 @@ describe('queue', () => {
     addWord(ctx, 'in inbox', { status: 'inbox' })
 
     const q = buildQueue(ctx.db, ctx.user.id, TZ, ctx.now())
-    expect(q.items.map((i) => i.word.term)).toEqual([
+    expect(q.items.map((i) => wordOf(i).term)).toEqual([
       'learning',
       'review 1', 'review 2', 'review 3', 'review 4', 'new 1',
       'review 5', 'review 6', 'review 7', 'review 8', 'new 2', 'not due',

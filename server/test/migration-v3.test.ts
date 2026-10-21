@@ -8,7 +8,7 @@ import { migrate, MIGRATIONS, openDb, schemaVersion, type Db } from '../src/db.t
 import type { V3Report } from '../src/migrate-v3.ts'
 import { listDecks, searchWords, wordCards } from '../src/repo.ts'
 import { buildQueue, wordLogs } from '../src/study.ts'
-import { TZ } from './helpers.ts'
+import { TZ, wordOf } from './helpers.ts'
 
 const DEFAULTS = { timeZone: 'Europe/Moscow', reminderTime: '09:00', eveningReminderTime: null }
 const NOW = new Date('2026-10-21T09:00:00Z')
@@ -165,7 +165,7 @@ describe('migration to words (v2 → v3)', () => {
 
     // The collection is studyable: the frown cards are not due, the new ones are.
     const q = buildQueue(db, 'us_a', TZ, NOW)
-    expect(q.items.every((i) => i.word.status === 'active')).toBe(true)
+    expect(q.items.every((i) => wordOf(i).status === 'active')).toBe(true)
     expect(q.counts.new).toBeGreaterThan(0)
   })
 
@@ -178,8 +178,9 @@ describe('migration to words (v2 → v3)', () => {
     const db = openDb(file, ENV)
     expect(schemaVersion(db)).toBe(MIGRATIONS.length)
     db.close()
-    const backups = fs.readdirSync(path.join(dir, 'backups'))
-    expect(backups).toEqual([`pre-v3-${NOW.toISOString().replace(/[:.]/g, '-')}.db`])
+    // v6 rebuilds tables too and takes its own snapshot.
+    const backups = fs.readdirSync(path.join(dir, 'backups')).sort()
+    expect(backups).toEqual(['pre-v3', 'pre-v6'].map((v) => `${v}-${NOW.toISOString().replace(/[:.]/g, '-')}.db`))
     const snap = new DatabaseSync(path.join(dir, 'backups', backups[0]!), { readOnly: true })
     expect(schemaVersion(snap)).toBe(2)
     expect((snap.prepare('SELECT count(*) AS n FROM notes').get() as { n: number }).n).toBe(12)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { blankTerm, cleanIpa, cleanWord, dayKey, dedupeKey, newCardState, nextDayStart, normalizeTerm, preview, review, wordFace } from './index.ts'
+import { blankTerm, cleanFact, cleanIpa, cleanWord, dayKey, dedupeKey, factKey, itemOf, newCardState, nextDayStart, normalizeTerm, preview, review, wordFace, type QueueItem } from './index.ts'
 
 describe('words', () => {
   const word = {
@@ -49,6 +49,31 @@ describe('words', () => {
     expect(cleanWord({ term: 'x', pos: 'noun', translations: ['a'], cefr: 'D1' as never })).toEqual({ error: 'unknown CEFR level D1' })
     expect(cleanWord({ term: 'x', pos: 'noun', translations: ['a'], examples: Array(6).fill({ text: 'e' }) })).toEqual({ error: 'at most 5 examples' })
     expect(cleanIpa('[ˈʌptɜːn]')).toBe('ˈʌptɜːn')
+  })
+})
+
+describe('facts', () => {
+  it('keys a fact by its question, ignoring case, spacing and the final punctuation', () => {
+    expect(factKey('  What is  a Deadlock? ')).toBe('what is a deadlock')
+    expect(factKey('What is a deadlock')).toBe(factKey('what is a deadlock?!'))
+    expect(factKey('What is a deadlock?')).not.toBe(factKey('What is a livelock?'))
+  })
+
+  it('cleans and validates, keeping the Markdown inside', () => {
+    const back = '  Two steps:\r\n\r\n1. read\n2. write   \n\n```java\n  x++;\n```\n\n'
+    expect(cleanFact({ front: ' Why is x++ racy? ', back, tags: ['java', ' java ', 'jmm', ''] })).toEqual({
+      fact: { front: 'Why is x++ racy?', back: '  Two steps:\n\n1. read\n2. write\n\n```java\n  x++;\n```', tags: ['java', 'jmm'] },
+    })
+    expect(cleanFact({ front: '', back: 'a' })).toEqual({ error: 'front is empty' })
+    expect(cleanFact({ front: 'q', back: '\n \n' })).toEqual({ error: 'back is empty' })
+    expect(cleanFact({ front: 'q'.repeat(2001), back: 'a' })).toEqual({ error: 'front is longer than 2000 characters' })
+  })
+
+  it('finds the word or fact behind a queue item', () => {
+    const card = { id: 'cd_1', wordId: null, factId: 'ft_1', direction: 'forward' as const, suspended: false, schedule: newCardState(new Date()) }
+    const fact = { id: 'ft_1', deckId: 'dk_t', front: 'Q', back: 'A', tags: [], status: 'active' as const, createdBy: 'user' as const, createdAt: '', updatedAt: '' }
+    const it: QueueItem = { kind: 'fact', card, fact, deckName: 'Java' }
+    expect(itemOf(it)).toBe(fact)
   })
 })
 

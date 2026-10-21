@@ -75,9 +75,9 @@ export function dashboard(db: Db, userId: string, deck: Deck, lex: Lexicon, opts
     else if (known(s, now)) d.known++
     else d.fading++
     if (!enabled[dir]) continue
-    if (!c.suspended && known(s, now)) knownWords.add(c.word_id)
+    if (!c.suspended && known(s, now)) knownWords.add(c.word_id!)
     const ok = s.state === 2 && s.stability >= MASTERED_DAYS
-    stable.set(c.word_id, (stable.get(c.word_id) ?? true) && ok)
+    stable.set(c.word_id!, (stable.get(c.word_id!) ?? true) && ok)
   }
   const mastered = [...stable.values()].filter(Boolean).length
 
@@ -90,7 +90,7 @@ export function dashboard(db: Db, userId: string, deck: Deck, lex: Lexicon, opts
       mastered,
     },
     growth: growth(db, cards.filter((c) => enabled[c.direction as Direction] && !c.suspended), now),
-    activity: activity(db, userId, deck.id, opts, now),
+    activity: activity(db, userId, opts, now),
     retention: retention(db, userId, deck.id, now),
     coverage: coverage(cards.filter((c) => enabled[c.direction as Direction]), now),
     vocabulary: vocabularySummary(db, userId, lex, now, deck.id),
@@ -122,17 +122,19 @@ function growth(db: Db, cards: Row[], now: Date, weeks = 26): { date: string; kn
         if (e.t > t) break
         last = e.s
       }
-      if (last && known(last, at)) set.add(c.word_id)
+      if (last && known(last, at)) set.add(c.word_id!)
     }
     points.push({ date: at.toISOString().slice(0, 10), known: set.size })
   }
   return points
 }
 
-function activity(db: Db, userId: string, deckId: string, opts: DayOptions, now: Date, days = 90): Dashboard['activity'] {
+// Every review of the user, words and facts in any deck: a day studied is a
+// day studied, whatever was on the cards.
+function activity(db: Db, userId: string, opts: DayOptions, now: Date, days = 90): Dashboard['activity'] {
   const logs = db.prepare(`
-    SELECT l.reviewed_at, l.rating, l.duration_ms FROM review_logs l JOIN cards c ON c.id = l.card_id JOIN words w ON w.id = c.word_id
-    WHERE w.user_id = ? AND w.deck_id = ?`).all(userId, deckId) as { reviewed_at: string; rating: number; duration_ms: number | null }[]
+    SELECT l.reviewed_at, l.rating, l.duration_ms FROM review_logs l JOIN study_cards c ON c.id = l.card_id
+    WHERE c.user_id = ?`).all(userId) as { reviewed_at: string; rating: number; duration_ms: number | null }[]
   const today = studyDay(now, opts)
   const keys: string[] = []
   for (let i = days - 1; i >= 0; i--) keys.push(dayKey(new Date(today.start.getTime() - i * 86400_000 + 12 * 3600_000), opts))

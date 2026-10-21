@@ -1,4 +1,4 @@
-// Hash router: #/words, #/word/wd_x, #/add, #/inbox/wd_y, #/progress, #/test. History entries carry a
+// Hash router: #/words, #/word/wd_x, #/fact/ft_x, #/add, #/inbox/wd_y, #/progress, #/test. History entries carry a
 // depth so Back (ours or Telegram's) can tell an in-app step from a deep link.
 
 import { parseRoute, type Route } from './route.ts'
@@ -31,6 +31,7 @@ export function parentOf(r: Route): string | null {
   const [a, b] = r.parts
   if (!a) return null
   if (a === 'word' || a === 'add') return r.query.get('from') ?? (a === 'add' ? '/' : '/words')
+  if (a === 'fact') return r.query.get('from') ?? '/'
   if (a === 'test') return '/progress'
   if (b) return `/${a}`
   return null

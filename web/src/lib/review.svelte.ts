@@ -1,13 +1,14 @@
 // The review session: cached queue, current card, ratings applied locally
 // and queued for upload, undo.
-import { dayKey, type Card, type CardState, type QueueItem, type Rating, type Word } from '@recall/core'
+import { dayKey, itemOf, type Card, type CardState, type DeckKind, type Fact, type QueueItem, type Rating, type Word } from '@recall/core'
 import { api, flushNow, kv, outbox, scheduleFlush, status } from './app.svelte.ts'
-import { AuthError, NetworkError } from './api.ts'
+import { AuthError, NetworkError, normalizeItem } from './api.ts'
 import { getDecks } from './decks.ts'
 import { fsrs } from './fsrs.ts'
-import { applyRating, buildQueue, dropWord, emptyQueue, LEARN_AHEAD_MS, nextItem, patchWord, waiting, type QueueState } from './queue.ts'
-import type { DeckSettings, DeckWithCounts, WordItem } from './types.ts'
+import { applyRating, buildQueue, deckCounts, dropWord, emptyQueue, LEARN_AHEAD_MS, nextItem, patchFact, patchWord, waiting, type Counts, type QueueState } from './queue.ts'
+import type { DeckSettings, DeckWithCounts, FactItem, QueueDeck, WordItem } from './types.ts'
 import { haptic } from './telegram.ts'
+import { errorText, showToast } from './toast.svelte.ts'
 import { uuid } from './uuid.ts'
 
 interface SessionStats {
@@ -24,10 +25,22 @@ interface Cache {
   // Today's queue as the server sent it; ratings made here live in `local`.
   items: QueueItem[]
   decks?: Record<string, DeckSettings>
+  // Every deck's counts as the server sent them with the queue.
+  queueDecks?: QueueDeck[]
   buried: Record<string, string>
   local: Record<string, CardState>
   stats: SessionStats
   fetchedAt: number
+}
+
+// One chip on the review screen: a deck, whether it's in the session, and
+// what it has left today.
+export interface DeckChip {
+  id: string
+  name: string
+  kind: DeckKind
+  inReview: boolean
+  left: number
 }
 
 interface UndoEntry {
@@ -55,8 +68,10 @@ class ReviewSession {
   error = $state<string | null>(null)
   stats = $state<SessionStats>(zeroStats())
   history = $state.raw<UndoEntry[]>([])
-  // Deck settings by id: which directions are studied, typed answers.
+  // Deck settings by id: in review, which directions are studied, typed answers.
   decks = $state.raw<Record<string, DeckSettings>>({})
+  // Every deck with the server's counts for today (the chips).
+  queueDecks = $state.raw<QueueDeck[]>([])
   // Changes on a timer so "next card in 4 min" stays current.
   now = $state(Date.now())
 
@@ -79,7 +94,8 @@ class ReviewSession {
       this.stats = cache.stats ?? zeroStats()
       this.fetchedAt = cache.fetchedAt ?? 0
       this.decks = cache.decks ?? {}
-      this.items = cache.items ?? []
+      this.queueDecks = cache.queueDecks ?? []
+      this.items = (cache.items ?? []).map(normalizeItem)
       this.rollDay()
       this.queue = this.build(cache.buried ?? {})
       this.pick()
@@ -111,6 +127,7 @@ class ReviewSession {
       status.inbox = res.inbox
       this.fetchedAt = Date.now()
       if (decks) this.decks = Object.fromEntries(decks.map((d) => [d.id, d]))
+      this.queueDecks = res.decks
       this.items = res.items
       this.rollDay()
       this.rebuild()
@@ -146,14 +163,57 @@ class ReviewSession {
     return buildQueue(this.items, buried, this.local, new Date(), status.day, (it) => this.studied(it))
   }
 
-  // Whether the card's direction is on in its deck (unknown decks: yes).
+  // Whether the card's deck is in review and its direction on (unknown decks: yes).
   private studied(it: QueueItem): boolean {
-    const d = this.decks[it.word.deckId]
-    return !d || (it.card.direction === 'forward' ? d.forwardEnabled : d.reverseEnabled)
+    const id = itemOf(it).deckId
+    if (!this.inReview(id)) return false
+    const d = this.decks[id]
+    return !d || it.kind === 'fact' || (it.card.direction === 'forward' ? d.forwardEnabled : d.reverseEnabled)
+  }
+
+  private inReview(deckId: string): boolean {
+    return this.decks[deckId]?.inReview ?? this.queueDecks.find((d) => d.id === deckId)?.inReview ?? true
   }
 
   deckOf(it: QueueItem): DeckSettings | undefined {
-    return this.decks[it.word.deckId]
+    return this.decks[itemOf(it).deckId]
+  }
+
+  // The deck chips: every deck the server listed, in its order. A deck in
+  // the session counts down as cards are rated here; one out of it shows
+  // what it would bring.
+  get chips(): DeckChip[] {
+    const local = deckCounts(this.queue)
+    const fetched = new Set(this.items.map((it) => itemOf(it).deckId))
+    const sum = (c: Counts) => c.new + c.learning + c.review
+    return this.queueDecks.map((d) => {
+      const on = this.inReview(d.id)
+      const left = on && fetched.has(d.id) ? sum(local[d.id] ?? { new: 0, learning: 0, review: 0 }) : sum(d.counts)
+      return { id: d.id, name: d.name, kind: d.kind, inReview: on, left }
+    })
+  }
+
+  // A chip tapped: the deck leaves or joins the session at once; the server
+  // is told behind, and the queue refetched so a deck turned on brings its
+  // cards. Refused (or offline) → put back with a note.
+  async toggleDeck(id: string) {
+    const on = !this.inReview(id)
+    const set = (v: boolean) => {
+      const d = this.decks[id]
+      if (d) this.decks = { ...this.decks, [id]: { ...d, inReview: v } }
+      this.queueDecks = this.queueDecks.map((x) => (x.id === id ? { ...x, inReview: v } : x))
+      this.rebuild(true)
+    }
+    set(on)
+    haptic.select()
+    try {
+      await api.patchDeck(id, { inReview: on })
+      void getDecks(true).catch(() => null)
+      await this.refresh()
+    } catch (e) {
+      set(!on)
+      showToast(e instanceof NetworkError ? 'Offline — try again when connected' : `Not saved: ${errorText(e)}`)
+    }
   }
 
   // A deck's settings changed here (optimistically): hide or bring back a
@@ -172,7 +232,19 @@ class ReviewSession {
     this.replaceItems((list) => patchWord(list, word as Word, suspended))
   }
 
-  // A word deleted elsewhere: none of its cards stay queued.
+  // A fact of today's queue, for an editor to paint before its fetch lands.
+  fact(id: string): (Fact & { deckName: string }) | null {
+    for (const it of this.items) if (it.kind === 'fact' && it.fact.id === id) return { ...it.fact, deckName: it.deckName }
+    return null
+  }
+
+  // The same for a fact.
+  patchFact(f: FactItem) {
+    const { card, deckName: _, ...fact } = f
+    this.replaceItems((list) => patchFact(list, fact, !!card?.suspended))
+  }
+
+  // A word (or fact) deleted elsewhere: none of its cards stay queued.
   dropWord(id: string) {
     this.replaceItems((list) => dropWord(list, id))
   }
@@ -353,6 +425,7 @@ class ReviewSession {
         day: this.day,
         items: this.items,
         decks: this.decks,
+        queueDecks: this.queueDecks,
         buried: this.queue.buried,
         local: this.local,
         stats: $state.snapshot(this.stats),

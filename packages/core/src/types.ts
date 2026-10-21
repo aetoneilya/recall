@@ -57,21 +57,46 @@ export interface Word {
   updatedAt: string
 }
 
-// One deck per language per user, e.g. "English" (en → ru).
+// language: words, one deck per language per user, e.g. "English" (en → ru).
+// topic: Q&A facts on one subject, e.g. "Concurrency"; no languages.
+export type DeckKind = 'language' | 'topic'
+export const DECK_KINDS: readonly DeckKind[] = ['language', 'topic']
+
 export interface Deck {
   id: string
+  kind: DeckKind
   name: string
-  // ISO 639-1: the language being learnt and the user's own.
-  targetLang: string
-  nativeLang: string
+  // ISO 639-1: the language being learnt and the user's own; null for topic decks.
+  targetLang: string | null
+  nativeLang: string | null
   newPerDay: number
-  // A disabled direction's cards stay (with their history) but are not studied or counted.
+  // Whether the deck's cards are in the review session. Off: kept, not queued.
+  inReview: boolean
+  // A disabled direction's cards stay (with their history) but are not studied
+  // or counted. Language decks only; a topic deck's facts are always forward.
   forwardEnabled: boolean
   reverseEnabled: boolean
   // When set, a word's reverse card is introduced only once its forward card's
   // stability reaches this many days. null = both directions from the start.
   reverseAfterDays: number | null
   createdAt: string
+}
+
+// A question and its answer in a topic deck; both sides are Markdown.
+// One card per fact (direction 'forward').
+export type FactStatus = WordStatus
+export const FACT_STATUSES: readonly FactStatus[] = WORD_STATUSES
+
+export interface Fact {
+  id: string
+  deckId: string
+  front: string
+  back: string
+  tags: string[]
+  status: FactStatus
+  createdBy: Author
+  createdAt: string
+  updatedAt: string
 }
 
 // 0 New, 1 Learning, 2 Review, 3 Relearning — same numbers as ts-fsrs State.
@@ -90,9 +115,12 @@ export interface CardState {
   lastReview: string | null
 }
 
+// A word's card (one per direction) or a fact's (forward): exactly one of
+// wordId / factId is set.
 export interface Card {
   id: string
-  wordId: string
+  wordId: string | null
+  factId: string | null
   direction: Direction
   suspended: boolean
   schedule: CardState
@@ -116,9 +144,25 @@ export interface ReviewLog extends ReviewInput {
   after: CardState
 }
 
-// What the review screen needs for one card; render it with wordFace(word, card.direction).
-export interface QueueItem {
+// What the review screen needs for one card: a word's (render it with
+// wordFace(word, card.direction)) or a fact's.
+export type QueueItem = WordQueueItem | FactQueueItem
+
+export interface WordQueueItem {
+  kind: 'word'
   card: Card
   word: Word
   deckName: string
+}
+
+export interface FactQueueItem {
+  kind: 'fact'
+  card: Card
+  fact: Fact
+  deckName: string
+}
+
+// The word or fact behind a queue item: siblings share it.
+export function itemOf(it: QueueItem): Word | Fact {
+  return it.kind === 'fact' ? it.fact : it.word
 }

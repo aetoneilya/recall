@@ -27,6 +27,28 @@
   const mcpUrl = `${origin}/mcp`
 
   const me = $derived(status.me)
+  const languageDecks = $derived(decks.filter((d) => d.kind !== 'topic'))
+  const topicDecks = $derived(decks.filter((d) => d.kind === 'topic'))
+
+  let topicName = $state('')
+  let addingTopic = $state(false)
+  async function addTopic() {
+    const name = topicName.trim()
+    if (!name || addingTopic) return
+    addingTopic = true
+    try {
+      const d = await api.createTopicDeck(name)
+      decks = [...decks, d]
+      topicName = ''
+      session.applyDeck(d)
+      void getDecks(true).then((x) => (decks = x)).catch(() => {})
+      void session.refresh()
+    } catch (e) {
+      showToast(`Not added: ${errorText(e)}`)
+    } finally {
+      addingTopic = false
+    }
+  }
 
   // Deck settings: shown at once (and the review queue follows at once),
   // sent in the background, put back with a note if the server refuses.
@@ -341,10 +363,10 @@
     </div>
   </div>
 
-  {#each decks as d (d.id)}
-    {@const t = code(d.targetLang)}
-    {@const n = code(d.nativeLang)}
-    <div class="section-label">{decks.length > 1 ? d.name : 'Study'}</div>
+  {#each languageDecks as d (d.id)}
+    {@const t = code(d.targetLang ?? '')}
+    {@const n = code(d.nativeLang ?? '')}
+    <div class="section-label">{languageDecks.length > 1 ? d.name : 'Study'}</div>
     <div class="group">
       <label class="row">
         <span class="grow">{t} → {n} <span class="muted">recognise</span><span class="sub">See the word, recall what it means</span></span>
@@ -386,6 +408,33 @@
     <div class="section-label">Study</div>
     <div class="group"><div class="row muted">Loading…</div></div>
   {/each}
+
+  {#if decks.length}
+    <div class="section-label">Topics</div>
+    <div class="group">
+      {#each topicDecks as d (d.id)}
+        <div class="row col topic">
+          <label class="topic-head">
+            <span class="grow">{d.name}<span class="sub">{d.counts.total} {d.counts.total === 1 ? 'card' : 'cards'}{d.counts.newTotal ? ` · ${d.counts.newTotal} not started` : ''}</span></span>
+            <input type="checkbox" class="switch" checked={d.inReview} onchange={(e) => patchDeck(d, { inReview: e.currentTarget.checked })} aria-label="Review {d.name}" />
+          </label>
+          <div class="topic-new">
+            <span class="grow muted">New per day</span>
+            <div class="stepper">
+              <button onclick={() => setNew(d, -1)} disabled={d.newPerDay <= 0} aria-label="Fewer new {d.name} cards"><Icon name="minus" size={18} stroke={2} /></button>
+              <span>{d.newPerDay}</span>
+              <button onclick={() => setNew(d, 1)} aria-label="More new {d.name} cards"><Icon name="plus" size={18} stroke={2} /></button>
+            </div>
+          </div>
+        </div>
+      {/each}
+      <form class="row new-topic" onsubmit={(e) => { e.preventDefault(); void addTopic() }}>
+        <input bind:value={topicName} placeholder="New topic, e.g. Databases" autocomplete="off" aria-label="New topic deck" />
+        <button class="btn" type="submit" disabled={!topicName.trim() || addingTopic}>Add</button>
+      </form>
+    </div>
+    <p class="caption">Question-and-answer cards, reviewed with your words. Turn a topic off here or with its chip on the review screen; its cards wait as they are.</p>
+  {/if}
 
   {#if me}
     <div class="section-label">Reminders</div>
@@ -643,6 +692,30 @@
     min-height: 36px;
     padding: 0 12px;
     font-size: 15px;
+    flex: none;
+  }
+  .row.col.topic {
+    gap: 6px;
+  }
+  .topic-head,
+  .topic-new {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+  }
+  .topic-new {
+    font-size: 15px;
+  }
+  .new-topic {
+    gap: 8px;
+  }
+  .new-topic input {
+    flex: 1;
+    min-width: 0;
+    padding: 9px 12px;
+  }
+  .new-topic .btn {
     flex: none;
   }
   .stepper {

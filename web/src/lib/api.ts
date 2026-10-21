@@ -1,17 +1,22 @@
-import type { ReviewInput } from '@recall/core'
+import type { QueueItem, ReviewInput } from '@recall/core'
 import type {
   ApiToken,
   AutofillResult,
   Dashboard,
   DeckPatch,
   DeckWithCounts,
+  FactDetail,
+  FactItem,
+  FactPatch,
   FsrsOptimizeResult,
   LoginPoll,
   LoginStart,
   Me,
   MePatch,
+  NewFact,
   NewToken,
   NewWord,
+  QueueDeck,
   QueueResponse,
   ReviewsResult,
   TestResult,
@@ -148,6 +153,13 @@ export function createApi(opts: ApiOptions = {}) {
 
     decks: async () => list<Json>(await get<unknown>('/api/decks'), 'decks').map(normalizeDeck),
     patchDeck: async (id: string, d: DeckPatch) => normalizeDeck(unwrap<Json>(await request<Json>('PATCH', `/api/decks/${enc(id)}`, d), 'deck')),
+    createTopicDeck: async (name: string) => normalizeDeck(unwrap<Json>(await post<Json>('/api/decks', { kind: 'topic', name }), 'deck')),
+
+    fact: (id: string) => get<FactDetail>(`/api/facts/${enc(id)}`),
+    // A duplicate question is HttpError 409 with data.existing.
+    createFact: async (f: NewFact) => unwrap<FactItem>(await post<Json>('/api/facts', f), 'fact'),
+    updateFact: async (id: string, p: FactPatch) => unwrap<FactItem>(await request<Json>('PATCH', `/api/facts/${enc(id)}`, p), 'fact'),
+    deleteFact: (id: string) => request<unknown>('DELETE', `/api/facts/${enc(id)}`),
 
     words: async (q: WordQuery = {}): Promise<WordsPage> => {
       const qs = new URLSearchParams()
@@ -204,12 +216,28 @@ function num(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : 0
 }
 
+const counts3 = (v: unknown) => {
+  const c = (v ?? {}) as Json
+  return { new: num(c.new), learning: num(c.learning), review: num(c.review) }
+}
+
+// Items from servers (and caches) that predate facts carry no kind: words.
+export function normalizeItem(it: QueueItem): QueueItem {
+  return it.kind ? it : ({ ...(it as object), kind: 'word' } as QueueItem)
+}
+
 function normalizeQueue(d: Json): QueueResponse {
-  const c = (d.counts ?? {}) as Json
   return {
-    items: list(d, 'items'),
-    counts: { new: num(c.new), learning: num(c.learning), review: num(c.review) },
+    items: list<QueueItem>(d, 'items').map(normalizeItem),
+    counts: counts3(d.counts),
     inbox: num(d.inbox),
+    decks: (Array.isArray(d.decks) ? (d.decks as Json[]) : []).map((x) => ({
+      id: String(x.id),
+      name: String(x.name ?? ''),
+      kind: x.kind === 'topic' ? 'topic' : 'language',
+      inReview: x.inReview !== false,
+      counts: counts3(x.counts),
+    }) satisfies QueueDeck),
   }
 }
 
@@ -221,6 +249,10 @@ function normalizeDeck(d: Json): DeckWithCounts {
   const typeAnswer = TYPE_ANSWER.includes(d.typeAnswer as TypeAnswer) ? (d.typeAnswer as TypeAnswer) : 'off'
   return {
     ...(d as unknown as DeckWithCounts),
+    kind: d.kind === 'topic' ? 'topic' : 'language',
+    inReview: d.inReview !== false,
+    targetLang: typeof d.targetLang === 'string' ? d.targetLang : null,
+    nativeLang: typeof d.nativeLang === 'string' ? d.nativeLang : null,
     forwardEnabled: d.forwardEnabled !== false,
     reverseEnabled: d.reverseEnabled !== false,
     reverseAfterDays: typeof d.reverseAfterDays === 'number' ? d.reverseAfterDays : null,

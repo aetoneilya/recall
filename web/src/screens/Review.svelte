@@ -1,6 +1,7 @@
 <script lang="ts">
   import { checkAnswer, formatInterval, preview, type AnswerCheck, type Rating } from '@recall/core'
   import { flushSync, onMount } from 'svelte'
+  import FactCard from '../components/FactCard.svelte'
   import Icon from '../components/Icon.svelte'
   import RatingBar from '../components/RatingBar.svelte'
   import Summary from '../components/Summary.svelte'
@@ -29,8 +30,12 @@
   const deck = $derived(item ? session.deckOf(item) : undefined)
   const langs = $derived<[string, string]>([deck?.targetLang ?? 'en', deck?.nativeLang ?? 'ru'])
   // Typed answers: the deck asks for them on RU→EN cards, or on both
-  // (forward then means typing the main translation).
-  const typed = $derived(!!item && (deck?.typeAnswer === 'both' || (deck?.typeAnswer === 'reverse' && item.card.direction === 'reverse')))
+  // (forward then means typing the main translation). Never on facts.
+  const typed = $derived(
+    item?.kind === 'word' && (deck?.typeAnswer === 'both' || (deck?.typeAnswer === 'reverse' && item.card.direction === 'reverse')),
+  )
+  // The deck chips: only once there's more than one deck to choose from.
+  const chips = $derived(session.chips)
   const LANG_NAMES: Record<string, string> = { en: 'English', ru: 'Russian', de: 'German', fr: 'French', es: 'Spanish' }
   const placeholder = $derived(
     item?.card.direction === 'reverse' ? `Type it in ${LANG_NAMES[langs[0]] ?? langs[0].toUpperCase()}` : `Type the ${LANG_NAMES[langs[1]] ?? ''} translation`,
@@ -97,7 +102,7 @@
 
   function reveal() {
     if (!item || session.revealed) return
-    const c = typed ? checkAnswer(answer, item.word, item.card.direction) : null
+    const c = typed && item.kind === 'word' ? checkAnswer(answer, item.word, item.card.direction) : null
     session.reveal()
     if (!session.revealed) return
     check = c
@@ -187,6 +192,15 @@
       <button class="add" onclick={() => navigate('/add?from=/')} aria-label="Add a word"><Icon name="plus" size={20} stroke={2.2} /></button>
     </div>
   </header>
+  {#if chips.length > 1}
+    <div class="decks" role="group" aria-label="Decks in review">
+      {#each chips as d (d.id)}
+        <button class="deck" class:on={d.inReview} aria-pressed={d.inReview} onclick={() => session.toggleDeck(d.id)}>
+          {d.name}<b>{d.left}</b>
+        </button>
+      {/each}
+    </div>
+  {/if}
   <div class="progress" aria-hidden="true"><div style="transform: scaleX({progress})"></div></div>
 
   <div class="stage" bind:clientWidth={stageWidth} bind:clientHeight={stageHeight}>
@@ -216,7 +230,11 @@
             onend: onSwipeEnd,
           }}
         >
-          <WordCard {item} revealed={session.revealed} typed={answer} {check} {langs} onedit={() => navigate(`/word/${item.word.id}?from=/`)} />
+          {#if item.kind === 'fact'}
+            <FactCard {item} revealed={session.revealed} onedit={() => navigate(`/fact/${item.fact.id}?from=/`)} />
+          {:else}
+            <WordCard {item} revealed={session.revealed} typed={answer} {check} {langs} onedit={() => navigate(`/word/${item.word.id}?from=/`)} />
+          {/if}
           {#if dir && lean && intervals}
             <div class="wash {dir} {tone[lean]}" style="opacity: {pull * 0.6}"></div>
             <div class="swipe-hint {dir} {tone[lean]}" class:armed style="opacity: {0.35 + pull * 0.65}; --pull: {pull}">
@@ -347,6 +365,52 @@
   }
   .r {
     color: var(--c-review);
+  }
+  /* Deck chips: which decks are in today's session, and what each has left. */
+  .decks {
+    flex: none;
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    margin: 0 calc(-12px - var(--sar)) 8px calc(-12px - var(--sal));
+    padding: 0 calc(12px + var(--sar)) 0 calc(12px + var(--sal));
+    scrollbar-width: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  .decks::-webkit-scrollbar {
+    display: none;
+  }
+  .deck {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    padding: 0 12px;
+    border-radius: 15px;
+    font-size: 14px;
+    font-weight: 500;
+    white-space: nowrap;
+    color: var(--faint);
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--hairline);
+    font-variant-numeric: tabular-nums;
+    transition:
+      background-color var(--t-fast) ease,
+      color var(--t-fast) ease,
+      transform var(--t-press) var(--ease-out);
+  }
+  .deck b {
+    font-weight: 650;
+  }
+  .deck.on {
+    color: var(--accent);
+    background: var(--accent-soft);
+    box-shadow: none;
+  }
+  .deck:active {
+    transform: scale(0.96);
   }
   .progress {
     flex: none;

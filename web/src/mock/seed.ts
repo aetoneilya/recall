@@ -58,6 +58,7 @@ export const words: SeedWord[] = [
   { term: 'dusk', pos: 'noun', translations: ['сумерки'], ipa: 'dʌsk', examples: [ex('The streetlights came on at dusk.', 'С наступлением сумерек зажглись фонари.')], cefr: 'B2', freqRank: 8700, plan: ['mastered', 'mastered'] },
   { term: 'to mutter', pos: 'verb', translations: ['бормотать', 'ворчать'], ipa: 'ˈmʌtɚ', examples: [ex('He muttered something under his breath.', 'Он что-то пробормотал себе под нос.')], tags: [WH], cefr: 'B2', freqRank: 9300, plan: ['due', 'due'] },
   { term: 'ubiquitous', pos: 'adjective', translations: ['вездесущий', 'повсеместный'], ipa: 'juˈbɪkwɪtəs', examples: [ex('Smartphones have become ubiquitous.', 'Смартфоны стали повсеместными.')], tags: [ECO], cefr: 'C2', freqRank: 14900, plan: ['mastered', 'later'] },
+  { term: 'to strive', pos: 'verb', translations: ['стремиться', 'бороться'], ipa: 'straɪv', examples: [ex('She strove to keep the family together.', 'Она изо всех сил старалась сохранить семью.')], tags: [WH], cefr: 'C1', freqRank: 7100, plan: ['due', 'later'] },
   { term: 'to cope', pos: 'verb', translations: ['справляться'], ipa: 'koʊp', examples: [ex('She coped well with the pressure.', 'Она хорошо справлялась с давлением.')], note: 'cope with smth', cefr: 'B1', freqRank: 3300, plan: ['mastered', 'mastered'] },
   { term: 'bewildered', pos: 'adjective', translations: ['озадаченный', 'сбитый с толку'], ipa: 'bɪˈwɪldɚd', examples: [ex('He looked bewildered by the question.', 'Вопрос явно сбил его с толку.')], cefr: 'C1', freqRank: 17100, plan: ['new', 'new'] },
   { term: 'to stifle', pos: 'verb', translations: ['подавлять', 'душить'], ipa: 'ˈstaɪfəl', examples: [ex('She stifled a yawn.', 'Она подавила зевок.')], cefr: 'C1', freqRank: 15300, plan: ['new', 'new'] },
@@ -271,4 +272,24 @@ export const topics: SeedTopic[] = [
       },
     ],
   },
+]
+
+// A few items of the irregular-verbs pack (server/data/packs), for the
+// Packs row in Settings and the forms on verb cards.
+export interface SeedVerb {
+  verb: string
+  past: string[]
+  participle: string[]
+  translation: string
+  example: { text: string; translation: string }
+  note: string | null
+}
+
+export const irregularVerbs: SeedVerb[] = [
+  { verb: 'be', past: ['was', 'were'], participle: ['been'], translation: 'быть, находиться', example: { text: 'We were at home all evening.', translation: 'Мы весь вечер были дома.' }, note: 'was — с I/he/she/it, were — с you/we/they' },
+  { verb: 'get', past: ['got'], participle: ['gotten', 'got'], translation: 'получать, становиться', example: { text: 'She has gotten much better at chess.', translation: 'Она стала гораздо лучше играть в шахматы.' }, note: 'gotten — американский вариант, got — британский' },
+  { verb: 'give', past: ['gave'], participle: ['given'], translation: 'давать', example: { text: 'He gave me his old bike.', translation: 'Он отдал мне свой старый велосипед.' }, note: null },
+  { verb: 'begin', past: ['began'], participle: ['begun'], translation: 'начинать', example: { text: 'The film had already begun when we arrived.', translation: 'Фильм уже начался, когда мы пришли.' }, note: null },
+  { verb: 'learn', past: ['learned', 'learnt'], participle: ['learned', 'learnt'], translation: 'учить, узнавать', example: { text: 'I learned to swim when I was six.', translation: 'Я научился плавать в шесть лет.' }, note: 'learnt — британский вариант' },
+  { verb: 'strive', past: ['strove', 'strived'], participle: ['striven', 'strived'], translation: 'стремиться', example: { text: 'We strive to answer every email.', translation: 'Мы стараемся отвечать на каждое письмо.' }, note: null },
 ]

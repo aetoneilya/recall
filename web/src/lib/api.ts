@@ -16,6 +16,7 @@ import type {
   NewFact,
   NewToken,
   NewWord,
+  PackInfo,
   QueueDeck,
   QueueResponse,
   ReviewsResult,
@@ -164,6 +165,10 @@ export function createApi(opts: ApiOptions = {}) {
       const facts = list<FactItem>(data, 'facts')
       return { facts, total: typeof data.total === 'number' ? data.total : facts.length }
     },
+
+    packs: async () => list<PackInfo>(await get<unknown>('/api/packs'), 'packs'),
+    // Adds the pack's missing cards; the updated list comes back.
+    addPack: (id: string) => post<{ added: number; alreadyAdded: number; duplicates: number; packs: PackInfo[] }>(`/api/packs/${enc(id)}`),
 
     fact: (id: string) => get<FactDetail>(`/api/facts/${enc(id)}`),
     // A duplicate question is HttpError 409 with data.existing.

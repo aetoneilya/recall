@@ -9,7 +9,7 @@
   import { allZones, deviceZone, patchMeOptimistic, type MeFieldPatch, relTime, searchZones, shortDate, zoneLabel, zoneOffset } from '../lib/settings.ts'
   import { applyTheme, loadTheme, type ThemeChoice } from '../lib/theme.ts'
   import { errorText, showToast } from '../lib/toast.svelte.ts'
-  import type { ApiToken, AuthVia, DeckPatch, DeckWithCounts, Me, NewToken, TypeAnswer } from '../lib/types.ts'
+  import type { ApiToken, AuthVia, DeckPatch, DeckWithCounts, Me, NewToken, PackInfo, TypeAnswer } from '../lib/types.ts'
 
   // The review screen's cached copy paints the study settings at once (and
   // offline); the fetch below brings fresh counts.
@@ -58,6 +58,27 @@
     } catch (e) {
       decks = before
       showToast(`Not deleted: ${errorText(e)}`)
+    }
+  }
+
+  // Content packs: ready-made topics, added with one tap.
+  let packs = $state<PackInfo[]>([])
+  let addingPack = $state<string | null>(null)
+  void api.packs().then((p) => (packs = p)).catch(() => {})
+  async function addPack(p: PackInfo) {
+    if (addingPack) return
+    addingPack = p.id
+    try {
+      const r = await api.addPack(p.id)
+      packs = r.packs
+      showToast(`Added ${r.added} ${r.added === 1 ? 'card' : 'cards'} to “${p.name}”`)
+      status.factsVersion++
+      void getDecks(true).then((x) => (decks = x)).catch(() => {})
+      void session.refresh()
+    } catch (e) {
+      showToast(`Not added: ${errorText(e)}`)
+    } finally {
+      addingPack = null
     }
   }
 
@@ -480,6 +501,23 @@
       </form>
     </div>
     <p class="caption">Question-and-answer cards, reviewed with your words. Turn a topic off here or with its chip on the review screen; its cards wait as they are.</p>
+    {#if packs.length}
+      <div class="section-label">Packs</div>
+      <div class="group">
+        {#each packs as p (p.id)}
+          <div class="row pack">
+            <span class="grow">{p.name} <span class="muted">· {p.count} cards</span>{#if p.description}<span class="sub">{p.description}</span>{/if}</span>
+            {#if p.added && !p.missing}
+              <span class="added"><Icon name="check" size={16} stroke={2.2} /> Added</span>
+            {:else}
+              <button class="btn small" onclick={() => addPack(p)} disabled={addingPack === p.id}>
+                {addingPack === p.id ? 'Adding…' : p.added ? `Add ${p.missing} new` : 'Add'}
+              </button>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
   {/if}
 
   {#if me}
@@ -752,6 +790,21 @@
   }
   .topic-new {
     font-size: 15px;
+  }
+  .pack .btn.small {
+    flex: none;
+    min-height: 34px;
+    padding: 0 14px;
+    font-size: 14px;
+  }
+  .added {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--good);
   }
   .topic-del {
     display: flex;

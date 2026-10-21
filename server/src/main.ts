@@ -6,6 +6,7 @@ import type { AppContext } from './context.ts'
 import { openDb, type Db } from './db.ts'
 import { startFsrsJob } from './fsrs.ts'
 import { lexiconOf } from './lexicon.ts'
+import { currentPacks, usePackDir } from './pack-data.ts'
 import { syncFreqRanks } from './repo.ts'
 import { migrationEnv } from './users.ts'
 
@@ -22,6 +23,8 @@ const lexicon = lexiconOf(ctx)
 if (!lexicon.hasFrequencies()) console.warn(`${cfg.dataDir}/en-freq.tsv is missing: frequency ranks and coverage are off`)
 if (!lexicon.vocabTest()) console.warn(`${cfg.dataDir}/vocab-test.json is missing: the vocabulary test is off`)
 syncFreqRanks(db, lexicon)
+usePackDir(cfg.dataDir)
+if (!currentPacks().length) console.warn(`${cfg.dataDir}/packs has no valid packs: content packs and verb forms are off`)
 if (!cfg.anthropicApiKey) console.warn('ANTHROPIC_API_KEY is not set: ✨ autofill is off')
 
 if (cfg.dev) console.warn('DEV mode: no authentication')

@@ -8,6 +8,7 @@ import { autofill } from './autofill.ts'
 import { isTime, isTimeZone } from './config.ts'
 import type { AppContext } from './context.ts'
 import { dashboard } from './dashboard.ts'
+import { addPack, listPacks } from './packs.ts'
 import { createFact, deleteFact, factInboxCount, factItem, getFact, inboxFacts, searchFacts, setFactSuspended, updateFact } from './facts.ts'
 import { fsrsInfo, optimizeNow, REQUEST_RETENTION } from './fsrs.ts'
 import { lexiconOf } from './lexicon.ts'
@@ -292,6 +293,18 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
   r.delete('/decks/:id', (req, res) => {
     const facts = deleteDeck(db, uid(req), req.params.id as string, { withFacts: req.query.facts === 'delete' })
     res.json({ ok: true, facts })
+  })
+
+  // ---------- packs ----------
+
+  r.get('/packs', (req, res) => {
+    res.json({ packs: listPacks(db, uid(req)) })
+  })
+
+  // Adds the pack's missing cards (all of them the first time).
+  r.post('/packs/:id', (req, res) => {
+    const out = addPack(db, uid(req), req.params.id as string, ctx.now())
+    res.json({ ...out, packs: listPacks(db, uid(req)) })
   })
 
   // ---------- facts ----------

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { answerDiff, wordFace, type AnswerCheck, type WordQueueItem } from '@recall/core'
+  import { answerDiff, formsLine, wordFace, type AnswerCheck, type WordQueueItem } from '@recall/core'
   import { tick } from 'svelte'
   import { markTerm } from '../lib/mark.ts'
   import Icon from './Icon.svelte'
@@ -23,6 +23,9 @@
   const [target, native] = $derived(langs)
   const dirLabel = $derived(forward ? `${target.toUpperCase()} → ${native.toUpperCase()}` : `${native.toUpperCase()} → ${target.toUpperCase()}`)
   const ipa = (s: string | null) => (s ? `/${s}/` : '')
+  // An irregular verb's past · participle, on the revealed side (absent on
+  // words cached before the server sent them).
+  const forms = $derived(item.word.forms ? formsLine(item.word.forms) : null)
   // The front example with its blank as a separate piece.
   const blankParts = $derived(f.front.example ? f.front.example.split('___') : [])
   const diff = $derived(check && check.verdict !== 'exact' && check.verdict !== 'empty' && check.matched ? answerDiff(typed, check.matched) : null)
@@ -81,6 +84,7 @@
             {#if f.front.posLabel}<span class="pos">{f.front.posLabel}</span>{/if}
           </p>
         {/if}
+        {#if revealed && forms}<p class="forms reveal-in" lang={target}>{forms}</p>{/if}
       </div>
     {:else}
       <div class="front">
@@ -120,6 +124,7 @@
         {:else}
           <h2 class="term back" lang={target}>{f.back.term}</h2>
           {#if f.back.ipa}<p class="sub"><span class="ipa" lang={target}>{ipa(f.back.ipa)}</span></p>{/if}
+          {#if forms}<p class="forms" lang={target}>{forms}</p>{/if}
           {#if f.back.example}{@render example(f.back.example, f.back.exampleTranslation)}{/if}
         {/if}
         {#if f.back.note}<p class="note" lang={native}>{f.back.note}</p>{/if}
@@ -244,6 +249,13 @@
   }
   .ipa {
     font-size: 17px;
+    letter-spacing: 0.01em;
+  }
+  /* Irregular verb forms under the IPA / part of speech: small, muted. */
+  .forms {
+    margin-top: 6px;
+    font-size: 15px;
+    color: var(--muted);
     letter-spacing: 0.01em;
   }
   .pos {

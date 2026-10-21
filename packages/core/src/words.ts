@@ -2,8 +2,14 @@
 // Server and web use the same functions so a card looks the same everywhere.
 import {
   CEFR_LEVELS, PARTS_OF_SPEECH,
-  type Cefr, type Direction, type Example, type PartOfSpeech, type Word,
+  type Cefr, type Direction, type Example, type PartOfSpeech, type VerbForms, type Word,
 } from './types.ts'
+
+// "began · begun", "learned / learnt · learned / learnt": variants by " / ",
+// past · participle. Word cards and the irregular-verbs pack's facts.
+export function formsLine(f: VerbForms): string {
+  return `${f.past.join(' / ')} · ${f.participle.join(' / ')}`
+}
 
 // "To  Frown " → "frown". The dedupe key ignores case, extra spaces and the
 // infinitive "to ", so "to frown" and "frown" (both verbs) are one word.

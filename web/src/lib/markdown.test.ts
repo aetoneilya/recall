@@ -24,6 +24,17 @@ describe('renderMarkdown', () => {
     expect(renderInline('``code with ` tick``')).toBe('<code>code with ` tick</code>')
   })
 
+  it('marks a first line that is only bold as the lead', () => {
+    expect(renderMarkdown('**began · begun**\n\n*She began to cry.*\nОна заплакала.')).toBe(
+      '<p><strong class="lead">began · begun</strong></p><p><em>She began to cry.</em><br>Она заплакала.</p>',
+    )
+    expect(renderMarkdown('**to begin**\nначинать')).toBe('<p><strong class="lead">to begin</strong><br>начинать</p>')
+    // Not the lead: bold with more on the line, or bold further down.
+    expect(renderMarkdown('**Bigger** is not better')).toBe('<p><strong>Bigger</strong> is not better</p>')
+    expect(renderMarkdown('Intro\n\n**Alone**')).toBe('<p>Intro</p><p><strong>Alone</strong></p>')
+    expect(renderMarkdown('**a** and **b**')).toBe('<p><strong>a</strong> and <strong>b</strong></p>')
+  })
+
   it('renders wikilinks as emphasised text', () => {
     expect(renderInline('[[race condition]] [[Что такое race condition|race]] · [[Note#Part]]')).toBe(
       '<em class="wl">race condition</em> <em class="wl">race</em> · <em class="wl">Note › Part</em>',

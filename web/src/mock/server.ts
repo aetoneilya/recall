@@ -22,6 +22,7 @@ import {
   type Direction,
   type Fact,
   type FactInput,
+  formsLine,
   type QueueItem,
   type Rating,
   type ReviewInput,
@@ -30,7 +31,7 @@ import {
   type WordInput,
 } from '@recall/core'
 import type { CardSummary, Dashboard, Draft, FactItem, Placement, ScalePoint, TestResult, TypeAnswer, VocabEstimate, WordItem } from '../lib/types.ts'
-import { autofillDictionary, baselineSrs, pseudowords, scale, testBands, topics as seedTopics, words as seedWords, type Plan, type SeedWord } from './seed.ts'
+import { autofillDictionary, baselineSrs, irregularVerbs, pseudowords, scale, testBands, topics as seedTopics, words as seedWords, type Plan, type SeedWord } from './seed.ts'
 
 const DAY = { timeZone: 'Europe/Moscow', startHour: 4 }
 const H = 3600_000
@@ -226,6 +227,33 @@ seed()
 
 // --- helpers ---------------------------------------------------------------
 
+// Forms of irregular verbs, by lemma (the server's pack-data.verbForms, small).
+const VERBS = new Map(irregularVerbs.map((v) => [v.verb, v]))
+function formsOf(w: Word): Word {
+  if (w.pos !== 'verb' && w.pos !== 'phrasal_verb') return w
+  const parts = normalizeTerm(w.term).split(' ')
+  const v = VERBS.get(parts[0]!)
+  if (!v || (w.pos === 'verb' && parts.length > 1) || (w.pos === 'phrasal_verb' && parts.length < 2)) return w
+  const rest = parts.slice(1).join(' ')
+  const add = (f: string) => (rest ? `${f} ${rest}` : f)
+  return { ...w, forms: { past: v.past.map(add), participle: v.participle.map(add) } }
+}
+
+// The pack: facts generated like the server's.
+const PACK = { id: 'irregular-verbs', name: 'Irregular verbs', description: 'The most common English irregular verbs, most frequent first.' }
+const packRef = (v: string) => `pack:${PACK.id}:${v}`
+const packRefs = new Map<string, string>()
+function packFact(v: (typeof irregularVerbs)[number]) {
+  const back = [`**${formsLine(v)}**`, `*${v.example.text}*\n${v.example.translation}`]
+  if (v.note) back.push(v.note)
+  return { front: `**to ${v.verb}**\n${v.translation}`, back: back.join('\n\n'), tags: [] }
+}
+function packInfo() {
+  const have = irregularVerbs.filter((v) => packRefs.has(packRef(v.verb)))
+  const deckId = have.length ? db.facts.find((f) => f.id === packRefs.get(packRef(have[0]!.verb)))?.deckId : undefined
+  return { ...PACK, count: irregularVerbs.length, added: have.length > 0, missing: irregularVerbs.length - have.length, ...(deckId ? { deckId } : {}) }
+}
+
 const deckOf = (deckId: string) => db.decks.find((d) => d.id === deckId)!
 const wordOf = (wordId: string) => db.words.find((w) => w.id === wordId)!
 const factOf = (factId: string) => db.facts.find((f) => f.id === factId)!
@@ -275,7 +303,7 @@ function item(w: Word, now: Date): WordItem {
     const c = cs.find((x) => x.direction === dir)
     return c ? summary(c, now) : null
   }
-  return { ...w, deckName: deckOf(w.deckId).name, cards: { forward: pick('forward'), reverse: pick('reverse') } }
+  return { ...formsOf(w), deckName: deckOf(w.deckId).name, cards: { forward: pick('forward'), reverse: pick('reverse') } }
 }
 
 function mustWord(wordId: string): Word {
@@ -394,7 +422,7 @@ function buildQueue(now: Date, limit: number, deckId?: string) {
   const items: QueueItem[] = session.slice(0, limit).map((c): QueueItem => {
     const o = owners.get(ownerKey(c))!
     const deckName = deckOf(o.deckId).name
-    return c.factId ? { kind: 'fact', card: c, fact: o as Fact, deckName } : { kind: 'word', card: c, word: o as Word, deckName }
+    return c.factId ? { kind: 'fact', card: c, fact: o as Fact, deckName } : { kind: 'word', card: c, word: formsOf(o as Word), deckName }
   })
   const count = (st: number[]) => session.filter((c) => st.includes(c.schedule.state)).length
   return {
@@ -1148,6 +1176,30 @@ function handle(method: string, url: URL, body: unknown): unknown {
       patchDeck(d, B)
       return { deck: d }
     }
+  }
+
+  // ---------- packs ----------
+
+  if (p === '/api/packs') return { packs: [packInfo()] }
+  if (a === 'packs' && b && method === 'POST') {
+    if (b !== PACK.id) throw new Fail(404, `no pack ${b}`)
+    const known = packInfo().deckId
+    let deck = known ? deckOf(known) : db.decks.find((d) => d.name.toLowerCase() === PACK.name.toLowerCase())
+    if (!deck) {
+      deck = { id: id('dk'), kind: 'topic', name: PACK.name, targetLang: null, nativeLang: null, newPerDay: 5, inReview: true, forwardEnabled: true, reverseEnabled: true, reverseAfterDays: null, typeAnswer: 'off', createdAt: now.toISOString() }
+      db.decks.push(deck)
+    }
+    let added = 0
+    irregularVerbs.forEach((v, i) => {
+      if (packRefs.has(packRef(v.verb))) return
+      const at = new Date(now.getTime() + i).toISOString()
+      const fact: Fact = { id: id('ft'), deckId: deck.id, ...packFact(v), status: 'active', createdBy: 'import', createdAt: at, updatedAt: at }
+      db.facts.push(fact)
+      db.cards.push({ id: id('cd'), wordId: null, factId: fact.id, direction: 'forward', suspended: false, schedule: newCardState(now) })
+      packRefs.set(packRef(v.verb), fact.id)
+      added++
+    })
+    return { deck, added, alreadyAdded: irregularVerbs.length - added, duplicates: 0, packs: [packInfo()] }
   }
 
   // ---------- facts ----------

@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { posLabel, type Word } from '@recall/core'
+  import { formsLine, posLabel, type Word } from '@recall/core'
   import { markTerm } from '../lib/mark.ts'
 
   // A whole word at once, for vetting a proposal: term, pronunciation,
   // translations, examples, note and tags.
-  let { word }: { word: Pick<Word, 'term' | 'pos' | 'ipa' | 'translations' | 'examples' | 'note' | 'tags' | 'cefr' | 'freqRank'> } = $props()
+  let { word }: { word: Pick<Word, 'term' | 'pos' | 'ipa' | 'translations' | 'examples' | 'note' | 'tags' | 'cefr' | 'freqRank' | 'forms'> } = $props()
 </script>
 
 <div class="wp">
@@ -14,6 +14,7 @@
     {#if posLabel(word.pos)}<span class="pos">{posLabel(word.pos)}</span>{/if}
     {#if word.cefr}<span class="lvl">{word.cefr}</span>{/if}
   </p>
+  {#if word.forms}<p class="forms" lang="en">{formsLine(word.forms)}</p>{/if}
   <p class="main-tr" lang="ru">{word.translations[0]}</p>
   {#if word.translations.length > 1}<p class="others" lang="ru">{word.translations.slice(1).join(', ')}</p>{/if}
   {#each word.examples as ex, i (i)}
@@ -46,6 +47,11 @@
     margin-top: 6px;
     color: var(--muted);
     letter-spacing: 0.01em;
+  }
+  .forms {
+    margin-top: 4px;
+    font-size: 15px;
+    color: var(--muted);
   }
   .pos {
     font-style: italic;

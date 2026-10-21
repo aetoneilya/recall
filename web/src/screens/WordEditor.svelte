@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { cleanWord, formatInterval, type Direction, type ReviewLog } from '@recall/core'
+  import { cleanWord, formatInterval, formsLine, type Direction, type ReviewLog } from '@recall/core'
   import { onDestroy } from 'svelte'
   import Header from '../components/Header.svelte'
   import Icon from '../components/Icon.svelte'
@@ -203,6 +203,7 @@
     {:else}
       <div class="meta">
         {#if word.createdBy === 'claude'}<span class="by">by Claude</span>{/if}
+        {#if word.forms}<span class="forms" lang="en">{formsLine(word.forms)}</span>{/if}
         {#if word.freqRank}<span>#{word.freqRank.toLocaleString()} most common</span>{/if}
         <span>added {new Date(word.createdAt).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })}</span>
         {#if word.status !== 'active'}<span class="chip status {word.status}">{word.status}</span>{/if}
@@ -286,6 +287,10 @@
   .by {
     color: var(--accent);
     font-weight: 600;
+  }
+  .forms {
+    color: var(--text);
+    font-weight: 500;
   }
   .status.inbox {
     color: var(--accent);

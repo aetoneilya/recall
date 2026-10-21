@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { blankTerm, cleanFact, cleanIpa, cleanWord, dayKey, dedupeKey, factKey, itemOf, newCardState, nextDayStart, normalizeTerm, preview, review, wordFace, type QueueItem } from './index.ts'
+import { blankTerm, cleanFact, formsLine, cleanIpa, cleanWord, dayKey, dedupeKey, factKey, itemOf, newCardState, nextDayStart, normalizeTerm, preview, review, wordFace, type QueueItem } from './index.ts'
 
 describe('words', () => {
   const word = {
@@ -49,6 +49,13 @@ describe('words', () => {
     expect(cleanWord({ term: 'x', pos: 'noun', translations: ['a'], cefr: 'D1' as never })).toEqual({ error: 'unknown CEFR level D1' })
     expect(cleanWord({ term: 'x', pos: 'noun', translations: ['a'], examples: Array(6).fill({ text: 'e' }) })).toEqual({ error: 'at most 5 examples' })
     expect(cleanIpa('[ˈʌptɜːn]')).toBe('ˈʌptɜːn')
+  })
+})
+
+describe('verb forms', () => {
+  it('joins variants with a slash and past · participle with a dot', () => {
+    expect(formsLine({ past: ['began'], participle: ['begun'] })).toBe('began · begun')
+    expect(formsLine({ past: ['was', 'were'], participle: ['been'] })).toBe('was / were · been')
   })
 })
 

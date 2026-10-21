@@ -55,6 +55,15 @@ export interface Word {
   createdBy: Author
   createdAt: string
   updatedAt: string
+  // An irregular verb's past and participle (variants in each list, General
+  // American first), computed by the server from the irregular-verbs pack;
+  // absent for other words and on words cached before it existed.
+  forms?: VerbForms | null
+}
+
+export interface VerbForms {
+  past: string[]
+  participle: string[]
 }
 
 // language: words, one deck per language per user, e.g. "English" (en → ru).

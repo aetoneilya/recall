@@ -165,6 +165,18 @@ export interface WordDetail {
 
 export type NewWord = WordInput & { deckId?: string }
 
+// A content pack offered by the server (GET /api/packs).
+export interface PackInfo {
+  id: string
+  name: string
+  description: string
+  count: number
+  added: boolean
+  // Cards of it not in the collection yet.
+  missing: number
+  deckId?: string
+}
+
 export interface FactItem extends Fact {
   deckName: string
   card: CardSummary | null

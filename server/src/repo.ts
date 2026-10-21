@@ -4,10 +4,11 @@
 import {
   cleanWord, dedupeKey, DIRECTIONS, newCardState, retrievability, WORD_STATUSES,
   type Author, type Card, type CardState, type Cefr, type CleanWord, type Deck, type DeckKind, type Direction, type FsrsState,
-  type PartOfSpeech, type Word, type WordInput, type WordStatus,
+  type PartOfSpeech, type VerbForms, type Word, type WordInput, type WordStatus,
 } from '@recall/core'
 import { newId, tx, type Db } from './db.ts'
 import type { Lexicon } from './lexicon.ts'
+import { verbForms } from './pack-data.ts'
 
 export class HttpError extends Error {
   status: number
@@ -129,7 +130,14 @@ export function toWord(r: WordRow): Word {
     createdBy: r.created_by as Author,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    ...withForms(r.term, r.pos as PartOfSpeech),
   }
+}
+
+// `forms` only when there are some, so other words keep their shape.
+function withForms(term: string, pos: PartOfSpeech): { forms?: VerbForms } {
+  const f = verbForms(term, pos)
+  return f ? { forms: f } : {}
 }
 
 function toDeck(r: DeckRow): DeckInfo {

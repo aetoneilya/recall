@@ -1,4 +1,5 @@
-// A small Markdown renderer for fact cards: paragraphs and line breaks,
+// A small Markdown renderer for fact cards: paragraphs and line breaks
+// (a lone bold first line is the lead, set larger),
 // "-" / "1." lists, **bold**, *em*, `code`, ``` fenced blocks, headings as
 // bold lines, and Obsidian [[target|alias]] wikilinks as emphasised text.
 // Everything the source says is escaped before any tag is added, and the
@@ -54,8 +55,15 @@ export function renderMarkdown(src: string): string {
   let para: string[] = []
   let list: { ordered: boolean; start: number; items: string[][] } | null = null
 
+  // The document's first line, when it is nothing but bold, is its lead
+  // ("**began · begun**" over an example): the card sets it larger.
+  const LEAD = /^\*\*(?=\S)[^*]*\S\*\*$/
   const flushPara = () => {
-    if (para.length) out.push(`<p>${para.map(renderInline).join('<br>')}</p>`)
+    if (para.length) {
+      const html = para.map(renderInline)
+      if (!out.length && LEAD.test(para[0]!)) html[0] = html[0]!.replace('<strong>', '<strong class="lead">')
+      out.push(`<p>${html.join('<br>')}</p>`)
+    }
     para = []
   }
   const flushList = () => {

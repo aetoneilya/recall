@@ -38,6 +38,13 @@
   .md :global(li::marker) {
     color: var(--faint);
   }
+  /* A first line that is only bold: the big answer ("began · begun"). */
+  .md :global(strong.lead) {
+    font-size: 1.36em;
+    line-height: 1.25;
+    font-weight: 650;
+    letter-spacing: -0.015em;
+  }
   .md :global(strong) {
     font-weight: 650;
   }

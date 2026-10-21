@@ -6,6 +6,7 @@ import type { Request, Response } from 'express'
 import { z } from 'zod'
 import type { AppContext } from './context.ts'
 import { dashboard } from './dashboard.ts'
+import { addPack, listPacks } from './packs.ts'
 import { addFacts, deleteFact, factItem, searchFacts, setFactSuspended, updateFact, type FactItem } from './facts.ts'
 import { tx } from './db.ts'
 import { lexiconOf } from './lexicon.ts'
@@ -298,6 +299,21 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
       }
     })
     return { action, results }
+  }))
+
+  server.registerTool('list_packs', {
+    title: 'List content packs',
+    description: 'Ready-made topic decks the app ships (e.g. "Irregular verbs"): id, name, description, count of cards, whether the user has added it (added, deckId) and how many of its cards they still lack (missing). Suggest one when it fits what the user wants to learn; add it only when they agree.',
+    annotations: { readOnlyHint: true },
+  }, guard(() => listPacks(db, uid)))
+
+  server.registerTool('add_pack', {
+    title: 'Add content pack',
+    description: 'Adds a content pack to the user\'s collection as a topic deck named after it (5 new cards a day, in review): its cards are active at once, introduced in the pack\'s order (most useful first). Running it again adds only cards the user lacks. Only when the user asked for it.',
+    inputSchema: { id: z.string().describe('Pack id from list_packs.') },
+  }, guard(({ id }) => {
+    const r = addPack(db, uid, id, ctx.now())
+    return { deck: { id: r.deck.id, name: r.deck.name }, added: r.added, alreadyAdded: r.alreadyAdded, duplicates: r.duplicates }
   }))
 
   server.registerTool('review_stats', {

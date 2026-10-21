@@ -20,7 +20,7 @@ describe('MCP tools', () => {
   it('offers word and fact tools', async () => {
     const r = await fetch(`${url}/mcp`, { method: 'POST', headers: { ...MCP_HEADERS, authorization: bearer(TOKEN) }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) })
     const names = ((await r.json()) as { result: { tools: { name: string }[] } }).result.tools.map((t) => t.name).sort()
-    expect(names).toEqual(['add_facts', 'add_words', 'create_topic', 'get_leeches', 'get_word', 'list_decks', 'review_stats', 'search_facts', 'search_words',
+    expect(names).toEqual(['add_facts', 'add_pack', 'add_words', 'create_topic', 'get_leeches', 'get_word', 'list_decks', 'list_packs', 'review_stats', 'search_facts', 'search_words',
       'set_fact_status', 'set_word_status', 'update_fact', 'update_word', 'vocabulary_profile'])
   })
 

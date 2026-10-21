@@ -15,7 +15,7 @@ import { newId, openDb, type Db } from './db.ts'
 import { loadLexicon, type Lexicon } from './lexicon.ts'
 import { defaultDeck, findDuplicate, insertCard } from './repo.ts'
 import { ensureUser, migrationEnv } from './users.ts'
-import { convertPair, convertTags, englishSide, isDirectionTag, isVocabularyDeckName, looksLikeWordPair, mergeTranslations, parseExtra } from './vocab-convert.ts'
+import { convertPair, convertTags, englishSide, isVocabularyDeckName, looksLikeWordPair, mergeTranslations, parseExtra } from './vocab-convert.ts'
 
 interface Flashcard {
   id: string
@@ -72,7 +72,6 @@ interface Planned {
   translations: string[]
   ipa: string | null
   note: string | null
-  source: string | null
   tags: string[]
   cards: Map<Direction, Flashcard>
   ids: string[]
@@ -204,11 +203,9 @@ function plan(rows: Flashcard[], s: ImportSummary): Planned[] {
     const crumbs = group.map(breadcrumbTag)
     const crumb = crumbs.every((c) => c === crumbs[0]) ? crumbs[0] : null
     const converted = convertTags([...new Set([crumb ?? '', ...group.flatMap(decksTags)].filter(Boolean))])
-    // Here the breadcrumb is known for sure; the migration has to guess it from the tags.
-    const source = crumb && !isDirectionTag(crumb) ? crumb : converted.source
     const tags = converted.tags
     planned.push({
-      term: pair.term, pos: pair.pos, translations: pair.translations, ipa, note, source, tags, cards,
+      term: pair.term, pos: pair.pos, translations: pair.translations, ipa, note, tags, cards,
       ids: group.map((f) => f.id),
       created: group.map((f) => iso(f.created)).sort()[0]!,
       modified: group.map((f) => iso(f.modified)).sort().at(-1)!,
@@ -306,7 +303,6 @@ export function importDecks(src: DatabaseSync, db: Db, userId: string, { dryRun 
       had.translations = mergeTranslations(had.translations, p.translations)
       had.ipa ??= p.ipa
       had.note = [had.note, p.note].filter((x, i, a) => x && a.indexOf(x) === i).join('\n\n') || null
-      had.source ??= p.source
       had.tags = [...new Set([...had.tags, ...p.tags])]
       had.ids.push(...p.ids)
       for (const [dir, f] of p.cards) {
@@ -315,8 +311,8 @@ export function importDecks(src: DatabaseSync, db: Db, userId: string, { dryRun 
       }
     }
 
-    const insertWord = db.prepare(`INSERT INTO words(id, user_id, deck_id, term, pos, translations, ipa, examples, note, source, tags, freq_rank, status, created_by, dedupe_key, import_ref, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, 'active', 'import', ?, ?, ?, ?)`)
+    const insertWord = db.prepare(`INSERT INTO words(id, user_id, deck_id, term, pos, translations, ipa, examples, note, tags, freq_rank, status, created_by, dedupe_key, import_ref, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, 'active', 'import', ?, ?, ?, ?)`)
     for (const p of merged.values()) {
       const known = p.ids.map((id) => imported.get(id)).find(Boolean)
       if (known) {
@@ -329,7 +325,7 @@ export function importDecks(src: DatabaseSync, db: Db, userId: string, { dryRun 
         continue
       }
       const wordId = newId('wd')
-      insertWord.run(wordId, userId, deck.id, p.term, p.pos, JSON.stringify(p.translations), p.ipa, p.note, p.source, JSON.stringify(p.tags),
+      insertWord.run(wordId, userId, deck.id, p.term, p.pos, JSON.stringify(p.translations), p.ipa, p.note, JSON.stringify(p.tags),
         lexicon?.rank(p.term) ?? null, dedupeKey(p.term, p.pos), p.ids.join(','), p.created, p.modified)
       for (const dir of ['forward', 'reverse'] as const) {
         const f = p.cards.get(dir)

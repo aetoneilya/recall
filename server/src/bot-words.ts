@@ -223,7 +223,7 @@ export async function addOne(ctx: AppContext, user: User, deck: Deck, it: Item):
   }
   if (r.duplicate) return dupOf(r.duplicate.id)
   try {
-    const w = createWord(ctx.db, user.id, { deckId: deck.id, word: { ...r.draft, source: 'telegram' }, status: 'inbox', createdBy: 'user' }, ctx.now(), lexiconOf(ctx))
+    const w = createWord(ctx.db, user.id, { deckId: deck.id, word: r.draft, status: 'inbox', createdBy: 'user' }, ctx.now(), lexiconOf(ctx))
     return { kind: 'created', word: item(ctx, user.id, w.id)!, senses, context: it.context }
   } catch (e) {
     if (e instanceof DuplicateWordError) return dupOf(e.existing.id)

@@ -16,7 +16,6 @@ export interface WordForm {
   ipa: string
   examples: ExampleForm[]
   note: string
-  source: string
   tags: string
   cefr: Cefr | ''
 }
@@ -36,13 +35,13 @@ export function guessPos(term: string): PartOfSpeech {
   return 'noun'
 }
 
-export function emptyForm(term = '', source = ''): WordForm {
-  return { term, pos: guessPos(term), translations: [], ipa: '', examples: [], note: '', source, tags: '', cefr: '' }
+export function emptyForm(term = '', tags = ''): WordForm {
+  return { term, pos: guessPos(term), translations: [], ipa: '', examples: [], note: '', tags, cefr: '' }
 }
 
-type Fill = Pick<Draft, 'term' | 'pos' | 'translations' | 'ipa' | 'examples' | 'note' | 'cefr'> & { source?: string | null; tags?: string[] }
+type Fill = Pick<Draft, 'term' | 'pos' | 'translations' | 'ipa' | 'examples' | 'note' | 'cefr'> & { tags?: string[] }
 
-export function formFrom(w: Fill, extra: { source?: string } = {}): WordForm {
+export function formFrom(w: Fill): WordForm {
   return {
     term: w.term,
     pos: w.pos,
@@ -50,7 +49,6 @@ export function formFrom(w: Fill, extra: { source?: string } = {}): WordForm {
     ipa: w.ipa ?? '',
     examples: w.examples.map((e) => ({ text: e.text, translation: e.translation ?? '' })),
     note: w.note ?? '',
-    source: w.source ?? extra.source ?? '',
     tags: (w.tags ?? []).join(', '),
     cefr: w.cefr ?? '',
   }
@@ -66,7 +64,6 @@ export function formToInput(f: WordForm): WordInput {
     ipa: orNull(f.ipa.replace(/^[/[]+|[/\]]+$/g, '')),
     examples: f.examples.filter((e) => e.text.trim()).map((e) => ({ text: e.text.trim(), translation: orNull(e.translation) })),
     note: orNull(f.note),
-    source: orNull(f.source),
     tags: f.tags.split(',').map((t) => t.trim()).filter(Boolean),
     cefr: f.cefr || null,
   }

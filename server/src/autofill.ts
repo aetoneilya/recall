@@ -80,7 +80,7 @@ Put the most common sense in draft. If the term has other common senses or parts
 If a context sentence is given, the term is used in it: the draft is the sense it has there, and the sentence is the draft's first example, verbatim, with its translation.`
 }
 
-export type Draft = Omit<CleanWord, 'source' | 'tags'>
+export type Draft = Omit<CleanWord, 'tags'>
 
 const sameText = (a: string, b: string) => a.replace(/\s+/g, ' ').trim().toLowerCase() === b.replace(/\s+/g, ' ').trim().toLowerCase()
 
@@ -108,7 +108,7 @@ function toDraft(raw: unknown): Draft | null {
     cefr: cefr as Draft['cefr'],
   })
   if ('error' in c) return null
-  const { source: _s, tags: _t, ...draft } = c.word
+  const { tags: _t, ...draft } = c.word
   return draft
 }
 

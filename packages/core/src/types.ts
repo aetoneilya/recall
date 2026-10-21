@@ -46,8 +46,7 @@ export interface Word {
   examples: Example[]
   // Usage, register, collocations — in the native language.
   note: string | null
-  // Where the word came from: a book, an article.
-  source: string | null
+  // Free labels, e.g. the book or article the word came from.
   tags: string[]
   // Rank of the term's lemma in the frequency list (1 = most frequent), computed by the server.
   freqRank: number | null

@@ -18,20 +18,22 @@
   // One field, ✨ autofill as soon as typing pauses, one Add. After adding,
   // the form clears and the cursor is back in the field for the next word.
 
-  const SOURCE_KEY = 'recall.lastSource'
-  const readSource = () => {
+  // The tags stay for the next word: usually the same book.
+  const TAGS_KEY = 'recall.lastTags'
+  const readTags = () => {
     try {
-      return localStorage.getItem(SOURCE_KEY) ?? ''
+      return localStorage.getItem(TAGS_KEY) ?? localStorage.getItem('recall.lastSource') ?? ''
     } catch {
       return ''
     }
   }
-  const rememberSource = (s: string | null | undefined) => {
+  const rememberTags = (tags: string[] | undefined) => {
     try {
-      if (s) localStorage.setItem(SOURCE_KEY, s)
-      else localStorage.removeItem(SOURCE_KEY)
+      localStorage.removeItem('recall.lastSource')
+      if (tags?.length) localStorage.setItem(TAGS_KEY, tags.join(', '))
+      else localStorage.removeItem(TAGS_KEY)
     } catch {
-      // Not remembered; the next word just starts without a source.
+      // Not remembered; the next word just starts without tags.
     }
   }
 
@@ -39,7 +41,7 @@
   let term = $state((() => router.route.query.get('term')?.trim() ?? '')())
   let context = $state('')
   let contextOpen = $state(false)
-  let form = $state<WordForm>(emptyForm('', readSource()))
+  let form = $state<WordForm>(emptyForm('', readTags()))
   // idle: nothing typed; loading: ✨ in flight; ready: fields to check or fill.
   let phase = $state<'idle' | 'loading' | 'ready'>('idle')
   let fallback = $state('')
@@ -88,7 +90,7 @@
         alternatives = []
         problem = ''
         filledFor = ''
-        if (!edited) form = emptyForm('', form.source)
+        if (!edited) form = emptyForm('', form.tags)
         return
       }
       if (key(t, c) === filledFor) return
@@ -146,8 +148,8 @@
     filledFor = key(r.draft.term, c)
     cache.set(filledFor, r)
     if (r.draft.term !== term.trim()) term = r.draft.term
-    const f = formFrom(r.draft, { source: form.source })
-    form = { ...f, source: form.source, tags: form.tags, examples: withContext(f.examples, c) }
+    const f = formFrom(r.draft)
+    form = { ...f, tags: form.tags, examples: withContext(f.examples, c) }
     alternatives = r.alternatives
     duplicate = r.duplicate
     fallback = autofillOff ? fallback : ''
@@ -170,7 +172,7 @@
     viaEnter ||= addWhenFilled
     addWhenFilled = false
     filledFor = key(t, c)
-    if (!edited) form = { ...emptyForm(t.trim(), form.source), tags: form.tags, examples: withContext([], c) }
+    if (!edited) form = { ...emptyForm(t.trim(), form.tags), examples: withContext([], c) }
     else form.pos = form.translations.length ? form.pos : guessPos(t)
     duplicate = null
     alternatives = []
@@ -243,7 +245,7 @@
       const w = await api.createWord(input)
       words.upsert(w)
       session.markStale()
-      rememberSource(input.source)
+      rememberTags(input.tags)
       haptic.notify('success')
       added = [{ id: w.id, term: w.term, translation: w.translations[0] ?? '' }, ...added].slice(0, 5)
       showToast(`Added “${w.term}”`, { action: { label: 'Undo', run: () => void undoAdd(w) } })
@@ -266,7 +268,7 @@
 
   function queueOffline(input: ReturnType<typeof formToInput>, clear = true) {
     const id = wordOutbox.add(input)
-    rememberSource(input.source)
+    rememberTags(input.tags)
     added = [{ id: null, term: input.term, translation: input.translations[0] ?? '' }, ...added].slice(0, 5)
     showToast(`Saved “${input.term}” — adds when you're back online`, { action: { label: 'Undo', run: () => void wordOutbox.remove(id) } })
     if (clear) reset()
@@ -321,8 +323,8 @@
   function pickAlternative(alt: Draft) {
     const current: Draft = { ...formToInput({ ...form, term }), ipa: form.ipa || null, note: form.note || null, cefr: form.cefr || null } as Draft
     alternatives = [current, ...alternatives.filter((a) => a !== alt)]
-    const f = formFrom(alt, { source: form.source })
-    form = { ...f, source: form.source, tags: form.tags, examples: withContext(f.examples, context) }
+    const f = formFrom(alt)
+    form = { ...f, tags: form.tags, examples: withContext(f.examples, context) }
     if (alt.term !== term.trim()) {
       filledFor = key(alt.term, context)
       term = alt.term
@@ -337,7 +339,7 @@
     term = ''
     context = ''
     contextOpen = false
-    form = emptyForm('', readSource())
+    form = emptyForm('', readTags())
     phase = 'idle'
     alternatives = []
     duplicate = null

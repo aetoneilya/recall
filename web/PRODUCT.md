@@ -24,7 +24,7 @@ Words come from three places: typed into the app with autofill, sent to the Tele
 
 ## Operating Context
 
-- Content: a word or phrase (`term`, part of speech, translations, General American IPA, up to five examples with translations, a usage note in Russian, the source book or article). Two cards per word: EN → RU (recognise) and RU → EN (recall, optionally typed).
+- Content: a word or phrase (`term`, part of speech, translations, General American IPA, up to five examples with translations, a usage note in Russian, tags such as the source book or article). Two cards per word: EN → RU (recognise) and RU → EN (recall, optionally typed).
 - Imported words (from the Obsidian Decks plugin) can have `other` as part of speech and older IPA.
 - Used as an installed PWA (standalone, safe areas, no browser chrome) and inside Telegram, which supplies `themeParams`, a native BackButton, haptics and closing confirmation.
 - Often offline or on a bad connection: today's queue, the word list and progress are cached on the device; ratings and added words queue locally and upload later.
@@ -33,7 +33,7 @@ Words come from three places: typed into the app with autofill, sent to the Tele
 
 - Review: tap or Space to reveal; four ratings (Again, Hard, Good, Easy) labelled with the next interval; after reveal, swipe right = Good, left = Hard, down = Again, up = Easy; keys 1–4; undo. Typed answers per deck (RU → EN, or both) with a verdict and a suggested rating. The pencil on a revealed card edits the word and comes back to the same card.
 - The end of a session says what's next: tomorrow's reviews, the inbox, adding words. A new account with no words sees "Add your first words" and the bot.
-- Add word: one field, autofill once typing pauses, Enter adds (even before the draft has arrived: it's added as soon as it does) and the field is ready for the next word; an optional sentence where the word was met picks the sense and becomes the first example; the last source is remembered; duplicates are caught inline.
+- Add word: one field, autofill once typing pauses, Enter adds (even before the draft has arrived: it's added as soon as it does) and the field is ready for the next word; an optional sentence where the word was met picks the sense and becomes the first example; the last tags are remembered; duplicates are caught inline.
 - Inbox: proposals as a swipeable stack (right approve, left reject), edit, approve all; paints from the device's copy.
 - Words: the whole collection cached on the device, instant search and filters. Word editor with both cards' state.
 - Progress: vocabulary estimate, scale, growth, streaks; a 3-minute vocabulary test.

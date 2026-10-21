@@ -26,7 +26,7 @@ describe('MCP tools', () => {
   it('adds words to the inbox, reports duplicates, edits and approves', async () => {
     const added = await call('add_words', {
       words: [
-        { term: 'to frown', pos: 'verb', translations: ['хмуриться'], ipa: 'fraʊn', examples: [{ text: 'She frowned at him.', translation: 'Она нахмурилась.' }], cefr: 'B2', source: 'Wuthering Heights' },
+        { term: 'to frown', pos: 'verb', translations: ['хмуриться'], ipa: 'fraʊn', examples: [{ text: 'She frowned at him.', translation: 'Она нахмурилась.' }], cefr: 'B2', tags: ['Wuthering Heights'] },
         { term: 'bid', pos: 'noun', translations: ['ставка'] },
       ],
     })

@@ -9,7 +9,7 @@ const card = (p: Partial<CardSummary> = {}): CardSummary => ({
 
 const word = (term: string, p: Partial<WordItem> = {}): WordItem => ({
   id: term, deckId: 'dk', deckName: 'English', term, pos: 'noun', translations: ['перевод'], ipa: null, examples: [], note: null,
-  source: null, tags: [], freqRank: null, cefr: null, status: 'active', createdBy: 'user', createdAt: '2026-10-01T00:00:00Z',
+  tags: [], freqRank: null, cefr: null, status: 'active', createdBy: 'user', createdAt: '2026-10-01T00:00:00Z',
   updatedAt: '2026-10-01T00:00:00Z', cards: { forward: card(), reverse: card({ direction: 'reverse', state: 'new', retrievability: null }) }, ...p,
 })
 

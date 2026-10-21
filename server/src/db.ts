@@ -142,6 +142,13 @@ export const MIGRATIONS: Migration[] = [
   );
   CREATE INDEX bot_drafts_expires ON bot_drafts(expires_at);
   `,
+  // v5: a word's source is just a tag; it joins the tags unless already there.
+  `
+  UPDATE words SET tags = json_insert(tags, '$[#]', substr(trim(source), 1, 100))
+    WHERE trim(coalesce(source, '')) <> '' AND json_array_length(tags) < 30
+      AND NOT EXISTS (SELECT 1 FROM json_each(words.tags) WHERE lower(value) = lower(trim(words.source)));
+  ALTER TABLE words DROP COLUMN source;
+  `,
 ]
 
 // The file a connection works on; '' for :memory:.

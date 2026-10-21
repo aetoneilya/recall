@@ -35,7 +35,7 @@ const fold = (s: string) => s.toLowerCase().replace(/ё/g, 'е')
 
 function haystack(w: WordItem): string {
   return fold(
-    [w.term, ...w.translations, ...w.examples.flatMap((e) => [e.text, e.translation ?? '']), w.note ?? '', w.source ?? '', ...w.tags].join('\n'),
+    [w.term, ...w.translations, ...w.examples.flatMap((e) => [e.text, e.translation ?? '']), w.note ?? '', ...w.tags].join('\n'),
   )
 }
 

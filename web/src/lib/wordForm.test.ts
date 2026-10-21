@@ -10,14 +10,14 @@ describe('word form', () => {
   })
 
   it('round-trips a draft and drops empty fields', () => {
-    const f = formFrom({ term: 'to frown', pos: 'verb', translations: ['хмуриться'], ipa: 'fraʊn', examples: [{ text: 'She frowned.', translation: null }], note: null, cefr: 'B2' }, { source: 'Wuthering Heights' })
-    expect(f.source).toBe('Wuthering Heights')
+    const f = formFrom({ term: 'to frown', pos: 'verb', translations: ['хмуриться'], ipa: 'fraʊn', examples: [{ text: 'She frowned.', translation: null }], note: null, cefr: 'B2', tags: ['Wuthering Heights'] })
+    expect(f.tags).toBe('Wuthering Heights')
     f.examples.push({ text: '  ', translation: 'x' })
     f.translations.push(' ')
     f.ipa = '/fraʊn/'
     expect(formToInput(f)).toEqual({
       term: 'to frown', pos: 'verb', translations: ['хмуриться'], ipa: 'fraʊn', examples: [{ text: 'She frowned.', translation: null }],
-      note: null, source: 'Wuthering Heights', tags: [], cefr: 'B2',
+      note: null, tags: ['Wuthering Heights'], cefr: 'B2',
     })
     expect(formToInput(emptyForm('x')).cefr).toBeNull()
   })

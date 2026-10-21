@@ -42,7 +42,7 @@ describe('words', () => {
 
   it('cleans and validates', () => {
     const r = cleanWord({ term: ' to  frown ', pos: 'verb', translations: [' хмуриться ', 'хмуриться', ''], ipa: '/fraʊn/', examples: [{ text: ' ' }, { text: 'x' }], tags: ['a', 'a'] })
-    expect(r).toEqual({ word: { term: 'to frown', pos: 'verb', translations: ['хмуриться'], ipa: 'fraʊn', examples: [{ text: 'x', translation: null }], note: null, source: null, tags: ['a'], cefr: null } })
+    expect(r).toEqual({ word: { term: 'to frown', pos: 'verb', translations: ['хмуриться'], ipa: 'fraʊn', examples: [{ text: 'x', translation: null }], note: null, tags: ['a'], cefr: null } })
     expect(cleanWord({ term: 'x', pos: 'verb', translations: [] })).toEqual({ error: 'at least one translation is required' })
     expect(cleanWord({ term: ' ', pos: 'verb', translations: ['a'] })).toEqual({ error: 'term is empty' })
     expect(cleanWord({ term: 'x', pos: 'thing' as never, translations: ['a'] })).toMatchObject({ error: expect.stringMatching(/part of speech/) })

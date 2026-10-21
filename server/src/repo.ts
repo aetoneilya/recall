@@ -58,7 +58,6 @@ export interface WordRow {
   ipa: string | null
   examples: string
   note: string | null
-  source: string | null
   tags: string
   freq_rank: number | null
   cefr: string | null
@@ -120,7 +119,6 @@ export function toWord(r: WordRow): Word {
     ipa: r.ipa,
     examples: JSON.parse(r.examples) as Word['examples'],
     note: r.note,
-    source: r.source,
     tags: JSON.parse(r.tags) as string[],
     freqRank: r.freq_rank,
     cefr: r.cefr as Cefr | null,
@@ -305,9 +303,9 @@ export function createWord(db: Db, userId: string, input: NewWord, now: Date, le
     if (dup) throw new DuplicateWordError(dup)
     const at = (input.createdAt ?? now).toISOString()
     const id = newId('wd')
-    db.prepare(`INSERT INTO words(id, user_id, deck_id, term, pos, translations, ipa, examples, note, source, tags, freq_rank, cefr, status, created_by, dedupe_key, import_ref, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      id, userId, input.deckId, w.term, w.pos, JSON.stringify(w.translations), w.ipa, JSON.stringify(w.examples), w.note, w.source,
+    db.prepare(`INSERT INTO words(id, user_id, deck_id, term, pos, translations, ipa, examples, note, tags, freq_rank, cefr, status, created_by, dedupe_key, import_ref, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      id, userId, input.deckId, w.term, w.pos, JSON.stringify(w.translations), w.ipa, JSON.stringify(w.examples), w.note,
       JSON.stringify(w.tags), rankOf(lex, w.term), w.cefr, input.status, input.createdBy, dedupeKey(w.term, w.pos), input.importRef ?? null, at, at,
     )
     for (const dir of DIRECTIONS) insertCard(db, id, dir, newCardState(new Date(at)))
@@ -337,7 +335,6 @@ export function updateWord(db: Db, userId: string, id: string, patch: WordPatch,
       ipa: has('ipa') ? patch.ipa : cur.ipa,
       examples: has('examples') ? patch.examples : cur.examples,
       note: has('note') ? patch.note : cur.note,
-      source: has('source') ? patch.source : cur.source,
       tags: has('tags') ? patch.tags : cur.tags,
       cefr: has('cefr') ? patch.cefr : cur.cefr,
     })
@@ -346,9 +343,9 @@ export function updateWord(db: Db, userId: string, id: string, patch: WordPatch,
     const dup = findDuplicate(db, userId, cur.deckId, w.term, w.pos)
     if (dup && dup.id !== id) throw new DuplicateWordError(dup)
     const rank = w.term === cur.term ? cur.freqRank ?? rankOf(lex, w.term) : rankOf(lex, w.term)
-    db.prepare(`UPDATE words SET term = ?, pos = ?, translations = ?, ipa = ?, examples = ?, note = ?, source = ?, tags = ?, freq_rank = ?, cefr = ?,
+    db.prepare(`UPDATE words SET term = ?, pos = ?, translations = ?, ipa = ?, examples = ?, note = ?, tags = ?, freq_rank = ?, cefr = ?,
       status = ?, dedupe_key = ?, updated_at = ? WHERE id = ? AND user_id = ?`).run(
-      w.term, w.pos, JSON.stringify(w.translations), w.ipa, JSON.stringify(w.examples), w.note, w.source, JSON.stringify(w.tags), rank, w.cefr,
+      w.term, w.pos, JSON.stringify(w.translations), w.ipa, JSON.stringify(w.examples), w.note, JSON.stringify(w.tags), rank, w.cefr,
       status, dedupeKey(w.term, w.pos), now.toISOString(), id, userId,
     )
     return getWord(db, userId, id)!
@@ -543,7 +540,7 @@ export function searchWords(db: Db, userId: string, s: WordSearch, now: Date): {
   if (s.q?.trim()) {
     // LIKE over the term and the JSON columns is good enough for a personal collection.
     const like = `%${s.q.trim().replace(/[\\%_]/g, (c) => '\\' + c)}%`
-    const cols = ['w.term', 'w.translations', 'w.note', 'w.tags', 'w.source', 'w.examples']
+    const cols = ['w.term', 'w.translations', 'w.note', 'w.tags', 'w.examples']
     where.push(`(${cols.map((c) => `${c} LIKE ? ESCAPE '\\'`).join(' OR ')})`)
     args.push(...cols.map(() => like))
   }
@@ -585,7 +582,7 @@ export function differences(existing: Word, w: CleanWord): Record<string, unknow
   const newExamples = w.examples.filter((e) => !existing.examples.some((x) => x.text === e.text))
   if (newExamples.length) d.newExamples = newExamples
   if (w.term !== existing.term) d.term = { existing: existing.term, proposed: w.term }
-  for (const k of ['ipa', 'note', 'cefr', 'source'] as const) {
+  for (const k of ['ipa', 'note', 'cefr'] as const) {
     if (w[k] && w[k] !== existing[k]) d[k] = { existing: existing[k], proposed: w[k] }
   }
   return d

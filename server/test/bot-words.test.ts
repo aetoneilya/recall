@@ -93,7 +93,7 @@ describe('adding a word by message', () => {
     const text = await tg.message(ME, 'frown')
     expect(text).toBe('<b>to frown</b> /fraʊn/ · verb · B2\nхмуриться, насупиться\n<i>She frowned at him.</i>\nОна нахмурилась.')
     const [w] = words(ctx)
-    expect(w).toMatchObject({ term: 'to frown', pos: 'verb', status: 'inbox', createdBy: 'user', source: 'telegram', ipa: 'fraʊn', freqRank: 2500 })
+    expect(w).toMatchObject({ term: 'to frown', pos: 'verb', status: 'inbox', createdBy: 'user', ipa: 'fraʊn', freqRank: 2500 })
     expect(ai.calls).toHaveLength(1)
     const shown = tg.buttons()
     expect(shown.map(([l]) => l)).toEqual(['✅ Add', '✏️ Edit', '✖', '↔ Other meaning'])

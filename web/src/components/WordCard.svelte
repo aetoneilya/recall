@@ -55,8 +55,7 @@
 <article class="card" class:revealed>
   <div class="context">
     <span class="dir" aria-label={forward ? 'Recognise: English to Russian' : 'Recall: Russian to English'}>{dirLabel}</span>
-    {#if item.word.source}<span class="meta">{item.word.source}</span>{/if}
-    {#each item.word.tags.filter((t) => t.toLowerCase() !== item.word.source?.toLowerCase()) as t (t)}<span class="meta">{t}</span>{/each}
+    {#each item.word.tags as t (t)}<span class="meta">{t}</span>{/each}
     {#if isNew}<span class="new">New</span>{/if}
   </div>
   {#if revealed && onedit}

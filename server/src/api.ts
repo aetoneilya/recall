@@ -43,7 +43,6 @@ const WordFields = {
   ipa: z.string().nullable().optional(),
   examples: z.array(ExampleBody).optional(),
   note: z.string().nullable().optional(),
-  source: z.string().nullable().optional(),
   tags: z.array(z.string()).optional(),
   cefr: cefrSchema.nullable().optional(),
 }

@@ -54,8 +54,7 @@ const fields = {
   })).max(5).optional().describe('1–2 short natural examples; the first one is shown on the cards.'),
   note: z.string().max(2000).optional().describe('Short usage note in Russian: register, collocations, pitfalls.'),
   cefr: cefr.optional().describe('CEFR level estimate.'),
-  source: z.string().max(300).optional().describe('Where the word came from, e.g. a book title or an article.'),
-  tags: z.array(z.string()).max(30).optional().describe('Free-form short tags, e.g. a topic.'),
+  tags: z.array(z.string()).max(30).optional().describe('Free-form short tags, e.g. a topic or the book or article the word came from.'),
 }
 
 const brief = (w: WordListItem) => ({
@@ -69,7 +68,6 @@ const brief = (w: WordListItem) => ({
   note: w.note,
   cefr: w.cefr,
   freqRank: w.freqRank,
-  source: w.source,
   tags: w.tags,
   status: w.status,
   createdBy: w.createdBy,
@@ -115,7 +113,7 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
 
   server.registerTool('search_words', {
     title: 'Search words',
-    description: 'Finds words by substring (over the term, translations, examples, note, tags and source; case-insensitive for Latin letters only), deck, status, part of speech or CEFR level, newest first. Each result has both cards\' state (new / learning / review / relearning), due date, stability in days, lapses and current recall probability. Use it before adding words to catch near-duplicates the exact check would miss (e.g. a different part of speech), and to find words to fix.',
+    description: 'Finds words by substring (over the term, translations, examples, note and tags; case-insensitive for Latin letters only), deck, status, part of speech or CEFR level, newest first. Each result has both cards\' state (new / learning / review / relearning), due date, stability in days, lapses and current recall probability. Use it before adding words to catch near-duplicates the exact check would miss (e.g. a different part of speech), and to find words to fix.',
     inputSchema: {
       query: z.string().optional().describe('Substring to look for.'),
       deck: z.string().optional().describe('Deck name, id or language code ("en"); default all decks.'),
@@ -149,7 +147,7 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
 
   server.registerTool('add_words', {
     title: 'Add words',
-    description: 'Proposes up to 100 words for a deck (default: the user\'s English deck). They land in the user\'s inbox and are not studied until the user approves them in the app; autoApprove: true makes them active at once — use it only when the user asked. Every word gets a forward and a reverse card. A word whose normalised term + part of speech already exists in the deck (any status, including rejected) is not added: it is reported under duplicates with the existing id, its status and `differs` — what your proposal has that the existing word lacks (newTranslations, newExamples, a different ipa / note / cefr / source / term spelling); merge those with update_word if they are worth it. Invalid words are reported under errors. Freshly created words report their frequency rank (1 = most common lemma; null = not in the 30k list or multi-word with a rare part).',
+    description: 'Proposes up to 100 words for a deck (default: the user\'s English deck). They land in the user\'s inbox and are not studied until the user approves them in the app; autoApprove: true makes them active at once — use it only when the user asked. Every word gets a forward and a reverse card. A word whose normalised term + part of speech already exists in the deck (any status, including rejected) is not added: it is reported under duplicates with the existing id, its status and `differs` — what your proposal has that the existing word lacks (newTranslations, newExamples, a different ipa / note / cefr / term spelling); merge those with update_word if they are worth it. Invalid words are reported under errors. Freshly created words report their frequency rank (1 = most common lemma; null = not in the 30k list or multi-word with a rare part).',
     inputSchema: {
       deck: z.string().optional().describe('Deck name, id or language code; default the English deck.'),
       words: z.array(z.object(fields)).min(1).max(100),
@@ -159,7 +157,7 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
 
   server.registerTool('update_word', {
     title: 'Update word',
-    description: 'Edits a word; only the fields you pass change (arrays replace the whole list: to add a translation, pass the existing ones plus the new one). Pass null to clear ipa, note, cefr or source. Both cards keep their schedule and review history whatever you change. Changing term or pos to one that already exists in the deck fails with a duplicate error. The word keeps its status.',
+    description: 'Edits a word; only the fields you pass change (arrays replace the whole list: to add a translation, pass the existing ones plus the new one). Pass null to clear ipa, note or cefr. Both cards keep their schedule and review history whatever you change. Changing term or pos to one that already exists in the deck fails with a duplicate error. The word keeps its status.',
     inputSchema: {
       id: z.string(),
       term: fields.term.optional(),
@@ -169,7 +167,6 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
       examples: fields.examples,
       note: z.string().max(2000).nullable().optional(),
       cefr: cefr.nullable().optional(),
-      source: z.string().max(300).nullable().optional(),
       tags: fields.tags,
     },
   }, guard((a) => {

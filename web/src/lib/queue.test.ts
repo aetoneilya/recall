@@ -17,7 +17,6 @@ function word(id: string): Word {
     ipa: 'fraʊn',
     examples: [],
     note: null,
-    source: null,
     tags: [],
     freqRank: 9000,
     cefr: 'B2',

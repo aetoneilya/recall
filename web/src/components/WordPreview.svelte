@@ -3,8 +3,8 @@
   import { markTerm } from '../lib/mark.ts'
 
   // A whole word at once, for vetting a proposal: term, pronunciation,
-  // translations, examples, note and where it came from.
-  let { word }: { word: Pick<Word, 'term' | 'pos' | 'ipa' | 'translations' | 'examples' | 'note' | 'source' | 'cefr' | 'freqRank'> } = $props()
+  // translations, examples, note and tags.
+  let { word }: { word: Pick<Word, 'term' | 'pos' | 'ipa' | 'translations' | 'examples' | 'note' | 'tags' | 'cefr' | 'freqRank'> } = $props()
 </script>
 
 <div class="wp">
@@ -23,7 +23,7 @@
     </div>
   {/each}
   {#if word.note}<p class="note" lang="ru">{word.note}</p>{/if}
-  {#if word.source}<p class="source">{word.source}</p>{/if}
+  {#if word.tags.length}<p class="source">{word.tags.join(' · ')}</p>{/if}
 </div>
 
 <style>

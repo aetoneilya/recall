@@ -79,7 +79,7 @@ describe('Decks importer', () => {
     const frown = words.find((w) => w.term === 'to frown')!
     expect(frown).toMatchObject({
       deckName: 'English', status: 'active', createdBy: 'import', translations: ['хмуриться', 'морщить лоб'], ipa: 'fraʊn',
-      source: 'wuthering heights', tags: ['wuthering heights', 'vocab'], freqRank: 2500, createdAt: '2026-07-28T19:36:36.000Z',
+      tags: ['wuthering heights', 'vocab'], freqRank: 2500, createdAt: '2026-07-28T19:36:36.000Z',
     })
     const [fwd, rev] = wordCards(db, uid, frown.id)
     expect(fwd!.schedule.state).toBe(0)
@@ -90,7 +90,7 @@ describe('Decks importer', () => {
     expect(logs).toHaveLength(1)
     expect(logs[0]).toMatchObject({ id: 'log_1', cardId: rev!.id, rating: 3, durationMs: 5000, before: { state: 0 }, after: { state: 2, reps: 1 } })
     // The orphan rcard (ставка → bid) is a word whose only card is the reverse one.
-    expect(words.find((w) => w.term === 'bid')).toMatchObject({ translations: ['ставка'], source: 'words', tags: ['words', 'vocab'] })
+    expect(words.find((w) => w.term === 'bid')).toMatchObject({ translations: ['ставка'], tags: ['words', 'vocab'] })
 
     const again = importDecks(src, db, uid, { now: NOW })
     expect(again.words).toMatchObject({ created: 0, alreadyImported: 2 })

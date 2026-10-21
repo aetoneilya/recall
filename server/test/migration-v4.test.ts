@@ -1,4 +1,5 @@
 // v3 → v4: new user/deck columns and bot_drafts, nothing else touched.
+// v4 → v5: a word's source becomes a tag.
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -53,9 +54,8 @@ describe('migration to v4', () => {
     const db = new DatabaseSync(':memory:')
     v3(db)
     const before = Object.fromEntries(TABLES.map((t) => [t, dump(db, t)]))
-    migrate(db, ENV)
+    migrate(db, ENV, 4)
     expect(schemaVersion(db)).toBe(4)
-    expect(MIGRATIONS.length).toBe(4)
     db.exec('PRAGMA foreign_keys = ON')
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
     expect(db.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' })
@@ -87,9 +87,33 @@ describe('migration to v4', () => {
     v3(raw)
     raw.close()
     const db = openDb(file, ENV)
-    expect(schemaVersion(db)).toBe(4)
+    expect(schemaVersion(db)).toBe(MIGRATIONS.length)
     expect((db.prepare('SELECT count(*) AS n FROM words').get() as { n: number }).n).toBe(2)
     db.close()
     fs.rmSync(dir, { recursive: true })
+  })
+})
+
+describe('migration to v5', () => {
+  it('moves the source into the tags and drops the column', () => {
+    const db = new DatabaseSync(':memory:')
+    v3(db)
+    migrate(db, ENV, 4)
+    db.exec(`
+      INSERT INTO words(id, user_id, deck_id, term, pos, translations, ipa, examples, note, source, tags, freq_rank, cefr, status, created_by, dedupe_key, import_ref, created_at, updated_at) VALUES
+        ('wd_3', 'us_a', 'dk_a', 'moor', 'noun', '["пустошь"]', NULL, '[]', NULL, 'Wuthering Heights', '["wuthering heights","vocab"]', NULL, NULL, 'active', 'import', 'moor|noun', NULL, '2026-07-12T00:00:00.000Z', '2026-07-12T00:00:00.000Z'),
+        ('wd_4', 'us_a', 'dk_a', 'bleak', 'adjective', '["мрачный"]', NULL, '[]', NULL, '  ', '[]', NULL, NULL, 'active', 'user', 'bleak|adjective', NULL, '2026-07-12T00:00:00.000Z', '2026-07-12T00:00:00.000Z');
+    `)
+    const before = dump(db, 'words')
+    migrate(db, ENV)
+    expect(schemaVersion(db)).toBe(5)
+    expect(MIGRATIONS.length).toBe(5)
+    const after = dump(db, 'words')
+    expect(after.every((w: Record<string, unknown>) => !('source' in w))).toBe(true)
+    expect(after.map((w: Record<string, unknown>) => [w.id, JSON.parse(w.tags as string)])).toEqual([
+      ['wd_1', ['vocab', 'book']], ['wd_2', []], ['wd_3', ['wuthering heights', 'vocab']], ['wd_4', []],
+    ])
+    expect(without(after, ['tags'])).toEqual(without(before, ['tags', 'source']))
+    expect(searchWords(db, 'us_a', { tag: 'book' }, NOW).words.map((w) => w.id)).toEqual(['wd_1'])
   })
 })

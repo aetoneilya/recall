@@ -130,12 +130,11 @@ export interface WordInput {
   ipa?: string | null
   examples?: { text: string; translation?: string | null }[]
   note?: string | null
-  source?: string | null
   tags?: string[]
   cefr?: Cefr | null
 }
 
-export const LIMITS = { term: 200, translation: 300, translations: 20, examples: 5, example: 500, note: 2000, source: 300, tags: 30, tag: 100 }
+export const LIMITS = { term: 200, translation: 300, translations: 20, examples: 5, example: 500, note: 2000, tags: 30, tag: 100 }
 
 const blankToNull = (s: string | null | undefined) => {
   const t = s?.replace(/\s+/g, ' ').trim()
@@ -174,8 +173,6 @@ export function cleanWord(input: WordInput): { word: CleanWord } | { error: stri
   if (examples.length > LIMITS.examples) return { error: `at most ${LIMITS.examples} examples` }
   const note = input.note?.trim() || null
   if (note && note.length > LIMITS.note) return { error: `note is longer than ${LIMITS.note} characters` }
-  const source = blankToNull(input.source)
-  if (source && source.length > LIMITS.source) return { error: `source is longer than ${LIMITS.source} characters` }
   const tags: string[] = []
   for (const t of input.tags ?? []) {
     const s = blankToNull(t)
@@ -184,5 +181,5 @@ export function cleanWord(input: WordInput): { word: CleanWord } | { error: stri
   if (tags.length > LIMITS.tags) return { error: `at most ${LIMITS.tags} tags` }
   const cefr = input.cefr ?? null
   if (cefr !== null && !CEFR_LEVELS.includes(cefr)) return { error: `unknown CEFR level ${cefr}` }
-  return { word: { term, pos: input.pos, translations, ipa: cleanIpa(input.ipa), examples, note, source, tags, cefr } }
+  return { word: { term, pos: input.pos, translations, ipa: cleanIpa(input.ipa), examples, note, tags, cefr } }
 }

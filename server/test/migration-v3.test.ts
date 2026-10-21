@@ -120,12 +120,12 @@ describe('migration to words (v2 → v3)', () => {
     const cards = (term: string) => Object.fromEntries(wordCards(db, 'us_a', w(term).id).map((c) => [c.direction, c.id]))
 
     // Merged across decks: translations unioned, the card with more history kept per direction.
-    expect(w('to frown')).toMatchObject({ translations: ['хмуриться', 'морщить лоб'], ipa: 'fraʊn', source: 'wuthering heights', tags: ['wuthering heights', 'vocab'], createdAt: '2026-07-10T00:00:00.000Z' })
+    expect(w('to frown')).toMatchObject({ translations: ['хмуриться', 'морщить лоб'], ipa: 'fraʊn', tags: ['wuthering heights', 'vocab'], createdAt: '2026-07-10T00:00:00.000Z' })
     expect(cards('to frown')).toEqual({ forward: 'cd_r1a', reverse: 'cd_e2' })
     // A Russian front (reversible or basic) means ordinal 0 was the reverse direction.
     expect(cards('forte')).toEqual({ forward: 'cd_e1b', reverse: 'cd_e1a' })
-    expect(w('forte')).toMatchObject({ ipa: 'ˈfɔːteɪ', note: 'не путать с forty', translations: ['сильная сторона'], tags: ['vocab'], source: null })
-    expect(w('everyday')).toMatchObject({ ipa: 'ˈevrideɪ', source: 'leon notes (спикинг) — words' })
+    expect(w('forte')).toMatchObject({ ipa: 'ˈfɔːteɪ', note: 'не путать с forty', translations: ['сильная сторона'], tags: ['vocab'] })
+    expect(w('everyday')).toMatchObject({ ipa: 'ˈevrideɪ', tags: expect.arrayContaining(['leon notes (спикинг) — words']) })
     expect(cards('everyday')).toEqual({ forward: 'cd_r2a', reverse: 'cd_r2b' })
     // RU→EN basic: its card is the reverse one; forward is new.
     expect(cards('overheads').reverse).toBe('cd_b1')

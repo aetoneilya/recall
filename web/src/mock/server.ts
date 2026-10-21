@@ -155,7 +155,6 @@ function seed() {
       ipa: s.ipa,
       examples: s.examples,
       note: s.note ?? null,
-      source: s.source ?? null,
       tags: s.tags ?? [],
       freqRank: s.freqRank,
       cefr: s.cefr,
@@ -419,7 +418,7 @@ function createWord(body: Body, now: Date): Word {
   return word
 }
 
-const PATCH_KEYS = ['term', 'pos', 'translations', 'ipa', 'examples', 'note', 'source', 'tags', 'cefr', 'status']
+const PATCH_KEYS = ['term', 'pos', 'translations', 'ipa', 'examples', 'note', 'tags', 'cefr', 'status']
 
 function updateWord(w: Word, body: Body, now: Date): Word {
   for (const k of Object.keys(body)) if (!PATCH_KEYS.includes(k)) throw new Fail(400, `unknown key ${k}`)
@@ -449,7 +448,7 @@ function searchWords(url: URL, now: Date) {
   const limit = Math.min(500, Math.max(1, Number(p.get('limit') ?? 50) || 50))
   const offset = Math.max(0, Number(p.get('offset') ?? 0) || 0)
   const haystack = (w: Word) =>
-    [w.term, ...w.translations, ...w.examples.flatMap((e) => [e.text, e.translation ?? '']), w.note ?? '', ...w.tags, w.source ?? ''].join('\n').toLowerCase()
+    [w.term, ...w.translations, ...w.examples.flatMap((e) => [e.text, e.translation ?? '']), w.note ?? '', ...w.tags].join('\n').toLowerCase()
   const maxOf = (w: Word, f: (c: Card) => number) => Math.max(0, ...cardsOf(w.id).map(f))
   const all = db.words
     .filter((w) => (!deck || w.deckId === deck.id) && (!status || w.status === status) && (!pos || w.pos === pos) && (!cefr || w.cefr === cefr) && (!tag || w.tags.includes(tag)))

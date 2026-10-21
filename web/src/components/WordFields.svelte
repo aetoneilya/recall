@@ -102,16 +102,10 @@
     <textarea bind:value={form.note} use:autogrow={form.note} rows="1" lang={native} placeholder="Optional"></textarea>
   </label>
 
-  <div class="row2">
-    <label class="f">
-      <span class="lbl">Source</span>
-      <input bind:value={form.source} placeholder="Book or article" autocomplete="off" />
-    </label>
-    <label class="f">
-      <span class="lbl">Tags</span>
-      <input bind:value={form.tags} placeholder="comma-separated" autocomplete="off" autocapitalize="off" />
-    </label>
-  </div>
+  <label class="f">
+    <span class="lbl">Tags <em>book, article, topic</em></span>
+    <input bind:value={form.tags} placeholder="comma-separated" autocomplete="off" autocapitalize="off" />
+  </label>
 </div>
 
 <style>
@@ -146,11 +140,6 @@
   .row3 {
     display: grid;
     grid-template-columns: 1.6fr 1fr;
-    gap: 10px;
-  }
-  .row2 {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
     gap: 10px;
   }
   .ipa-wrap {

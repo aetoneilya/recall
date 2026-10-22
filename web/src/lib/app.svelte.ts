@@ -103,7 +103,12 @@ export async function loadMe(): Promise<void> {
   try {
     await setMe(await api.me())
   } catch {
-    // Offline or signed out; the cached study-day settings stay.
+    // Offline or signed out: the cached account (name, settings) paints
+    // Settings; uploads still wait for a confirmed one.
+    if (!status.me) {
+      const cached = await kv.get<Me>('me')
+      if (cached && !status.me) status.me = cached
+    }
   }
 }
 
@@ -122,6 +127,7 @@ export async function setMe(me: Me): Promise<void> {
   // Older servers send no FSRS parameters: the defaults.
   setFsrs(me.fsrs ?? null)
   void kv.set('fsrs', me.fsrs ? $state.snapshot(me.fsrs) : null)
+  void kv.set('me', $state.snapshot(me))
   // Uploads waited for the account to be known.
   if (!was) void flushNow()
 }

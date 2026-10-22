@@ -121,12 +121,14 @@ export function createTracker(opts: { axes: 'x' | 'xy'; threshold: () => number 
       }
       return along(dx, dy)
     },
-    end(x: number, y: number): { dir: SwipeDir | null; wasDrag: boolean } {
+    // `v`: the release velocity along the locked axis, px/ms.
+    end(x: number, y: number): { dir: SwipeDir | null; wasDrag: boolean; v: number } {
       const wasDrag = state === 'drag'
       const dir = wasDrag && axis ? release(axis, x - x0, y - y0, vx, vy, opts.threshold()) : null
+      const v = axis === 'x' ? vx : axis === 'y' ? vy : 0
       state = 'pending'
       axis = null
-      return { dir, wasDrag }
+      return { dir, wasDrag, v }
     },
   }
 }
@@ -138,9 +140,12 @@ export interface SwipeOptions {
   // The scrolling element inside the node whose scroll wins over vertical
   // swipes (see the rule above). Defaults to treating content as fitting.
   scroller?: () => HTMLElement | null | undefined
+  // A gesture may start here: where it was grabbed, as fractions of the node (0..1).
+  onstart?: (fx: number, fy: number) => void
   onmove?: (dx: number, dy: number, axis: Axis) => void
-  // Called on release with the committed direction, or null to snap back.
-  onend?: (dir: SwipeDir | null, dx: number, dy: number) => void
+  // Called on release with the committed direction (or null to snap back)
+  // and the release velocity along the axis, px/ms.
+  onend?: (dir: SwipeDir | null, dx: number, dy: number, v: number) => void
   threshold?: number
 }
 
@@ -175,6 +180,10 @@ export function swipe(node: HTMLElement, initial: SwipeOptions) {
     dx = dy = 0
     lockedAxis = null
     tracker.start(x, y, t, scrollState())
+    if (opts.onstart) {
+      const r = node.getBoundingClientRect()
+      opts.onstart(r.width ? (x - r.left) / r.width : 0.5, r.height ? (y - r.top) / r.height : 0.5)
+    }
     return true
   }
 
@@ -191,12 +200,12 @@ export function swipe(node: HTMLElement, initial: SwipeOptions) {
 
   const finish = (x: number, y: number, cancelled: boolean) => {
     active = null
-    const { dir, wasDrag } = tracker.end(x, y)
+    const { dir, wasDrag, v } = tracker.end(x, y)
     if (!wasDrag) return
     // Swallow the click that follows a drag so it doesn't count as a tap.
     node.addEventListener('click', stopOnce, { capture: true, once: true })
     setTimeout(() => node.removeEventListener('click', stopOnce, { capture: true }), 50)
-    opts.onend?.(cancelled ? null : dir, dx, dy)
+    opts.onend?.(cancelled ? null : dir, dx, dy, v)
   }
 
   const stopOnce = (e: Event) => {

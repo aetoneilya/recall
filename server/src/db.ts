@@ -238,6 +238,53 @@ export const MIGRATIONS: Migration[] = [
   // deck (both or neither); each deck keeps a review filter. The inbox is
   // gone: words and facts waiting there become active.
   { before: backupBefore(9, (db) => hasRows(db, 'decks')), run: plainDecks },
+  // v10: write items (the learner's own sentence, graded by Claude) with a
+  // rubric for the grader — fact_exercises is rebuilt for the type CHECK, as
+  // in v8; and a deck's extra new cards for one study day ("+5 today").
+  {
+    before: backupBefore(10, (db) => hasRows(db, 'fact_exercises')),
+    run: (db) => db.exec(`
+  CREATE TABLE fact_exercises_v10 (
+    id TEXT PRIMARY KEY,
+    fact_id TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+    type TEXT NOT NULL CHECK (type IN ('choose', 'spot', 'gap', 'fix', 'rewrite', 'write')),
+    prompt TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    accepted TEXT NOT NULL DEFAULT '[]',
+    options TEXT NOT NULL DEFAULT '[]',
+    wrong TEXT,
+    rubric TEXT,
+    explain TEXT,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'flagged')),
+    needs_review INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL,
+    import_ref TEXT,
+    created_at TEXT NOT NULL,
+    shown_count INTEGER NOT NULL DEFAULT 0,
+    last_shown_at TEXT,
+    correct_count INTEGER NOT NULL DEFAULT 0,
+    wrong_count INTEGER NOT NULL DEFAULT 0,
+    CHECK ((type = 'spot') = (wrong IS NOT NULL))
+  );
+  INSERT INTO fact_exercises_v10(id, fact_id, type, prompt, answer, accepted, options, wrong, explain, status, needs_review, created_by, dedupe_key, import_ref,
+      created_at, shown_count, last_shown_at, correct_count, wrong_count)
+    SELECT id, fact_id, type, prompt, answer, accepted, options, wrong, explain, status, needs_review, created_by, dedupe_key, import_ref,
+      created_at, shown_count, last_shown_at, correct_count, wrong_count FROM fact_exercises ORDER BY rowid;
+  DROP TABLE fact_exercises;
+  ALTER TABLE fact_exercises_v10 RENAME TO fact_exercises;
+  CREATE UNIQUE INDEX fact_exercises_dedupe ON fact_exercises(fact_id, dedupe_key);
+  CREATE INDEX fact_exercises_fact ON fact_exercises(fact_id, status, last_shown_at);
+  CREATE INDEX fact_exercises_import_ref ON fact_exercises(import_ref);
+  -- New cards on top of new_per_day for one study day (core.dayKey); old days are just ignored.
+  CREATE TABLE deck_extra_new (
+    deck_id TEXT NOT NULL REFERENCES decks(id) ON DELETE CASCADE,
+    day TEXT NOT NULL,
+    n INTEGER NOT NULL,
+    PRIMARY KEY (deck_id, day)
+  );
+  `),
+  },
 ]
 
 function plainDecks(db: Db) {

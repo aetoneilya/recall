@@ -8,7 +8,9 @@ import { autofill } from './autofill.ts'
 import { isTime, isTimeZone } from './config.ts'
 import type { AppContext } from './context.ts'
 import { dashboard } from './dashboard.ts'
-import { addPack, listPacks } from './packs.ts'
+import { gradeWrite, GRADE_TEXT_MAX, gradingAvailable } from './grade.ts'
+import { addPack, handbook, listPacks } from './packs.ts'
+import { PRACTICE_LIMIT, practiceDeck, practiceRule } from './practice.ts'
 import { addExercises, deleteExercise, listExercises, updateExercise } from './exercises.ts'
 import { createFact, deleteFact, factItem, getFact, searchFacts, setFactSuspended, updateFact } from './facts.ts'
 import { fsrsInfo, optimizeNow, REQUEST_RETENTION } from './fsrs.ts'
@@ -19,7 +21,7 @@ import {
   searchWords, setSuspended, setWordStatus, setWordSuspended, syncFreqRanks, TYPE_ANSWERS, updateDeck, updateWord, withCards, WORD_SORTS,
   type TypeAnswer, type WordRow, type WordSort,
 } from './repo.ts'
-import { applyReviews, buildQueue, decksWithCounts, factLogs, reviewOptions, stats, studyDay, undoReview, wordLogs } from './study.ts'
+import { addExtraNew, applyReviews, buildQueue, decksWithCounts, factLogs, reviewOptions, stats, studyDay, undoReview, wordLogs } from './study.ts'
 import { createApiToken, deleteApiToken, listApiTokens } from './tokens.ts'
 import { allowedUser, isOwner, ownerUser, updateUserSettings, userDayOptions, type User } from './users.ts'
 import { answerVocabTest, createVocabTest, listVocabTests } from './vocab.ts'
@@ -88,18 +90,23 @@ const FactFields = { front: z.string().max(5000), back: z.string().max(50000), t
 const FactBody = z.object({ deckId: z.string().min(1), ...FactFields }).strict()
 const FactPatchBody = z.object({ ...FactFields, status: factStatusSchema, deckId: z.string().min(1) }).partial().strict()
 const ExerciseFields = {
-  type: z.enum(['choose', 'spot', 'gap', 'fix', 'rewrite']),
-  // The sentence; `text` is the same field.
+  type: z.enum(['choose', 'spot', 'gap', 'fix', 'rewrite', 'write']),
+  // The sentence (the task for write); `text` is the same field.
   prompt: z.string().max(1000).optional(),
   text: z.string().max(1000).optional(),
-  answer: z.string().max(500),
+  // Every type but write needs one (core.cleanExercise says so).
+  answer: z.string().max(500).optional(),
   options: z.array(z.string().max(200)).max(6).optional(),
   wrong: z.string().max(200).nullable().optional(),
   accepted: z.array(z.string().max(500)).max(20).optional(),
   explain: z.string().max(1000).nullable().optional(),
+  // write: what a right answer must do, for the grader.
+  rubric: z.string().max(1000).nullable().optional(),
 }
 const ExercisesBody = z.object({ items: z.array(z.object(ExerciseFields).strict()).min(1).max(100) }).strict()
 const ExercisePatchBody = z.object({ ...ExerciseFields, status: z.enum(['active', 'flagged']), needsReview: z.boolean() }).partial().strict()
+const ExtraNewBody = z.object({ n: z.number().int().min(1).max(100).optional() }).strict()
+const GradeBody = z.object({ text: z.string().min(1).max(GRADE_TEXT_MAX) }).strict()
 const AutofillBody = z.object({ deckId: z.string().optional(), term: z.string().min(1).max(200), hint: z.string().max(300).optional() })
 const AnswersBody = z.object({ answers: z.array(z.object({ id: z.string(), known: z.boolean() })).max(1000) })
 const time = z.string().refine(isTime, 'must be HH:MM (24 h)')
@@ -147,6 +154,15 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
     if (!d) throw new HttpError(404, 'deck not found')
     return mustHaveLanguages(d)
   }
+  // ?deck= for cards of any type: an id, a name or a language code; default
+  // the English deck.
+  const anyDeck = (req: Request, ref: string | undefined) => {
+    if (!ref) return defaultDeck(db, uid(req), ctx.now())
+    const d = resolveDeck(db, uid(req), ref)
+    if (!d) throw new HttpError(404, 'deck not found')
+    return d
+  }
+  const today = (req: Request) => studyDay(ctx.now(), opts(req)).key
   const item = (req: Request, id: string) => {
     const row = db.prepare('SELECT * FROM words WHERE id = ? AND user_id = ?').get(id, uid(req)) as WordRow | undefined
     if (!row) throw new HttpError(404, `word ${id} not found`)
@@ -173,6 +189,8 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
       weeklyReportTime: u.weeklyReportTime,
       botUsername: ctx.telegram.botUsername,
       fsrs: fsrsInfo(ctx, u),
+      // Write items can be graded here (Claude is configured); else the app skips them.
+      grading: gradingAvailable(ctx),
     }
   }
 
@@ -284,8 +302,21 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
   r.get('/queue', (req, res) => {
     const deck = qstr(req.query.deck)
     const deckId = deck ? resolveDeck(db, uid(req), deck)?.id ?? '-' : undefined
-    const q = buildQueue(db, uid(req), opts(req), ctx.now(), { limit: qint(req.query.limit, 200), deckId })
+    const q = buildQueue(db, uid(req), opts(req), ctx.now(), { limit: qint(req.query.limit, 200), deckId, grading: gradingAvailable(ctx) })
     res.json(q)
+  })
+
+  // Extra rounds outside the schedule: nothing is written. ?fact= one rule's
+  // items with fresh exercise sets ("Practice this"); else a deck's weak cards.
+  r.get('/practice', (req, res) => {
+    const grading = gradingAvailable(ctx)
+    const fact = qstr(req.query.fact)
+    if (fact) {
+      res.json({ items: practiceRule(db, uid(req), fact, { grading }) })
+      return
+    }
+    const deck = anyDeck(req, qstr(req.query.deck))
+    res.json({ items: practiceDeck(db, uid(req), deck.id, opts(req), ctx.now(), { limit: qint(req.query.limit, PRACTICE_LIMIT.default), grading }) })
   })
 
   r.post('/reviews', (req, res) => {
@@ -310,7 +341,14 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
   })
 
   r.patch('/decks/:id', (req, res) => {
-    res.json({ deck: updateDeck(db, uid(req), req.params.id as string, parse(DeckPatchBody, req.body)) })
+    res.json({ deck: updateDeck(db, uid(req), req.params.id as string, parse(DeckPatchBody, req.body), today(req)) })
+  })
+
+  // "+5 today": more new cards from this deck for the rest of the study day.
+  r.post('/decks/:id/extra-new', (req, res) => {
+    const { n } = parse(ExtraNewBody, req.body ?? {})
+    addExtraNew(db, uid(req), req.params.id as string, today(req), n ?? 5)
+    res.json({ deck: getDeck(db, uid(req), req.params.id as string, today(req))! })
   })
 
   // Moves every card into another deck (tagged with this deck's name unless
@@ -355,7 +393,12 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
   r.post('/packs/:id', (req, res) => {
     const { deckId } = parse(z.object({ deckId: z.string().optional() }).strict(), req.body ?? {})
     const out = addPack(db, uid(req), req.params.id as string, ctx.now(), { deckId })
-    res.json({ ...out, packs: listPacks(db, uid(req), ctx.now()) })
+    res.json({ ...out, deck: getDeck(db, uid(req), out.deck.id, today(req))!, packs: listPacks(db, uid(req), ctx.now()) })
+  })
+
+  // The grammar handbook topics in a deck and the user's own rules.
+  r.get('/handbook', (req, res) => {
+    res.json(handbook(db, uid(req), anyDeck(req, qstr(req.query.deck)).id))
   })
 
   // ---------- facts ----------
@@ -411,6 +454,12 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
 
   r.patch('/exercises/:id', (req, res) => {
     res.json({ exercise: updateExercise(db, uid(req), req.params.id as string, parse(ExercisePatchBody, req.body)) })
+  })
+
+  // Claude's verdict on a sentence written for a write item; nothing is stored.
+  r.post('/exercises/:id/grade', async (req, res) => {
+    const { text } = parse(GradeBody, req.body)
+    res.json(await gradeWrite(ctx, user(req), req.params.id as string, text))
   })
 
   r.delete('/exercises/:id', (req, res) => {

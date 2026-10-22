@@ -97,7 +97,7 @@
     display: inline-flex;
     align-items: center;
     max-width: 100%;
-    min-height: 36px;
+    min-height: 40px;
     border-radius: 10px;
     background: var(--surface-2);
     transition: box-shadow var(--t-fast) ease;
@@ -124,7 +124,7 @@
   .mv {
     flex: none;
     width: 30px;
-    height: 36px;
+    height: 40px;
     display: flex;
     align-items: center;
     justify-content: center;

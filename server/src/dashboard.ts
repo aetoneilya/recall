@@ -131,7 +131,8 @@ function growth(db: Db, cards: Row[], now: Date, weeks = 26): { date: string; kn
 
 // Every review of the user, words and facts in any deck: a day studied is a
 // day studied, whatever was on the cards.
-function activity(db: Db, userId: string, opts: DayOptions, now: Date, days = 90): Dashboard['activity'] {
+// 26 weeks: the Progress heatmap.
+function activity(db: Db, userId: string, opts: DayOptions, now: Date, days = 182): Dashboard['activity'] {
   const logs = db.prepare(`
     SELECT l.reviewed_at, l.rating, l.duration_ms FROM review_logs l JOIN study_cards c ON c.id = l.card_id
     WHERE c.user_id = ?`).all(userId) as { reviewed_at: string; rating: number; duration_ms: number | null }[]

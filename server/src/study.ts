@@ -10,11 +10,11 @@ import {
   type ReviewFilter, type ReviewInput, type ReviewLog,
 } from '@recall/core'
 import { tx, type Db } from './db.ts'
-import { exercisesForQueue, MIN_POOL, recordAttempts, revertAttempts } from './exercises.ts'
+import { exercisesForQueue, MIN_POOL, recordAttempts, revertAttempts, SERVABLE } from './exercises.ts'
 import { toFact, type FactRow } from './facts.ts'
 import { userScheduler } from './fsrs.ts'
 import {
-  ENABLED_DIRECTION, hasLanguages, HttpError, listDecks, STATE_COLUMNS, stateValues, toCard, toState, toWord,
+  ENABLED_DIRECTION, getDeck, hasLanguages, HttpError, listDecks, STATE_COLUMNS, stateValues, toCard, toState, toWord,
   type CardRow, type DeckInfo, type WordRow,
 } from './repo.ts'
 
@@ -34,7 +34,7 @@ export function studyDay(now: Date, opts: DayOptions): StudyDay {
 const REVERSE_GATE = `(c.direction = 'forward' OR d.reverse_after_days IS NULL OR d.forward_enabled = 0 OR EXISTS (
   SELECT 1 FROM cards f WHERE f.word_id = c.word_id AND f.direction = 'forward' AND f.state > 0 AND f.stability >= d.reverse_after_days))`
 
-interface QueueRow extends CardRow {
+export interface QueueRow extends CardRow {
   kind: 'word' | 'fact'
   item_id: string
   deck_id: string
@@ -44,23 +44,24 @@ interface QueueRow extends CardRow {
   item_tags: string
   item_pos: string | null
   item_cefr: string | null
-  // Active exercises of a fact: a rule with MIN_POOL or more.
+  // Active exercises of a fact that any server can serve (not write): a
+  // rule with MIN_POOL or more.
   pool: number
 }
 
 // Studied cards of active words and facts in every deck, with what the
 // review filter looks at.
-const QUEUE_SELECT = `
+export const QUEUE_SELECT = `
   SELECT c.*, d.name AS deck_name, d.new_per_day, d.review_filter,
     coalesce(w.tags, f.tags, '[]') AS item_tags, w.pos AS item_pos, w.cefr AS item_cefr,
-    (SELECT count(*) FROM fact_exercises e WHERE e.fact_id = c.fact_id AND e.status = 'active') AS pool
+    (SELECT count(*) FROM fact_exercises e WHERE e.fact_id = c.fact_id AND ${SERVABLE}) AS pool
   FROM study_cards c JOIN decks d ON d.id = c.deck_id
   LEFT JOIN words w ON w.id = c.word_id LEFT JOIN facts f ON f.id = c.fact_id
   WHERE c.user_id = ? AND c.item_status = 'active' AND c.suspended = 0 AND ${ENABLED_DIRECTION}`
 
 export const cardType = (r: { kind: string; pool: number }): CardType => (r.kind === 'word' ? 'word' : r.pool >= MIN_POOL ? 'rule' : 'fact')
 
-const rowFacts = (r: QueueRow): CardFacts => ({
+export const rowFacts = (r: QueueRow): CardFacts => ({
   type: cardType(r),
   tags: JSON.parse(r.item_tags) as string[],
   pos: r.item_pos as PartOfSpeech | null,
@@ -80,6 +81,8 @@ export interface QueueOptions {
   deckId?: string
   // One new card after every `newEvery` reviews.
   newEvery?: number
+  // Write items can be graded here (Claude configured): rules may get one.
+  grading?: boolean
 }
 
 // Today's counts of one deck under its review filter (the deck switcher).
@@ -88,6 +91,19 @@ export interface QueueDeck {
   name: string
   hasLanguages: boolean
   counts: QueueCounts
+}
+
+// Extra new cards per deck for one study day ("+5 today"), on top of newPerDay.
+export function extraNewOn(db: Db, userId: string, day: string): Map<string, number> {
+  const rows = db.prepare('SELECT x.deck_id, x.n FROM deck_extra_new x JOIN decks d ON d.id = x.deck_id WHERE d.user_id = ? AND x.day = ?').all(userId, day) as { deck_id: string; n: number }[]
+  return new Map(rows.map((r) => [r.deck_id, r.n]))
+}
+
+// Adds n to a deck's extra allowance for the study day; taps accumulate.
+export function addExtraNew(db: Db, userId: string, deckId: string, day: string, n: number) {
+  if (!db.prepare('SELECT 1 FROM decks WHERE id = ? AND user_id = ?').get(deckId, userId)) throw new HttpError(404, 'deck not found')
+  db.prepare(`INSERT INTO deck_extra_new(deck_id, day, n) VALUES (?, ?, ?)
+    ON CONFLICT(deck_id, day) DO UPDATE SET n = n + excluded.n`).run(deckId, day, n)
 }
 
 // Cards per deck introduced today (first review log falls in the study day).
@@ -123,17 +139,9 @@ export function reviewedOn(db: Db, userId: string, day: StudyDay): boolean {
     WHERE c.user_id = ? AND l.reviewed_at >= ? AND l.reviewed_at < ? LIMIT 1`).get(userId, day.start.toISOString(), day.end.toISOString())
 }
 
-// Today's cards of every deck (or one), each deck's under its review filter
-// (`filters` overrides it, for a preview). Each deck's rows are what it
-// would put in the session on its own: the new-card budget is per deck and
-// burying is per word or fact, so a deck's share doesn't depend on the
-// others. Cards outside the filter don't use the new-card budget.
-function selectQueue(db: Db, userId: string, opts: DayOptions, now: Date, deckId?: string, filters: Map<string, ReviewFilter | null> = new Map()) {
-  const day = studyDay(now, opts)
-  const end = day.end.toISOString()
-  const deckFilter = deckId ? ' AND c.deck_id = ?' : ''
-  const deckArgs = deckId ? [deckId] : []
-
+// Rows that pass their deck's review filter (`filters` overrides a deck's;
+// it caches the parsed ones too).
+export function inFilter(filters: Map<string, ReviewFilter | null> = new Map()) {
   const filterOf = (r: QueueRow): ReviewFilter | null => {
     if (filters.has(r.deck_id)) return filters.get(r.deck_id)!
     let f: ReviewFilter | null = null
@@ -145,7 +153,21 @@ function selectQueue(db: Db, userId: string, opts: DayOptions, now: Date, deckId
     filters.set(r.deck_id, f)
     return f
   }
-  const wanted = (rows: QueueRow[]) => rows.filter((r) => inReviewFilter(filterOf(r), rowFacts(r)))
+  return (rows: QueueRow[]) => rows.filter((r) => inReviewFilter(filterOf(r), rowFacts(r)))
+}
+
+// Today's cards of every deck (or one), each deck's under its review filter
+// (`filters` overrides it, for a preview). Each deck's rows are what it
+// would put in the session on its own: the new-card budget is per deck and
+// burying is per word or fact, so a deck's share doesn't depend on the
+// others. Cards outside the filter don't use the new-card budget.
+function selectQueue(db: Db, userId: string, opts: DayOptions, now: Date, deckId?: string, filters: Map<string, ReviewFilter | null> = new Map()) {
+  const day = studyDay(now, opts)
+  const end = day.end.toISOString()
+  const deckFilter = deckId ? ' AND c.deck_id = ?' : ''
+  const deckArgs = deckId ? [deckId] : []
+
+  const wanted = inFilter(filters)
   const learning = wanted(db.prepare(`${QUEUE_SELECT} AND c.state IN (1, 3) AND c.due < ?${deckFilter} ORDER BY c.due, c.id`).all(userId, end, ...deckArgs) as unknown as QueueRow[])
   const reviews = wanted(db.prepare(`${QUEUE_SELECT} AND c.state = 2 AND c.due < ?${deckFilter} ORDER BY c.due, c.id`).all(userId, end, ...deckArgs) as unknown as QueueRow[])
   const fresh = wanted(db.prepare(`${QUEUE_SELECT} AND c.state = 0 AND ${REVERSE_GATE}${deckFilter} ORDER BY c.item_created_at, c.item_id, c.direction`).all(userId, ...deckArgs) as unknown as QueueRow[])
@@ -171,9 +193,10 @@ function selectQueue(db: Db, userId: string, opts: DayOptions, now: Date, deckId
     return true
   })
   const introduced = introducedToday(db, userId, day)
+  const extra = extraNewOn(db, userId, day.key)
   const budget = new Map<string, number>()
   const newOut = fresh.filter((r) => {
-    const left = budget.get(r.deck_id) ?? Math.max(0, r.new_per_day - (introduced.get(r.deck_id) ?? 0))
+    const left = budget.get(r.deck_id) ?? Math.max(0, r.new_per_day + (extra.get(r.deck_id) ?? 0) - (introduced.get(r.deck_id) ?? 0))
     if (left <= 0 || buried(r)) return false
     budget.set(r.deck_id, left - 1)
     queued.add(r.item_id)
@@ -197,7 +220,7 @@ export function buildQueue(db: Db, userId: string, opts: DayOptions, now: Date, 
   tally(all.learning, 'learning')
   tally(all.reviews, 'review')
   tally(all.fresh, 'new')
-  const decks = listDecks(db, userId)
+  const decks = listDecks(db, userId, studyDay(now, opts).key)
     .map((d) => ({ id: d.id, name: d.name, hasLanguages: hasLanguages(d), counts: perDeck.get(d.id) ?? { new: 0, learning: 0, review: 0 } }))
   const studied = (r: QueueRow) => !q.deckId || r.deck_id === q.deckId
   const learning = all.learning.filter(studied)
@@ -213,7 +236,16 @@ export function buildQueue(db: Db, userId: string, opts: DayOptions, now: Date, 
   while (ni < fresh.length) ordered.push(fresh[ni++]!)
 
   const limit = Math.min(Math.max(q.limit ?? 200, 1), 2000)
-  const page = ordered.slice(0, limit)
+  return {
+    items: queueItems(db, ordered.slice(0, limit), q.grading ?? false),
+    counts: { new: fresh.length, learning: learning.length, review: reviews.length },
+    decks,
+  }
+}
+
+// Queue rows as the review screen gets them, with their words and facts, and
+// for rules this review's exercise items (picked now).
+export function queueItems(db: Db, page: QueueRow[], grading: boolean): QueueItem[] {
   const words = new Map<string, WordRow>()
   const facts = new Map<string, FactRow>()
   for (const [table, map] of [['words', words], ['facts', facts]] as const) {
@@ -224,14 +256,10 @@ export function buildQueue(db: Db, userId: string, opts: DayOptions, now: Date, 
     }
   }
   // Rules with an exercise pool: this review's items, picked now.
-  const exercises = exercisesForQueue(db, [...facts.keys()])
-  return {
-    items: page.map((r): QueueItem => r.kind === 'fact'
-      ? { kind: 'fact', card: toCard(r), fact: toFact(facts.get(r.item_id)!), deckName: r.deck_name, ...(exercises.has(r.item_id) ? { exercises: exercises.get(r.item_id)! } : {}) }
-      : { kind: 'word', card: toCard(r), word: toWord(words.get(r.item_id)!), deckName: r.deck_name }),
-    counts: { new: fresh.length, learning: learning.length, review: reviews.length },
-    decks,
-  }
+  const exercises = exercisesForQueue(db, [...facts.keys()], grading)
+  return page.map((r): QueueItem => r.kind === 'fact'
+    ? { kind: 'fact', card: toCard(r), fact: toFact(facts.get(r.item_id)!), deckName: r.deck_name, ...(exercises.has(r.item_id) ? { exercises: exercises.get(r.item_id)! } : {}) }
+    : { kind: 'word', card: toCard(r), word: toWord(words.get(r.item_id)!), deckName: r.deck_name })
 }
 
 export interface ReviewOptions {
@@ -248,11 +276,11 @@ export interface ReviewOptions {
 // The review filter sheet: the deck's options, and today's count under a
 // draft filter (not saved).
 export function reviewOptions(db: Db, userId: string, opts: DayOptions, now: Date, deckId: string, filter: ReviewFilter | null): ReviewOptions {
-  const deck = listDecks(db, userId).find((d) => d.id === deckId)
+  const deck = getDeck(db, userId, deckId)
   if (!deck) throw new HttpError(404, 'deck not found')
   const q = selectQueue(db, userId, opts, now, deckId, new Map([[deckId, cleanReviewFilter(filter)]]))
   const words = db.prepare("SELECT pos, cefr, tags FROM words WHERE user_id = ? AND deck_id = ? AND status = 'active'").all(userId, deckId) as { pos: string; cefr: string | null; tags: string }[]
-  const facts = db.prepare(`SELECT f.tags, (SELECT count(*) FROM fact_exercises e WHERE e.fact_id = f.id AND e.status = 'active') AS pool
+  const facts = db.prepare(`SELECT f.tags, (SELECT count(*) FROM fact_exercises e WHERE e.fact_id = f.id AND ${SERVABLE}) AS pool
     FROM facts f WHERE f.user_id = ? AND f.deck_id = ? AND f.status = 'active'`).all(userId, deckId) as { tags: string; pool: number }[]
   const count = <T extends string>(xs: (T | null)[]) => {
     const m = new Map<T, number>()
@@ -457,7 +485,7 @@ export function decksWithCounts(db: Db, userId: string, opts: DayOptions, now: D
   }
   const c = new Map(cards.map((r) => [r.deck_id, r]))
   const tags = deckTags(db, userId)
-  return listDecks(db, userId).map((d) => ({
+  return listDecks(db, userId, day.key).map((d) => ({
     ...d,
     tags: tags.get(d.id) ?? [],
     counts: {

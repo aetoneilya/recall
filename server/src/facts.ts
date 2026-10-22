@@ -51,6 +51,21 @@ export interface FactItem extends Fact {
   card: CardSummary | null
   // A rule with an exercise pool (exercises.ts); absent without one.
   exercises?: { active: number; flagged: number; needsReview: number }
+  // From the grammar handbook pack (by import_ref): its topic's id, and
+  // whether this is the topic's rule or one of its theory cards.
+  handbook?: { topic: string; role: 'rule' | 'card' }
+}
+
+export const HANDBOOK_REF = 'pack:grammar-handbook:'
+
+// pack:grammar-handbook:<topic> → the rule, …:<topic>:card:<n> → a theory
+// card; anything else (exercise refs aren't facts) → null.
+export function handbookRef(importRef: string | null): FactItem['handbook'] | null {
+  if (!importRef?.startsWith(HANDBOOK_REF)) return null
+  const parts = importRef.slice(HANDBOOK_REF.length).split(':')
+  if (parts.length === 1 && parts[0]) return { topic: parts[0], role: 'rule' }
+  if (parts.length === 3 && parts[0] && parts[1] === 'card') return { topic: parts[0], role: 'card' }
+  return null
 }
 
 export function getFact(db: Db, userId: string, id: string): Fact | null {
@@ -227,7 +242,8 @@ export function factItems(db: Db, userId: string, rows: FactRow[], now: Date): F
     const deck = decks.get(r.deck_id)!
     const c = cards.get(r.id)
     const pool = pools.get(r.id)
-    return { ...toFact(r), deckName: deck.name, card: c ? cardSummary(toCard(c), deck, now) : null, ...(pool ? { exercises: pool } : {}) }
+    const hb = handbookRef(r.import_ref)
+    return { ...toFact(r), deckName: deck.name, card: c ? cardSummary(toCard(c), deck, now) : null, ...(pool ? { exercises: pool } : {}), ...(hb ? { handbook: hb } : {}) }
   })
 }
 

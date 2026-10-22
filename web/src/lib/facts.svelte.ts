@@ -3,6 +3,7 @@
 // works offline. Loaded in pages of 500, patched in place after edits.
 import { api, kv, status } from './app.svelte.ts'
 import { session } from './review.svelte.ts'
+import { haptic } from './telegram.ts'
 import { errorText, showToast } from './toast.svelte.ts'
 import type { FactItem } from './types.ts'
 
@@ -34,6 +35,7 @@ class FactStore {
   async load() {
     if (this.loading) return
     this.loading = true
+    this.touched = new Map()
     const version = status.factsVersion
     try {
       const out: FactItem[] = []
@@ -42,23 +44,32 @@ class FactStore {
         out.push(...page.facts)
         if (page.facts.length < PAGE || out.length >= page.total) break
       }
-      this.all = out.filter((f) => !this.deleting.has(f.id))
+      // Changed here while the pages loaded: the local copy is newer.
+      const touched = this.touched
+      const merged = out.map((f) => touched.get(f.id) ?? f)
+      for (const [id, x] of touched) if (!out.some((y) => y.id === id)) merged.unshift(x)
+      this.all = merged.filter((f) => !this.deleting.has(f.id))
       this.loadedAt = Date.now()
       this.version = version
       this.error = ''
-      void kv.set('facts', out)
+      // Without what is held for an undo: it doesn't come back on a cold start.
+      void kv.set('facts', this.all)
     } catch (e) {
       this.error = errorText(e)
     } finally {
       this.loading = false
+      this.touched = new Map()
     }
   }
+  // What upsert changed during a load.
+  private touched = new Map<string, FactItem>()
 
   get(id: string): FactItem | undefined {
     return this.all?.find((f) => f.id === id)
   }
 
   upsert(f: FactItem) {
+    if (this.loading) this.touched.set(f.id, f)
     const list = this.all ?? []
     const i = list.findIndex((x) => x.id === f.id)
     this.all = i < 0 ? [...list, f] : [...list.slice(0, i), f, ...list.slice(i + 1)]
@@ -74,6 +85,7 @@ class FactStore {
   // Deletes with an undo: gone at once, the DELETE goes out when the toast
   // does. Undo puts it back where it was.
   deleteWithUndo(f: FactItem, onUndo?: () => void) {
+    haptic.impact('medium')
     const index = this.all?.findIndex((x) => x.id === f.id) ?? -1
     this.deleting.add(f.id)
     this.remove(f.id)

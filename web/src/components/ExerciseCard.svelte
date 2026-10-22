@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { answerDiff, correctedParts, exerciseRating, isTapType, NOTHING, spotTokens, type ExerciseAttempt, type ExerciseCheck, type FactQueueItem } from '@recall/core'
+  import { answerDiff, correctedParts, exerciseRating, isTapType, NOTHING, spotTokens, type ExerciseAttempt, type ExerciseCheck, type FactQueueItem, type WriteGrade } from '@recall/core'
   import CardActions from './CardActions.svelte'
   import Icon from './Icon.svelte'
   import Markdown from './Markdown.svelte'
@@ -24,6 +24,8 @@
     onbad,
     onedit,
     ondrop,
+    onread,
+    writeGrade = null,
   }: {
     item: FactQueueItem
     index: number
@@ -37,11 +39,14 @@
     onbad?: () => void
     onedit?: () => void
     ondrop?: () => void
+    onread?: () => void
+    // A written sentence's verdict from the server.
+    writeGrade?: WriteGrade | null
   } = $props()
 
   const items = $derived(item.exercises ?? [])
   const ex = $derived(items[Math.min(index, items.length - 1)])
-  const INSTRUCTION = { choose: 'Choose the right word', spot: 'Tap the mistake', gap: 'Fill the gap', fix: 'Fix the mistake', rewrite: 'Complete the sentence' } as const
+  const INSTRUCTION = { choose: 'Choose the right word', spot: 'Tap the mistake', gap: 'Fill the gap', fix: 'Fix the mistake', rewrite: 'Complete the sentence', write: 'Write a sentence' } as const
   const isTap = $derived(!!ex && isTapType(ex.type))
   const answered = $derived(isTap ? tap.done : !!check)
   // spot: the sentence as tappable tokens, and once a token was tapped
@@ -78,7 +83,7 @@
     {/if}
   </div>
   {#if onedit && (revealed || answered)}
-    <CardActions {onedit} {ondrop} label="Open the rule" />
+    <CardActions {onedit} {ondrop} {onread} label="Open the rule" />
   {/if}
   <div class="body">
     {#if !revealed && ex && isTap}
@@ -105,7 +110,7 @@
         </p>
       {/if}
       {#if showOptions}
-        <div class="options" role="group" aria-label="Options" style="--cols: {(ex.options?.length ?? 0) === 4 ? 2 : Math.max(1, ex.options?.length ?? 1)}">
+        <div class="options" role="group" aria-label="Options">
           {#each ex.options ?? [] as o, k (o)}
             <button
               class="opt"
@@ -118,18 +123,43 @@
                 onchoose?.(o)
               }}
             >
-              <span class="key" aria-hidden="true">{k + 1}</span>{optionLabel(o)}
+              <span class="key" aria-hidden="true">{k + 1}</span><span class="otext">{optionLabel(o)}</span>
+              {#if tap.done && o === ex.answer}
+                <svg class="tick" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+              {/if}
             </button>
           {/each}
         </div>
       {/if}
-      {#if tap.done}
-        <div class="verdict reveal-in" data-ok={tapRight}>
+      {#if tap.done && !tapRight}
+        <div class="verdict strip" data-ok={tapRight}>
           <span class="pill">{tapRight ? 'Correct' : ex.type === 'spot' && !foundIt ? 'The mistake was elsewhere' : 'Not quite'}</span>
           {#if fixed}
             <p class="fixed" lang="en">{#each fixed as p, i (i)}{#if p.changed}{#if p.text}<mark class="fix">{p.text}</mark>{:else}{' '}<mark class="gone">{ex.wrong}</mark>{/if}{:else}{p.text}{/if}{/each}</p>
           {/if}
           {#if ex.explain}<p class="explain" lang="ru">{ex.explain}</p>{/if}
+          {#if onbad}
+            <button class="badlink" onclick={(e) => { e.stopPropagation(); onbad() }} onmousedown={(e) => e.preventDefault()} disabled={current?.bad}>
+              {current?.bad ? 'Taken out of the pool' : 'Bad item'}
+            </button>
+          {/if}
+        </div>
+      {/if}
+    {:else if !revealed && ex && ex.type === 'write'}
+      <p class="instruction">{INSTRUCTION.write}</p>
+      <p class="prompt task" lang="ru">{ex.prompt}</p>
+      {#if check}
+        <div class="verdict strip" data-ok={check.correct}>
+          <span class="pill">{current?.overridden ? 'Counted as right' : check.correct ? 'Correct' : !given.trim() ? "Didn't know" : writeGrade?.score === 1 ? 'Almost' : 'Not quite'}</span>
+          {#if given.trim() && writeGrade && !check.correct}
+            <div class="diff" aria-label="Your sentence and the corrected one">
+              {#each [answerDiff(given, writeGrade.corrected)] as d (d)}
+                <p class="yours"><span class="lbl">You</span><span class="txt" lang="en">{#each d.input as p, i (i)}{#if p.same}{p.text}{:else}<mark class="bad">{p.text}</mark>{/if}{/each}</span></p>
+                <p><span class="lbl">Better</span><span class="txt" lang="en">{#each d.expected as p, i (i)}{#if p.same}{p.text}{:else}<mark class="fix">{p.text}</mark>{/if}{/each}</span></p>
+              {/each}
+            </div>
+          {/if}
+          {#if writeGrade?.explain}<p class="explain" lang="ru">{writeGrade.explain}</p>{/if}
           {#if onbad}
             <button class="badlink" onclick={(e) => { e.stopPropagation(); onbad() }} onmousedown={(e) => e.preventDefault()} disabled={current?.bad}>
               {current?.bad ? 'Taken out of the pool' : 'Bad item'}
@@ -176,6 +206,8 @@
                   {#each correctedParts(it.prompt, it.wrong, it.answer) as p, k (k)}{#if p.changed}<span class="ans">{p.text || '—'}</span>{:else}{p.text}{/if}{/each}
                 {:else if it?.type === 'choose'}
                   {#each it.prompt.split(/_{3,}/) as part, k (k)}{#if k > 0}<span class="ans">{it.answer}</span>{/if}{part}{/each}
+                {:else if it?.type === 'write'}
+                  {r.given || it.prompt}
                 {:else}
                   {it?.prompt ?? ''}{#if !r.correct && !r.bad && it}<span class="ans"> → {it.answer}</span>{/if}
                 {/if}
@@ -412,21 +444,22 @@
     }
   }
   /* One row of equal targets (two rows of two for four). */
+  /* Full-width rows inside the card, one thumb's reach each. */
   .options {
-    display: grid;
-    grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+    display: flex;
+    flex-direction: column;
     gap: 8px;
     margin-top: 22px;
   }
   .opt {
     min-width: 0;
-    min-height: 56px;
+    min-height: 52px;
     padding: 8px 14px;
-    display: inline-flex;
+    display: flex;
     align-items: center;
-    justify-content: center;
-    gap: 8px;
-    border-radius: 14px;
+    gap: 12px;
+    border-radius: 12px;
+    text-align: left;
     font-size: 18px;
     font-weight: 600;
     color: var(--text);
@@ -443,7 +476,64 @@
     cursor: default;
   }
   .opt:active:not(:disabled) {
-    transform: scale(0.97);
+    transform: scale(0.98);
+    box-shadow: inset 0 0 0 1.5px var(--accent);
+  }
+  .otext {
+    flex: 1;
+    min-width: 0;
+  }
+  .tick {
+    flex: none;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.4;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-dasharray: 24;
+    animation: draw 200ms var(--ease-out) both;
+  }
+  @keyframes draw {
+    from {
+      stroke-dashoffset: 24;
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+  /* A wrong pick: one small nudge, never a long shake. */
+  @keyframes nudge {
+    0%,
+    100% {
+      transform: none;
+    }
+    25% {
+      transform: translateX(-4px);
+    }
+    60% {
+      transform: translateX(4px);
+    }
+    80% {
+      transform: translateX(-2px);
+    }
+  }
+  /* The verdict on a miss rises from the bottom. */
+  .strip {
+    animation: strip-in 200ms var(--ease-out) both;
+  }
+  @keyframes strip-in {
+    from {
+      opacity: 0;
+      transform: translateY(24px);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .opt.wrong {
+      animation: none;
+    }
+    .strip {
+      animation: fade-in 200ms ease both;
+    }
   }
   .opt .key {
     font-size: 12px;
@@ -453,10 +543,12 @@
   .opt.right {
     color: var(--good);
     background: var(--good-bg);
+    box-shadow: inset 0 0 0 1.5px var(--good);
   }
   .opt.wrong {
     color: var(--again);
     background: var(--again-bg);
+    animation: nudge 240ms var(--ease-out);
   }
   .opt.dim:disabled {
     opacity: 0.45;
@@ -559,5 +651,9 @@
   }
   .reveal-in {
     animation: rise-sm var(--t-fast) var(--ease-out) both;
+  }
+  .task {
+    font-size: 18px;
+    font-weight: 500;
   }
 </style>

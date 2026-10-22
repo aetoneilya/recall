@@ -383,7 +383,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    height: 34px;
+    height: 40px;
     padding: 0 14px 0 11px;
     border-radius: 17px;
     font-weight: 650;

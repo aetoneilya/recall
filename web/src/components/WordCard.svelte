@@ -34,6 +34,13 @@
     check ? { exact: 'Correct', close: check.distance ? 'Almost — a typo' : 'Almost', wrong: 'Not quite', empty: "Didn't know" }[check.verdict] : '',
   )
 
+  // The back shows one example; the rest and the note open in place.
+  const extra = $derived(item.word.examples.slice(1))
+  let more = $state(false)
+  const moreText = $derived(
+    [extra.length ? `+${extra.length} ${extra.length === 1 ? 'example' : 'examples'}` : '', f.back.note ? 'note' : ''].filter(Boolean).join(' · '),
+  )
+
   let body: HTMLElement | undefined = $state()
   let answer: HTMLElement | undefined = $state()
 
@@ -48,7 +55,7 @@
 </script>
 
 {#snippet example(text: string, translation: string | null)}
-  <div class="example">
+  <div class="example reveal-in">
     <p lang={target}>
       {#each markTerm(text, item.word.term) as p, i (i)}{#if p.hit}<b>{p.text}</b>{:else}{p.text}{/if}{/each}
     </p>
@@ -118,7 +125,12 @@
           {#if forms}<p class="forms" lang={target}>{forms}</p>{/if}
           {#if f.back.example}{@render example(f.back.example, f.back.exampleTranslation)}{/if}
         {/if}
-        {#if f.back.note}<p class="note" lang={native}>{f.back.note}</p>{/if}
+        {#if more}
+          {#each extra as ex, i (i)}{@render example(ex.text, ex.translation)}{/each}
+          {#if f.back.note}<p class="note reveal-in" lang={native}>{f.back.note}</p>{/if}
+        {:else if moreText}
+          <button class="more reveal-in" onclick={(e) => (e.stopPropagation(), (more = true))}>{moreText}</button>
+        {/if}
       </div>
     {/if}
   </div>
@@ -286,14 +298,37 @@
     line-height: 1.32;
     text-wrap: balance;
   }
+  /* One example on a paper-shade panel, the word in 600. */
   .example {
-    margin-top: 20px;
-    font-size: 16px;
+    margin-top: 18px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    background: var(--surface-2);
+    font-size: 15px;
     line-height: 1.5;
     text-wrap: pretty;
   }
+  .example + .example {
+    margin-top: 8px;
+  }
+  /* Staggered after the answer: 40ms, at most two. */
+  .answer :global(.example.reveal-in) {
+    animation-delay: 40ms;
+  }
+  .more.reveal-in {
+    animation-delay: 80ms;
+  }
+  .more {
+    display: block;
+    margin-top: 10px;
+    padding: 10px 0;
+    min-height: 40px;
+    font-size: 14px;
+    color: var(--faint);
+    text-align: left;
+  }
   .example b {
-    font-weight: 650;
+    font-weight: 600;
   }
   .ex-tr {
     margin-top: 2px;

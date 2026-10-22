@@ -5,7 +5,7 @@
 import type { KV } from './idb.ts'
 
 // Everything the app caches for an account.
-export const ACCOUNT_KEYS = ['outbox', 'wordOutbox', 'editOutbox', 'review', 'words', 'facts', 'dashboard', 'day', 'fsrs'] as const
+export const ACCOUNT_KEYS = ['outbox', 'wordOutbox', 'editOutbox', 'review', 'words', 'facts', 'dashboard', 'handbook', 'day', 'fsrs', 'me'] as const
 
 const OWNER = 'owner'
 

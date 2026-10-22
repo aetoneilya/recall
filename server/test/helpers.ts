@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
 import type { PartOfSpeech, QueueItem, Rating, Word, WordInput, WordStatus } from '@recall/core'
 import { createApp } from '../src/app.ts'
+import type { BetaMessage, MessageCreateParamsNonStreaming } from '@anthropic-ai/sdk/resources/beta/messages/messages'
 import type { AutofillClient } from '../src/autofill.ts'
 import { loadConfig, type Config } from '../src/config.ts'
 import type { AppContext } from '../src/context.ts'
@@ -138,4 +139,21 @@ export async function callTool(url: string, token: string, name: string, args: o
 // fetch with a JSON body.
 export function send(url: string, method: string, body: unknown, headers: Record<string, string> = {}) {
   return fetch(url, { method, headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) })
+}
+
+// A Claude answer with `body` as its JSON text.
+export function claudeMessage(body: unknown, over: Partial<BetaMessage> = {}): BetaMessage {
+  return {
+    id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', stop_sequence: null, stop_details: null,
+    content: [{ type: 'text', text: typeof body === 'string' ? body : JSON.stringify(body), citations: null }],
+    usage: { input_tokens: 100, output_tokens: 50 },
+    ...over,
+  } as unknown as BetaMessage
+}
+
+// A fake client that records requests and answers with `reply` (or throws).
+export function fakeClaude(reply: (body: MessageCreateParamsNonStreaming) => BetaMessage | Promise<BetaMessage>) {
+  const calls: MessageCreateParamsNonStreaming[] = []
+  const client: AutofillClient = { beta: { messages: { create: async (body) => (calls.push(body), reply(body)) } } }
+  return { client, calls }
 }

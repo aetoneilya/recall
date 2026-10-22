@@ -1,4 +1,4 @@
-import type { ExerciseInput, QueueItem, ReviewFilter, ReviewInput } from '@recall/core'
+import type { ExerciseInput, QueueItem, ReviewFilter, ReviewInput, WriteGrade } from '@recall/core'
 import type {
   ApiToken,
   AutofillResult,
@@ -19,6 +19,7 @@ import type {
   NewFact,
   NewToken,
   NewWord,
+  Handbook,
   PackInfo,
   QueueDeck,
   QueueResponse,
@@ -216,6 +217,16 @@ export function createApi(opts: ApiOptions = {}) {
       const d = await get<Json>(`/api/stats?days=1${deckId ? `&deck=${enc(deckId)}` : ''}`)
       return list<{ day: string; due: number }>(d, 'forecast')
     },
+    // Reviews per study day, the last `days` (every deck).
+    activity: async (days = 7) => list<{ day: string; reviews: number }>(await get<Json>(`/api/stats?days=${days}`), 'days'),
+    // Today's new-card allowance of a deck, up by `n` for today only.
+    extraNew: async (deckId: string, n = 5) => normalizeDeck(unwrap<Json>(await post<Json>(`/api/decks/${enc(deckId)}/extra-new`, { n }), 'deck')),
+    // A practice run: cards that don't change the schedule when rated.
+    practice: async (q: { deck: string } | { fact: string }, limit = 20) =>
+      list<QueueItem>(await get<unknown>('deck' in q ? `/api/practice?deck=${enc(q.deck)}&limit=${limit}` : `/api/practice?fact=${enc(q.fact)}`), 'items').map(normalizeItem),
+    // A written sentence graded by Claude (online only).
+    grade: (exerciseId: string, text: string) => post<WriteGrade>(`/api/exercises/${enc(exerciseId)}/grade`, { text }),
+    handbook: (deckId: string) => get<Handbook>(`/api/handbook?deck=${enc(deckId)}`),
     startVocabTest: () => post<VocabTestStart>('/api/vocab-test'),
     answerVocabTest: (id: string, answers: { id: string; known: boolean }[]) => post<TestResult>(`/api/vocab-test/${enc(id)}/answers`, { answers }),
     vocabTests: async () => list<TestSummary>(await get<unknown>('/api/vocab-tests'), 'tests'),
@@ -283,6 +294,7 @@ function normalizeDeck(d: Json): DeckWithCounts {
     reverseEnabled: d.reverseEnabled !== false,
     reverseAfterDays: typeof d.reverseAfterDays === 'number' ? d.reverseAfterDays : null,
     typeAnswer,
+    extraNewToday: num(d.extraNewToday),
     counts: {
       total: num(c.total),
       active: num(c.active),

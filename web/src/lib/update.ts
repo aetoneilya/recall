@@ -26,7 +26,7 @@ export interface Context {
 }
 
 // Screens with something in progress: forms, an editor, the vocabulary test.
-const BUSY = new Set(['add', 'word', 'fact', 'test'])
+const BUSY = new Set(['add', 'word', 'fact', 'test', 'practice'])
 
 export function shouldApply(moment: Moment, c: Context): boolean {
   if (c.unsaved || c.pendingUndo) return false
@@ -84,6 +84,13 @@ export function initUpdates(ctx: () => Context): void {
   })
 }
 
+// What must be on disk before a reload (the last rating's outbox write);
+// set by the app, given at most a second.
+let settle: () => Promise<unknown> = async () => {}
+export function setSettle(fn: () => Promise<unknown>) {
+  settle = fn
+}
+
 // Called at moments that may be safe to reload (route changes, session end).
 export function checkpoint(moment: Moment): void {
   if (!ready || !shouldApply(moment, context())) return
@@ -93,7 +100,7 @@ export function checkpoint(moment: Moment): void {
   } catch {
     // No toast after the reload; the update still applies.
   }
-  location.reload()
+  void Promise.race([settle().catch(() => {}), new Promise((r) => setTimeout(r, 1000))]).then(() => location.reload())
 }
 
 // After the reload: whether to say "Updated".

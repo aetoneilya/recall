@@ -94,7 +94,7 @@ describe('createTracker', () => {
   it('lets scrollable content scroll instead of swiping vertically', () => {
     const r = drag({ axes: 'xy', scroll: middle, to: [0, 200] })
     expect(r.last).toMatchObject({ state: 'scroll', prevent: false })
-    expect(r.end).toEqual({ dir: null, wasDrag: false })
+    expect(r.end).toMatchObject({ dir: null, wasDrag: false })
   })
 
   it('swipes vertically from the edge the drag starts at', () => {

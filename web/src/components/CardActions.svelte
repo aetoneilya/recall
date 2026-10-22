@@ -3,7 +3,8 @@
 
   // The revealed card's corner: ✎ opens the editor; ⋯ holds what is rarely
   // wanted — Drop (never show this card again).
-  let { onedit, ondrop, label }: { onedit: () => void; ondrop?: () => void; label: string } = $props()
+  // `onread`: a grammar card's "Read the theory" (its handbook page).
+  let { onedit, ondrop, onread, label }: { onedit: () => void; ondrop?: () => void; onread?: () => void; label: string } = $props()
 
   let open = $state(false)
   const stop = (fn: () => void) => (e: Event) => {
@@ -15,7 +16,7 @@
 <svelte:window onclick={() => (open = false)} />
 
 <div class="corner">
-  {#if ondrop}
+  {#if ondrop || onread}
     <button class="icon" onclick={stop(() => (open = !open))} onmousedown={(e) => e.preventDefault()} aria-label="More" aria-expanded={open} aria-haspopup="menu">
       <Icon name="more" size={20} stroke={3} />
     </button>
@@ -23,12 +24,18 @@
   <button class="icon" onclick={stop(onedit)} onmousedown={(e) => e.preventDefault()} aria-label={label}>
     <Icon name="edit" size={18} />
   </button>
-  {#if open && ondrop}
+  {#if open && (ondrop || onread)}
     <div class="menu" role="menu">
-      <button role="menuitem" onclick={stop(() => ((open = false), ondrop()))} onmousedown={(e) => e.preventDefault()}>
+      {#if onread}
+        <button role="menuitem" class="read" onclick={stop(() => ((open = false), onread()))} onmousedown={(e) => e.preventDefault()}>
+          <Icon name="words" size={16} stroke={2} />
+          <span>Read the theory<small>The handbook page</small></span>
+        </button>
+      {/if}
+      {#if ondrop}<button role="menuitem" onclick={stop(() => ((open = false), ondrop()))} onmousedown={(e) => e.preventDefault()}>
         <Icon name="x" size={16} stroke={2} />
         <span>Drop<small>Never show this card again</small></span>
-      </button>
+      </button>{/if}
     </div>
   {/if}
 </div>
@@ -90,6 +97,9 @@
   .menu :global(svg) {
     margin-top: 2px;
     color: var(--again);
+  }
+  .menu .read :global(svg) {
+    color: var(--accent);
   }
   .menu small {
     display: block;

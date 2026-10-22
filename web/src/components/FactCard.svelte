@@ -8,7 +8,7 @@
   // under it, both Markdown. The deck is the context marker, like the
   // direction on a word's card. `onedit` opens the fact's editor; offered
   // once the answer shows.
-  let { item, revealed, onedit, ondrop }: { item: FactQueueItem; revealed: boolean; onedit?: () => void; ondrop?: () => void } = $props()
+  let { item, revealed, onedit, ondrop, onread }: { item: FactQueueItem; revealed: boolean; onedit?: () => void; ondrop?: () => void; onread?: () => void } = $props()
 
   const isNew = $derived(item.card.schedule.state === 0)
 
@@ -32,7 +32,7 @@
     {#if isNew}<span class="new">New</span>{/if}
   </div>
   {#if revealed && onedit}
-    <CardActions {onedit} {ondrop} label="Edit this card" />
+    <CardActions {onedit} {ondrop} {onread} label="Edit this card" />
   {/if}
   <div class="body" bind:this={body}>
     <div class="question"><Markdown source={item.fact.front} /></div>

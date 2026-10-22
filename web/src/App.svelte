@@ -11,6 +11,8 @@
   import FactEditor from './screens/FactEditor.svelte'
   import Denied from './screens/Denied.svelte'
   import Login from './screens/Login.svelte'
+  import Practice from './screens/Practice.svelte'
+  import Handbook from './screens/Handbook.svelte'
   import Review from './screens/Review.svelte'
   import Settings from './screens/Settings.svelte'
   import VocabTest from './screens/VocabTest.svelte'
@@ -46,11 +48,28 @@
     setBackButton(status.auth === 'ok' && parentOf(r) !== null ? back : null)
   })
 
+  // Escape: out of a field first, then back from a pushed screen. A sheet
+  // handles its own Escape first; the test has its own Back.
+  function onKey(e: KeyboardEvent) {
+    if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('[data-sheet]')) return
+    const t = e.target as HTMLElement | null
+    if (t?.closest?.('input, textarea, select')) {
+      t.blur()
+      return
+    }
+    if (r.parts[0] !== 'test' && parentOf(r) !== null) {
+      e.preventDefault()
+      back()
+    }
+  }
+
   function afterLogin() {
     void loadMe()
     void session.refresh()
   }
 </script>
+
+<svelte:window onkeydown={onKey} />
 
 {#if status.auth === 'login'}
   <Login onsignedin={afterLogin} />
@@ -69,6 +88,10 @@
         {#key b}<WordEditor id={b} />{/key}
       {:else if a === 'words'}
         <Words />
+      {:else if a === 'practice'}
+        <Practice />
+      {:else if a === 'handbook'}
+        {#key b}<Handbook topic={b ?? null} />{/key}
       {:else if a === 'progress'}
         <Dashboard />
       {:else if a === 'test'}

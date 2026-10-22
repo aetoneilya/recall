@@ -47,7 +47,8 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--hard);
+    /* Not a rating hue: pending is just pending. */
+    background: var(--muted);
   }
   .dot.spin {
     animation: pulse 0.9s ease-in-out infinite alternate;

@@ -10,8 +10,9 @@
   const cols = $derived(Math.ceil((offset + days.length) / 7))
   const max = $derived(Math.max(1, ...days.map((d) => d.reviews)))
   const level = (n: number) => (n <= 0 ? 0 : Math.min(4, Math.ceil((n / max) * 4)))
-  const C = 18
-  const G = 3
+  // 26 weeks × 7: 10px cells, 2px gaps.
+  const C = 10
+  const G = 2
   const W = $derived(cols * (C + G) - G)
   const H = 7 * (C + G) - G
   const label = (d: ActivityDay) =>
@@ -21,7 +22,7 @@
 <svg viewBox="0 0 {W} {H}" role="img" aria-label="Reviews per day, last {days.length} days">
   {#each days as d, i (d.day)}
     {@const k = offset + i}
-    <rect x={Math.floor(k / 7) * (C + G)} y={(k % 7) * (C + G)} width={C} height={C} rx="4" class="l{level(d.reviews)}" class:today={i === days.length - 1}>
+    <rect x={Math.floor(k / 7) * (C + G)} y={(k % 7) * (C + G)} width={C} height={C} rx="2" class="l{level(d.reviews)}" class:today={i === days.length - 1}>
       <title>{label(d)}</title>
     </rect>
   {/each}
@@ -30,7 +31,7 @@
 <style>
   svg {
     width: 100%;
-    max-width: 380px;
+    max-width: 420px;
     height: auto;
     display: block;
   }
@@ -51,6 +52,6 @@
   }
   .today {
     stroke: var(--text);
-    stroke-width: 1.5;
+    stroke-width: 1;
   }
 </style>

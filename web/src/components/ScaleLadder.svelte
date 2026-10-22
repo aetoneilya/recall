@@ -91,7 +91,7 @@
           <span class="emoji" aria-hidden="true">{r.p.emoji ?? ''}</span>
           <span class="label">
             {r.p.label}
-            <span class="hint">{groupHint[r.p.group] ?? r.p.group}</span>
+            {#if r.p.group !== 'learner'}<span class="hint">{groupHint[r.p.group] ?? r.p.group}</span>{/if}
           </span>
           <span class="size">{approx(r.p) ? '≈ ' : ''}{fmt(r.pos)}</span>
         </button>
@@ -221,7 +221,7 @@
   }
   .more {
     margin: 4px 0 0 46px;
-    min-height: 36px;
+    min-height: 40px;
     font-size: 14px;
     font-weight: 500;
     color: var(--accent);

@@ -68,6 +68,9 @@
     { d: 'reverse', name: `${lang.n} → ${lang.t}`, verb: 'recall' },
   ])
   const growth = $derived((data?.growth ?? []).map((g) => ({ date: g.date, value: g.known })))
+  // Growth proof under the headline: known words now vs about 30 days ago (weekly points).
+  const change = $derived(growth.length > 4 ? growth.at(-1)!.value - growth.at(-5)!.value : null)
+  const activeDays = $derived((data?.activity.days ?? []).filter((d) => d.reviews > 0).length)
   const history = $derived([...(v?.history ?? [])].reverse())
   const tiles = $derived(
     data
@@ -106,6 +109,7 @@
       {#if cur}
         <div class="big"><span class="approx">≈</span>{fmt(cur.adjusted)}</div>
         <div class="what">English words you know</div>
+        {#if change !== null}<div class="change" class:up={change > 0}>{change > 0 ? '+' : change < 0 ? '−' : '±'}{fmt(Math.abs(change))} known in 30 days</div>{/if}
         <div class="levels">
           {#if cur.cefr.level}<span class="cefr">{cur.cefr.level.id}</span>{:else}<span class="cefr dim">pre-A1</span>{/if}
           <span class="next">
@@ -188,14 +192,14 @@
     <div class="panel">
       <div class="streaks">
         <div class="streak">
-          <Icon name="flame" size={22} />
           <span><b>{data.activity.streak.current}</b> {data.activity.streak.current === 1 ? 'day' : 'days'} in a row</span>
         </div>
         <span class="faint">longest {data.activity.streak.longest}</span>
       </div>
       <Heatmap days={data.activity.days} />
+      <div class="legend" aria-hidden="true"><span>{activeDays} active {activeDays === 1 ? 'day' : 'days'}</span><span class="scale">Less<i class="l0"></i><i class="l1"></i><i class="l2"></i><i class="l3"></i><i class="l4"></i>More</span></div>
       <p class="foot">
-        {fmt(data.activity.totals.reviews)} reviews · {duration(data.activity.totals.timeMs)} spent{#if !data.activity.streak.studiedToday && data.activity.streak.current} · review today to keep the streak{/if}
+        {fmt(data.activity.totals.reviews)} reviews · {duration(data.activity.totals.timeMs)} spent
       </p>
     </div>
 
@@ -324,7 +328,7 @@
     color: var(--accent);
     font-weight: 600;
     font-size: 15px;
-    min-height: 36px;
+    min-height: 40px;
   }
   .ladder-panel {
     padding: 8px 14px;
@@ -526,5 +530,46 @@
     display: block;
     font-size: 13px;
     color: var(--muted);
+  }
+  .change {
+    margin-top: 4px;
+    font-size: 15px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .change.up {
+    color: var(--good);
+  }
+  .legend {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .scale {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    color: var(--faint);
+  }
+  .scale i {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    background: var(--surface-2);
+  }
+  .scale .l1 {
+    background: color-mix(in srgb, var(--accent) 30%, var(--surface-2));
+  }
+  .scale .l2 {
+    background: color-mix(in srgb, var(--accent) 55%, var(--surface-2));
+  }
+  .scale .l3 {
+    background: color-mix(in srgb, var(--accent) 78%, var(--surface-2));
+  }
+  .scale .l4 {
+    background: var(--accent);
   }
 </style>

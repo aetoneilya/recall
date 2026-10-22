@@ -295,6 +295,8 @@ export interface SeedRule {
   title: string
   rule: string
   plan: Plan
+  // A handbook topic (theory cards, written tasks); none: one of "My rules".
+  topic?: { id: string; group: string; level: string; cards: { front: string; back: string }[]; write: { prompt: string; rubric: string }[] }
   items: { type: 'choose' | 'spot'; prompt: string; options: string[]; answer: string; wrong: string | null; accepted: string[]; explain: string | null }[]
 }
 
@@ -304,6 +306,20 @@ const spot = (prompt: string, wrong: string, options: string[], answer: string, 
 export const grammar: SeedRule[] = [
   {
     title: 'Third person -s',
+    topic: {
+      id: 'third-person-s',
+      group: 'Present tenses',
+      level: 'A2',
+      cards: [
+        { front: 'When does a verb take **-s** in Present Simple?', back: 'After **he / she / it** and any singular noun: *She **works**. The app **crashes**.*' },
+        { front: 'Which ending after *-sh, -ch, -x, -o*?', back: '**-es**: *watches, fixes, goes*.' },
+        { front: 'Does the verb keep **-s** in a question with *does*?', back: 'No — *does* takes it: *Does she **work**?*' },
+      ],
+      write: [
+        { prompt: 'Напиши предложение о том, что делает твой коллега каждый день.', rubric: 'He/she + глагол с -s.' },
+        { prompt: 'Напиши вопрос с does о чьей-то привычке.', rubric: 'Does + подлежащее + глагол без -s.' },
+      ],
+    },
     rule: 'В Present Simple после **he / she / it** и единственного числа глагол получает **-s**: *She **works** here.*\nВ вопросах и отрицаниях -s уходит в **does**: *Does she **work**?*',
     plan: 'due',
     items: [
@@ -317,6 +333,20 @@ export const grammar: SeedRule[] = [
   },
   {
     title: 'Prepositions of time',
+    topic: {
+      id: 'prepositions-of-time',
+      group: 'Prepositions',
+      level: 'A2',
+      cards: [
+        { front: 'Which preposition goes with a clock time?', back: '**at**: *at 3 a.m., at noon*.' },
+        { front: 'Days and dates?', back: '**on**: *on Monday, on 5 May*.' },
+        { front: 'What goes before *next / last / this week*?', back: 'Nothing: *See you **next week**.*' },
+      ],
+      write: [
+        { prompt: 'Напиши предложение о том, когда у тебя встреча (день и время).', rubric: 'on + день, at + время.' },
+        { prompt: 'Напиши предложение со словами next week или last year.', rubric: 'Без предлога перед next / last.' },
+      ],
+    },
     rule: '**at** + время суток и точка (*at 3 a.m., at night*), **on** + день и дата (*on Monday, on 5 May*), **in** + месяц, год, части дня (*in July, in the morning*). Без предлога: *next week, last year, this Monday*.',
     plan: 'new',
     items: [
@@ -326,6 +356,17 @@ export const grammar: SeedRule[] = [
       choose('See you ___ next week.', ['—', 'on', 'in'], '—', 'next / last / this — без предлога'),
       spot('I usually read in night.', 'in', ['at', 'on'], 'at', 'at night — устойчиво'),
       spot('The meeting is on next Monday.', 'on', ['—', 'in', 'at'], '—', 'next Monday — без предлога'),
+    ],
+  },
+  // One of "My rules": the owner's own, not from the handbook.
+  {
+    title: 'Since vs for',
+    rule: '**since** + момент начала (*since 2019, since Monday*), **for** + длительность (*for two years*). Обычно с Present Perfect.',
+    plan: 'later',
+    items: [
+      choose("I've lived here ___ 2019.", ['since', 'for'], 'since', 'момент начала → since'),
+      choose("We've waited ___ an hour.", ['for', 'since'], 'for', 'длительность → for'),
+      spot("She's worked here since three years.", 'since', ['for', '—'], 'for', 'three years — длительность'),
     ],
   },
 ]

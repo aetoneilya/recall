@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { checkAnswer, checkExercise, exerciseRating, formatInterval, isTapType, preview, spotTokens, type AnswerCheck, type ExerciseAttempt, type ExerciseCheck, type Rating } from '@recall/core'
+  import { checkAnswer, checkExercise, exerciseRating, formatInterval, isTapType, preview, spotTokens, type AnswerCheck, type ExerciseAttempt, type ExerciseCheck, type Rating, type WriteGrade } from '@recall/core'
+  import { api, status } from '../lib/app.svelte.ts'
+  import { errorText, showToast } from '../lib/toast.svelte.ts'
   import { flushSync, onMount, untrack } from 'svelte'
-  import AddPicker from '../components/AddPicker.svelte'
   import DeckSwitcher from '../components/DeckSwitcher.svelte'
   import ExerciseCard from '../components/ExerciseCard.svelte'
   import ReviewFilterSheet from '../components/ReviewFilterSheet.svelte'
@@ -12,16 +13,20 @@
   import Summary from '../components/Summary.svelte'
   import SyncPill from '../components/SyncPill.svelte'
   import WordCard from '../components/WordCard.svelte'
+  import { openAdd } from '../lib/add.ts'
   import { dropCard } from '../lib/drop.ts'
   import { fsrs } from '../lib/fsrs.ts'
   import { counts, remaining } from '../lib/queue.ts'
   import { session } from '../lib/review.svelte.ts'
   import { navigate } from '../lib/router.svelte.ts'
   import { defaultThreshold, swipe, type Axis, type SwipeDir } from '../lib/swipe.ts'
+  import { BUTTON_SPEED, lift, nextArmed, plan, reducedMotion, snapMs, THROW_EASE, tilt, tiltOrigin } from '../lib/throw.ts'
   import { haptic } from '../lib/telegram.ts'
 
   const c = $derived(counts(session.queue))
   const done = $derived(session.stats.reviewed)
+  // Stack edges: two with three or more cards left, one with two, none on the last.
+  const layers = $derived(Math.min(2, Math.max(0, remaining(session.queue) - 1)))
   const progress = $derived(done + remaining(session.queue) ? done / (done + remaining(session.queue)) : 0)
   const item = $derived(session.current)
   // Remounts the card even when the same card comes straight back.
@@ -43,17 +48,26 @@
   // The deck under review, its filter sheet, the "+" picker.
   const currentDeck = $derived(session.decks[session.deckId])
   let filterOpen = $state(false)
-  let addOpen = $state(false)
   const LANG_NAMES: Record<string, string> = { en: 'English', ru: 'Russian', de: 'German', fr: 'French', es: 'Spanish' }
   const placeholder = $derived(
-    item?.card.direction === 'reverse' ? `Type it in ${LANG_NAMES[langs[0]] ?? langs[0].toUpperCase()}` : `Type the ${LANG_NAMES[langs[1]] ?? ''} translation`,
+    item?.card.direction === 'reverse' ? `In ${LANG_NAMES[langs[0]] ?? langs[0].toUpperCase()}…` : `In ${LANG_NAMES[langs[1]] ?? langs[1].toUpperCase()}…`,
   )
   let answer = $state('')
   let check = $state<AnswerCheck | null>(null)
   let input: HTMLInputElement | undefined = $state()
   // A rule with exercises: three items to type, checked one by one, then a
   // summary whose rating comes from the results.
-  const exercises = $derived(item?.kind === 'fact' && item.exercises?.length ? item.exercises : null)
+  // Written items need the server's grader: offline, or on a server
+  // without one, they're left out (and so is one whose grading failed).
+  const canGrade = $derived(status.online && status.me?.grading !== false)
+  let skipped = $state<string[]>([])
+  const exercises = $derived.by(() => {
+    if (item?.kind !== 'fact' || !item.exercises?.length) return null
+    const list = item.exercises.filter((e) => e.type !== 'write' || (canGrade && !skipped.includes(e.id)))
+    return list.length ? list : null
+  })
+  let grading = $state(false)
+  let writeGrade = $state<WriteGrade | null>(null)
   let exIndex = $state(0)
   let exResults = $state<ExerciseAttempt[]>([])
   let exCheck = $state<ExerciseCheck | null>(null)
@@ -78,28 +92,67 @@
     exIndex = 0
     exCheck = null
     exAnswer = ''
+    writeGrade = null
+    skipped = []
     tap = { pick: null, token: null, done: false }
     exResults = untrack(() => {
       const cur = session.current
       return cur && session.revealed ? [...(session.exerciseResults[cur.card.id] ?? [])] : []
     })
+    untrack(() => {
+      const cur = session.current
+      const t = cur && session.revealed ? session.typedAnswers[cur.card.id] : undefined
+      if (t) {
+        answer = t.answer
+        check = t.check
+      }
+    })
   })
 
   function checkItem() {
     const ex = exercises?.[exIndex]
-    if (!ex || exCheck) return
+    if (!ex || exCheck || grading) return
+    if (ex.type === 'write') return void gradeWrite(ex.id)
     exCheck = checkExercise(exAnswer, ex)
     exResults = [...exResults.slice(0, exIndex), { id: ex.id, given: exAnswer.trim(), correct: exCheck.correct }]
     haptic.notify(exCheck.correct ? 'success' : 'error')
   }
 
+  // A written sentence: Claude's verdict, the corrected sentence and why.
+  async function gradeWrite(id: string) {
+    const text = exAnswer.trim()
+    if (!text) {
+      exCheck = { correct: false, expected: '' }
+      exResults = [...exResults.slice(0, exIndex), { id, given: '', correct: false }]
+      return
+    }
+    grading = true
+    try {
+      const g = await api.grade(id, text)
+      if (exercises?.[exIndex]?.id !== id) return
+      writeGrade = g
+      exCheck = { correct: g.correct, expected: g.corrected }
+      exResults = [...exResults.slice(0, exIndex), { id, given: text, correct: g.correct }]
+      haptic.notify(g.correct ? 'success' : g.score === 1 ? 'warning' : 'error')
+    } catch (e) {
+      // Can't be checked now: the item is left out of this review.
+      showToast(`Couldn't check it: ${errorText(e)} — skipped`)
+      skipped = [...skipped, id]
+      exAnswer = ''
+    } finally {
+      grading = false
+    }
+  }
+
   // Next item, or the summary after the last one.
   function nextItem() {
+    clearTimeout(autoNext)
     if (!exercises || !exAnswered) return
     if (exIndex + 1 < exercises.length) {
       exIndex++
       exCheck = null
       exAnswer = ''
+      writeGrade = null
       tap = { pick: null, token: null, done: false }
       if (!exTap) flushSync()
       if (exercises[exIndex] && !isTapType(exercises[exIndex]!.type)) exInput?.focus()
@@ -120,7 +173,10 @@
     if (ex.type === 'spot' && (tap.token === null || !spotTokens(ex.prompt, ex.wrong ?? '')[tap.token]?.wrong)) return
     tap = { ...tap, pick: o, done: true }
     record(ex.type === 'spot' ? `${ex.wrong} → ${o}` : o, o === ex.answer)
+    // Right: on to the next one by itself (a tap meanwhile goes at once).
+    if (o === ex.answer) autoNext = setTimeout(nextItem, 450)
   }
+  let autoNext: ReturnType<typeof setTimeout> | undefined
 
   // spot: a tap on the mistake asks for the replacement; anywhere else is a miss.
   function tapToken(i: number) {
@@ -160,7 +216,11 @@
     else nextItem()
   }
 
-  const commit = (r: Rating) => session.rate(r, exercises && exResults.length ? { exercises: exResults } : {})
+  const commit = (r: Rating) => {
+    // Kept so an undo brings the card back with its verdict.
+    if (item && check) session.typedAnswers[item.card.id] = { answer, check }
+    return session.rate(r, exercises && exResults.length ? { exercises: exResults } : {})
+  }
 
   const intervals = $derived.by(() => {
     if (!item) return null
@@ -172,8 +232,16 @@
   let dx = $state(0)
   let dy = $state(0)
   let axis = $state<Axis | null>(null)
-  let leaving = $state<SwipeDir | null>(null)
   let dragging = $state(false)
+  // Released short of the threshold: settling back over this many ms.
+  let snapping = $state(0)
+  // Grabbed in the lower half: the card pivots around the thumb.
+  let grabbedLow = $state(true)
+  let armed = $state(false)
+  // Where a drag starting mid snap-back continues from.
+  let base = { x: 0, y: 0 }
+  let stepDelay = $state(0)
+  let stageEl: HTMLElement | undefined = $state()
   let stageWidth = $state(390)
   let stageHeight = $state(600)
   let wrap: HTMLElement | undefined = $state()
@@ -203,14 +271,72 @@
     void session.refreshIfStale()
   })
 
+  // A grammar rule or theory card: its handbook page.
+  const isGrammar = (f: { tags: string[] }) => f.tags.includes('Grammar') || f.tags.includes('Grammar theory')
+  function readTheory(f: { id: string; deckId: string }) {
+    navigate(`/handbook/fact:${f.id}?deck=${f.deckId}&from=/`)
+  }
+
+  // A rating button throws the card the way its swipe would.
   function rate(r: Rating) {
-    if (leaving) return
-    if (!commit(r)) return
-    // Render the next card now, still inside the tap, so focusing its answer
-    // field keeps the iOS keyboard up instead of dropping and reopening it.
-    flushSync()
-    if (typed) input?.focus()
-    else if (exercises && !session.revealed) exInput?.focus()
+    if (!session.revealed || !item) return
+    const d = (Object.keys(byDir) as SwipeDir[]).find((k) => byDir[k] === r)!
+    throwCard(d, BUTTON_SPEED, { x: 0, y: 0, rotate: 0 }, r, true)
+  }
+
+  // The card leaves as a static copy (a ghost) flying off the stage while
+  // the rating is recorded at once, so the next card is ready (and Undo
+  // means this card) from the first frame of the throw.
+  function throwCard(d: SwipeDir, v: number, at: { x: number; y: number; rotate: number }, r: Rating, button: boolean) {
+    const el = wrap
+    if (el && stageEl) {
+      const ghost = el.cloneNode(true) as HTMLElement
+      ghost.classList.remove('dragging', 'snapping')
+      ghost.classList.add('ghost')
+      ghost.setAttribute('aria-hidden', 'true')
+      ghost.removeAttribute('role')
+      ghost.inert = true
+      ghost.style.transformOrigin = origin
+      stageEl.appendChild(ghost)
+      el.style.visibility = 'hidden'
+      const start = `translate3d(${at.x}px, ${at.y}px, 0) rotate(${at.rotate}deg) scale(${axis === 'y' ? lift(pull) : 1})`
+      let anim: Animation
+      if (reducedMotion()) {
+        anim = ghost.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 120, fill: 'forwards' })
+        stepDelay = 0
+      } else {
+        const p = plan(d, button ? { x: 0, y: 0, rotate: d === 'right' ? 4.3 : d === 'left' ? -4.3 : 0 } : at, v, { width: stageWidth, height: stageHeight })
+        anim = ghost.animate(
+          [{ transform: start }, { transform: `translate3d(${p.x}px, ${p.y}px, 0) rotate(${p.rotate}deg) scale(${p.scale})` }],
+          { duration: p.ms, easing: THROW_EASE, fill: 'forwards' },
+        )
+        // The next card steps up once the throw is 40% along.
+        stepDelay = Math.round(p.ms * 0.4)
+        if (button) {
+          const flash = document.createElement('div')
+          flash.style.cssText = `position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:var(--${tone[r]});opacity:0`
+          ghost.appendChild(flash)
+          flash.animate([{ opacity: 0 }, { opacity: 0.1, offset: 0.4 }, { opacity: 0 }], { duration: 200, fill: 'forwards' })
+        }
+      }
+      anim.finished.then(() => ghost.remove(), () => ghost.remove())
+    }
+    resetDrag()
+    // Typed cards: the next one renders inside the tap so focusing its field
+    // keeps the iOS keyboard up. Otherwise the commit waits a frame so the
+    // throw's first frames aren't spent on the state work.
+    if (typed) {
+      if (!commit(r)) return restore()
+      flushSync()
+      input?.focus()
+    } else {
+      requestAnimationFrame(() => {
+        if (!commit(r)) restore()
+      })
+    }
+    function restore() {
+      if (el) el.style.visibility = ''
+    }
   }
 
   function reveal() {
@@ -250,31 +376,49 @@
   // Same distance swipe.ts commits at; crossing it ticks once.
   const threshold = $derived(defaultThreshold(axis, stageWidth, stageHeight))
   const pull = $derived(Math.min(1, Math.abs(dist) / threshold))
-  const armed = $derived(dragging && Math.abs(dist) > threshold)
-  let wasArmed = false
-  $effect(() => {
-    if (armed && !wasArmed) haptic.select()
-    wasArmed = armed
-  })
+  const rotation = $derived(axis === 'x' ? tilt(dx, grabbedLow) : 0)
+  const origin = $derived(tiltOrigin(grabbedLow))
+  const transform = $derived(
+    axis === 'y' ? `translate3d(0, ${dy}px, 0) scale(${lift(pull)})` : `translate3d(${dx}px, 0, 0) rotate(${rotation}deg)`,
+  )
 
-  const transform = $derived(axis === 'y' ? `translateY(${dy}px)` : `translateX(${dx}px) rotate(${dx / 36}deg)`)
+  function onSwipeStart(_fx: number, fy: number) {
+    grabbedLow = fy >= 0.5
+    // Caught mid snap-back: continue from where the card is.
+    if (snapping && wrap) {
+      const m = new DOMMatrix(getComputedStyle(wrap).transform)
+      base = { x: m.m41, y: m.m42 }
+    } else base = { x: 0, y: 0 }
+  }
 
-  function onSwipeEnd(d: SwipeDir | null) {
+  function onSwipeMove(x: number, y: number, a: Axis) {
+    dragging = true
+    snapping = 0
+    axis = a
+    dx = base.x + x
+    dy = base.y + y
+    const next = nextArmed(armed, a === 'y' ? dy : dx, defaultThreshold(a, stageWidth, stageHeight))
+    if (next && !armed) haptic.select()
+    armed = next
+  }
+
+  function resetDrag() {
     dragging = false
+    armed = false
+    dx = dy = 0
+    axis = null
+  }
+
+  function onSwipeEnd(d: SwipeDir | null, _x: number, _y: number, v: number) {
     if (!d || !session.revealed) {
+      snapping = snapMs(dist)
+      dragging = false
+      armed = false
       dx = dy = 0
       return
     }
-    leaving = d
-    if (d === 'left' || d === 'right') dx = (d === 'right' ? 1 : -1) * (innerWidth + 80)
-    else dy = (d === 'down' ? 1 : -1) * (innerHeight + 80)
     usedSwipe()
-    setTimeout(() => {
-      leaving = null
-      dx = dy = 0
-      axis = null
-      commit(byDir[d])
-    }, 200)
+    throwCard(d, v, { x: dx, y: dy, rotate: rotation }, byDir[d], false)
   }
 
   function onKey(e: KeyboardEvent) {
@@ -313,13 +457,13 @@
     </div>
     <div class="right">
       <SyncPill />
-      <button class="add" onclick={() => (addOpen = true)} aria-label="Add a card"><Icon name="plus" size={20} stroke={2.2} /></button>
+      <button class="add" onclick={() => openAdd(currentDeck, '/')} aria-label="Add a card"><Icon name="plus" size={20} stroke={2.2} /></button>
     </div>
   </header>
   {#if session.queueDecks.length}
     <div class="deckbar">
       <div class="switch-wrap">
-        <DeckSwitcher options={session.choices.map((d) => ({ id: d.id, name: d.name, n: d.left }))} selected={session.deckId} onselect={(id) => session.selectDeck(id)} />
+        <DeckSwitcher options={session.choices.map((d) => ({ id: d.id, name: d.name, n: d.left, counts: d.counts }))} selected={session.deckId} onselect={(id) => session.selectDeck(id)} />
       </div>
       <button class="filter-btn" class:on={!!session.filter} onclick={() => (filterOpen = true)} aria-label="What to review">
         <Icon name="filter" size={18} stroke={2} />
@@ -342,18 +486,19 @@
       onclose={() => (filterOpen = false)}
     />
   {/if}
-  {#if addOpen}<AddPicker deck={currentDeck} from="/" onclose={() => (addOpen = false)} />{/if}
   <div class="progress" aria-hidden="true"><div style="transform: scaleX({progress})"></div></div>
 
-  <div class="stage" bind:clientWidth={stageWidth} bind:clientHeight={stageHeight}>
+  <div class="stage" bind:this={stageEl} bind:clientWidth={stageWidth} bind:clientHeight={stageHeight}>
     {#if item}
+      <!-- What's left, as card edges under the top one. -->
+      {#each { length: layers } as _, i (i)}<div class="layer l{layers - i}" aria-hidden="true"></div>{/each}
       {#key cardKey}
         <div
           class="card-wrap"
           class:dragging
-          class:leaving
+          class:snapping={!!snapping}
           bind:this={wrap}
-          style="transform: {transform}"
+          style="transform: {transform}; transform-origin: {origin}; --snap: {snapping || 320}ms; --step-delay: {stepDelay}ms"
           role="button"
           tabindex="-1"
           aria-label={session.revealed ? 'Card' : typed || exTyping ? 'Card, type the answer below' : 'Show answer'}
@@ -361,14 +506,10 @@
           onkeydown={() => {}}
           use:swipe={{
             axes: 'xy',
-            enabled: () => session.revealed && !leaving,
+            enabled: () => session.revealed,
             scroller: () => wrap?.querySelector<HTMLElement>('.card .body'),
-            onmove: (x, y, a) => {
-              dragging = true
-              axis = a
-              dx = x
-              dy = y
-            },
+            onstart: onSwipeStart,
+            onmove: onSwipeMove,
             onend: onSwipeEnd,
           }}
         >
@@ -379,6 +520,7 @@
               results={exResults}
               check={exCheck}
               given={exAnswer}
+              {writeGrade}
               {tap}
               revealed={session.revealed}
               onchoose={chooseOption}
@@ -386,9 +528,10 @@
               onbad={badItem}
               onedit={() => navigate(`/fact/${item.fact.id}?from=/`)}
               ondrop={() => void dropCard('fact', item.fact.id, item.fact.front)}
+              onread={() => readTheory(item.fact)}
             />
           {:else if item.kind === 'fact'}
-            <FactCard {item} revealed={session.revealed} onedit={() => navigate(`/fact/${item.fact.id}?from=/`)} ondrop={() => void dropCard('fact', item.fact.id, item.fact.front)} />
+            <FactCard {item} revealed={session.revealed} onedit={() => navigate(`/fact/${item.fact.id}?from=/`)} ondrop={() => void dropCard('fact', item.fact.id, item.fact.front)} onread={isGrammar(item.fact) ? () => readTheory(item.fact) : undefined} />
           {:else}
             <WordCard {item} revealed={session.revealed} typed={answer} {check} {langs} onedit={() => navigate(`/word/${item.word.id}?from=/`)} ondrop={() => void dropCard('word', item.word.id, item.word.term)} />
           {/if}
@@ -399,7 +542,7 @@
               <span class="track"><span></span></span>
             </div>
           {/if}
-          {#if session.revealed && hintsLeft > 0 && !dragging && !leaving}
+          {#if session.revealed && hintsLeft > 0 && !dragging}
             <div class="legend" aria-hidden="true">
               <span><Icon name="arrow" size={13} stroke={2.2} /> Hard</span>
               <span class="to-r"><Icon name="arrow" size={13} stroke={2.2} /> Good</span>
@@ -447,7 +590,10 @@
         <!-- Tap items are answered on the card; here: undo before, Next after. -->
         <div class="pre">
           {#if tap.done}
-            <button class="show next" onclick={nextItem}>{exIndex + 1 < (exercises?.length ?? 0) ? 'Next' : 'Done'}</button>
+            {#if !exResults[exIndex]?.correct}
+              <button class="soft right-btn" onclick={overrule}>I was right</button>
+            {/if}
+            <button class="show next" onclick={nextItem}>{!exResults[exIndex]?.correct || exResults[exIndex]?.overridden ? 'Continue' : exIndex + 1 < (exercises?.length ?? 0) ? 'Next' : 'Done'}</button>
           {:else}
             <button class="undo" onclick={() => session.undo()} disabled={!session.canUndo} aria-label="Undo last rating">
               <Icon name="undo" size={22} />
@@ -474,7 +620,7 @@
             bind:value={exAnswer}
             maxlength="500"
             onkeydown={onExerciseKey}
-            placeholder={exercises?.[exIndex]?.type === 'fix' ? 'Type the corrected sentence' : 'Type the answer'}
+            placeholder={exercises?.[exIndex]?.type === 'write' ? 'Write your sentence' : exercises?.[exIndex]?.type === 'fix' ? 'Type the corrected sentence' : 'Type the answer'}
             lang="en"
             autocomplete="off"
             autocapitalize="off"
@@ -486,11 +632,11 @@
             autofocus
           />
           {#if !exCheck}
-            <button type="button" class="check" onclick={checkItem} onmousedown={(e) => e.preventDefault()}>{exAnswer.trim() ? 'Check' : "Don't know"}</button>
+            <button type="button" class="check" onclick={checkItem} onmousedown={(e) => e.preventDefault()} disabled={grading}>{grading ? 'Checking…' : exAnswer.trim() ? 'Check' : "Don't know"}</button>
           {/if}
         </form>
       {:else if session.revealed}
-        <RatingBar state={item.card.schedule} onrate={rate} {lean} {suggested} keepFocus={typed} {intervals} />
+        <RatingBar state={item.card.schedule} onrate={rate} lean={lean ?? (exercises ? suggested : null)} {suggested} keepFocus={typed} {intervals} />
       {:else if !typed}
         <div class="pre">
           <button class="undo" onclick={() => session.undo()} disabled={!session.canUndo} aria-label="Undo last rating">
@@ -587,7 +733,7 @@
   .filter-btn {
     flex: none;
     width: 40px;
-    height: 36px;
+    height: 40px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -645,20 +791,62 @@
   .card-wrap {
     position: absolute;
     inset: 0;
+    z-index: 1;
     border-radius: var(--radius);
     touch-action: pan-y;
-    /* Let go: settles back like a drawer. */
-    transition: transform var(--t-slow) var(--ease-drawer);
-    animation: rise var(--t-base) var(--ease-out);
+    /* Let go short of the threshold: settles back like a drawer. */
+    transition: transform var(--snap, 320ms) var(--ease-drawer);
+    /* The next card steps up from the first stack edge, once the throw
+       above it is 40% along. */
+    animation: step-up var(--t-base) var(--ease-out) var(--step-delay, 0ms) backwards;
     -webkit-user-select: text;
     user-select: text;
     cursor: default;
   }
   .card-wrap.dragging {
     transition: none;
+    will-change: transform;
   }
-  .card-wrap.leaving {
-    transition: transform var(--t-base) var(--ease-out);
+  /* The thrown card's copy, above the next one. */
+  .stage :global(.ghost) {
+    z-index: 2;
+    pointer-events: none;
+    animation: none;
+    transition: none;
+    will-change: transform;
+  }
+  @keyframes step-up {
+    from {
+      transform: translate3d(0, 5px, 0) scale(0.97);
+    }
+  }
+  /* Card edges under the top card: card-coloured, a hairline, no shadow. */
+  .layer {
+    position: absolute;
+    inset: 0;
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: inset 0 0 0 0.5px var(--hairline);
+    pointer-events: none;
+  }
+  .layer.l1 {
+    transform: translate3d(0, 5px, 0) scale(0.97);
+  }
+  .layer.l2 {
+    transform: translate3d(0, 10px, 0) scale(0.94);
+    animation: fade-in var(--t-fast) ease;
+  }
+  .wash,
+  .swipe-hint {
+    transition: opacity 120ms ease;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .card-wrap {
+      animation: fade-in 150ms ease;
+    }
+    .card-wrap.snapping {
+      transition: transform 120ms linear;
+    }
   }
 
   /* Swipe feedback: a wash of the rating's colour from the edge the card
@@ -828,9 +1016,9 @@
     flex: 1;
     min-width: 0;
     height: 66px;
-    padding: 0 16px;
+    padding: 0 14px;
     border-radius: 18px;
-    font-size: 19px;
+    font-size: 18px;
     background: var(--surface);
     border-color: transparent;
     box-shadow: var(--shadow);
@@ -842,8 +1030,8 @@
   .check {
     flex: none;
     height: 66px;
-    min-width: 88px;
-    padding: 0 16px;
+    min-width: 72px;
+    padding: 0 12px;
     border-radius: 18px;
     font-weight: 600;
     font-size: 16px;
@@ -892,7 +1080,7 @@
     transform: scale(0.97);
   }
   .undo.small {
-    width: 52px;
+    width: 46px;
   }
   .pre {
     display: flex;

@@ -54,6 +54,8 @@
       showToast(n ? `Deleted “${d.name}” and ${n} ${n === 1 ? 'card' : 'cards'}` : `Deleted “${d.name}”`)
       status.factsVersion++
       status.wordsVersion++
+      // A pack whose cards went with the deck can be added again.
+      void api.packs().then((p) => (packs = p)).catch(() => {})
       void getDecks(true).catch(() => {})
       void session.refresh()
     } catch (e) {
@@ -175,15 +177,19 @@
   const code = (l: string) => l.toUpperCase()
 
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
+  // The saved value before a burst of taps: a refusal goes back to it.
+  const saved = new Map<string, number>()
   function setNew(d: DeckWithCounts, delta: number) {
     const v = Math.max(0, Math.min(999, d.newPerDay + delta))
     if (v === d.newPerDay) return
-    const before = d.newPerDay
+    if (!saved.has(d.id)) saved.set(d.id, d.newPerDay)
+    const before = saved.get(d.id)!
     d.newPerDay = v
     clearTimeout(timers.get(d.id))
     timers.set(
       d.id,
       setTimeout(async () => {
+        saved.delete(d.id)
         try {
           await api.patchDeck(d.id, { newPerDay: v })
           void session.refresh()
@@ -330,7 +336,7 @@
       const r = await api.optimizeFsrs()
       if (r.reviews !== null) haveReviews = r.reviews
       void loadMe()
-      showToast(r.adopted ? `Personal parameters trained on ${r.reviews ?? 'your'} reviews` : `Kept the current parameters${r.reason ? `: ${r.reason}` : ''}`)
+      showToast(r.adopted ? `Personal parameters trained on ${r.reviews?.toLocaleString('en-US') ?? 'your'} reviews` : `Kept the current parameters${r.reason ? `: ${r.reason}` : ''}`)
     } catch (e) {
       if (e instanceof HttpError && e.status === 422) {
         haveReviews = typeof e.data.reviews === 'number' ? e.data.reviews : haveReviews
@@ -691,8 +697,8 @@
           <input
             class="range"
             type="range"
-            min="0.8"
-            max="0.95"
+            min="0.75"
+            max="0.97"
             step="0.01"
             bind:value={retention}
             onchange={() => setRetention(Number(retention))}
@@ -829,7 +835,7 @@
     overflow-wrap: anywhere;
   }
   .btn.small {
-    min-height: 36px;
+    min-height: 40px;
     padding: 0 12px;
     font-size: 15px;
     flex: none;
@@ -839,7 +845,7 @@
     gap: 8px;
   }
   .deck-actions :global(.btn.small) {
-    min-height: 34px;
+    min-height: 40px;
     padding: 0 12px;
     font-size: 14px;
     font-weight: 500;
@@ -861,7 +867,7 @@
   }
   .pack .btn.small {
     flex: none;
-    min-height: 34px;
+    min-height: 40px;
     padding: 0 14px;
     font-size: 14px;
   }
@@ -872,7 +878,7 @@
     gap: 4px;
     font-size: 14px;
     font-weight: 500;
-    color: var(--good);
+    color: var(--accent);
   }
   .name {
     display: block;
@@ -914,7 +920,7 @@
   }
   .stepper button {
     width: 44px;
-    height: 38px;
+    height: 40px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1080,7 +1086,7 @@
   }
   .copy {
     margin-top: 10px;
-    min-height: 38px;
+    min-height: 40px;
     font-size: 14px;
   }
   .lead {
@@ -1143,7 +1149,7 @@
     padding: 3px;
   }
   .seg button {
-    height: 38px;
+    height: 40px;
     border-radius: 9px;
     font-size: 15px;
     text-transform: capitalize;
@@ -1183,7 +1189,7 @@
     transition: transform 0.2s;
   }
   .switch:checked {
-    background: var(--good);
+    background: var(--accent);
   }
   .switch:checked::after {
     transform: translateX(20px);

@@ -316,40 +316,41 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
 
   server.registerTool('list_packs', {
     title: 'List content packs',
-    description: 'Ready-made sets of cards the app ships (e.g. "Irregular verbs"): id, name, description, count of cards, whether the user has added it (added, deckId) and how many of its cards they still lack (missing). Suggest one when it fits what the user wants to learn; add it only when they agree.',
+    description: 'Ready-made sets of cards the app ships (e.g. "Irregular verbs"): id, name, description, count of cards, whether the user has added it (added, deckId) and how many of its cards they still lack (missing; for the grammar handbook also missingExercises). Suggest one when it fits what the user wants to learn; add it only when they agree.',
     annotations: { readOnlyHint: true },
   }, guard(() => listPacks(db, uid)))
 
   server.registerTool('add_pack', {
     title: 'Add content pack',
-    description: 'Adds a content pack\'s cards to a deck (default: irregular verbs into the English deck, other packs into a deck named after the pack), each tagged with the pack\'s name; they are active at once, introduced in the pack\'s order (most useful first). Running it again adds only cards the user lacks. Only when the user asked for it.',
+    description: 'Adds a content pack\'s cards to a deck (default: irregular verbs and the grammar handbook into the English deck, other packs into a deck named after the pack), each tagged with the pack\'s name (the grammar handbook: Grammar / Grammar theory + the topic\'s group); they are active at once, introduced in the pack\'s order (most useful first). The grammar handbook adds per topic a rule (title → cheat sheet) with its exercise pool, and the theory cards; `exercises` = items added to rules. Running it again adds only what the user lacks, including new exercises of rules already added. Only when the user asked for it.',
     inputSchema: { id: z.string().describe('Pack id from list_packs.'), deck: z.string().optional().describe('Deck name or id to add it to.') },
   }, guard(({ id, deck }) => {
     const r = addPack(db, uid, id, ctx.now(), { deckId: deck })
-    return { deck: { id: r.deck.id, name: r.deck.name }, added: r.added, alreadyAdded: r.alreadyAdded, duplicates: r.duplicates }
+    return { deck: { id: r.deck.id, name: r.deck.name }, added: r.added, alreadyAdded: r.alreadyAdded, duplicates: r.duplicates, exercises: r.exercises }
   }))
 
-  const EXERCISE_RULES = 'Items are answered by tapping on a phone, so write the tap types. choose: {type, text with exactly one "___", options (2–4), answer (one of the options)} — e.g. text "The backup runs ___ 3 a.m.", options ["at", "in", "on"], answer "at"; "—" as an option means nothing there (the zero article). spot: {type, text: a natural sentence with exactly one mistake, wrong: the wrong whole word(s) as they appear (once) in the text, options (1–4 replacements), answer (one of them)} — e.g. "His shoes gets wet every time it rains.", wrong "gets", options ["get", "getting", "got"], answer "get"; "—" as the answer means "delete it" ("See you on next week."). Each item practises the fact\'s rule (read it with search_facts first). Take the distractors from the rule\'s own contrast set (at / in / on; a / the / —; is / are), make exactly one option grammatical in that sentence, and give no hint that translates or names the answer. `explain`: one short line on why, in Russian. Vary contexts, subjects and the two types. Legacy typed types are still accepted but not wanted: gap (text with "___" and a hint in parentheses, typed answer), fix (answer = the corrected sentence), rewrite ("sentence → cue ___"), each with optional `accepted` variants.'
+  const EXERCISE_RULES = 'Items are answered by tapping on a phone, so write the tap types. choose: {type, text with exactly one "___", options (2–4), answer (one of the options)} — e.g. text "The backup runs ___ 3 a.m.", options ["at", "in", "on"], answer "at"; "—" as an option means nothing there (the zero article). spot: {type, text: a natural sentence with exactly one mistake, wrong: the wrong whole word(s) as they appear (once) in the text, options (1–4 replacements), answer (one of them)} — e.g. "His shoes gets wet every time it rains.", wrong "gets", options ["get", "getting", "got"], answer "get"; "—" as the answer means "delete it" ("See you on next week."). Each item practises the fact\'s rule (read it with search_facts first). Take the distractors from the rule\'s own contrast set (at / in / on; a / the / —; is / are), make exactly one option grammatical in that sentence, and give no hint that translates or names the answer. `explain`: one short line on why, in Russian. Vary contexts, subjects and the two types. Besides those, write: {type: "write", text: a task in Russian asking the learner to write their own sentence with the rule, e.g. "Напиши предложение о своём опыте с present perfect (ever/never)", rubric (optional, ≤ 500): what a right answer must do, for the grader — e.g. "Uses have/has + past participle with ever or never; no finished-time word"} — no answer or options. The server grades the sentence with Claude; at most one write item per review, and only where grading is available, so a rule still needs 3 tap items. One or two write items per rule are plenty. Legacy typed types are still accepted but not wanted: gap (text with "___" and a hint in parentheses, typed answer), fix (answer = the corrected sentence), rewrite ("sentence → cue ___"), each with optional `accepted` variants.'
 
   server.registerTool('list_exercises', {
     title: 'List exercises',
-    description: 'The exercise pool of a fact (a grammar rule): every item with its type, prompt, answer, accepted variants, explain, status (active / flagged: taken out of the pool by the user as a bad item), needsReview (the user said "I was right" on it), and how it went: shownCount, correctCount, wrongCount, lastShownAt. A fact with at least 3 active items is reviewed through 3 of them at a time. Use it to see what is there before add_exercises and to spot items that need fixing.',
+    description: 'The exercise pool of a fact (a grammar rule): every item with its type, prompt (the task for write items, with their rubric), answer, accepted variants, explain, status (active / flagged: taken out of the pool by the user as a bad item), needsReview (the user said "I was right" on it), and how it went: shownCount, correctCount, wrongCount, lastShownAt. A fact with at least 3 active items other than write is reviewed through 3 of them at a time (one may be a write item where grading is available). Use it to see what is there before add_exercises and to spot items that need fixing.',
     inputSchema: { factId: z.string().describe('Fact id, e.g. ft_abc123.') },
     annotations: { readOnlyHint: true },
   }, guard(({ factId }) => listExercises(db, uid, factId)))
 
   server.registerTool('add_exercises', {
     title: 'Add exercises',
-    description: `Adds up to 50 exercise items to a fact's pool (the fact becomes a rule reviewed through its exercises once it has 3 active items). They are active at once. An item whose prompt (normalised) is already in the pool is not added: it is reported under duplicates with the existing id and status. Invalid items (a choose text without exactly one "___" or with the answer not among 2–4 options; a spot whose wrong word(s) don't occur exactly once as whole words, or whose options repeat them; legacy shape errors) are reported under errors. Once a rule has 3 active tap items, reviews use only tap items. ${EXERCISE_RULES}`,
+    description: `Adds up to 50 exercise items to a fact's pool (the fact becomes a rule reviewed through its exercises once it has 3 active items other than write). They are active at once. An item whose prompt (normalised) is already in the pool is not added: it is reported under duplicates with the existing id and status. Invalid items (a choose text without exactly one "___" or with the answer not among 2–4 options; a spot whose wrong word(s) don't occur exactly once as whole words, or whose options repeat them; legacy shape errors) are reported under errors. Once a rule has 3 active tap items, reviews use only tap items. ${EXERCISE_RULES}`,
     inputSchema: {
       factId: z.string(),
       items: z.array(z.object({
-        type: z.enum(['choose', 'spot', 'gap', 'fix', 'rewrite']).describe('choose or spot; gap / fix / rewrite are legacy typed items.'),
-        text: z.string().min(1).max(500).optional().describe('The sentence.'),
+        type: z.enum(['choose', 'spot', 'write', 'gap', 'fix', 'rewrite']).describe('choose or spot; write = the learner writes a sentence (graded by Claude); gap / fix / rewrite are legacy typed items.'),
+        text: z.string().min(1).max(500).optional().describe('The sentence; for write, the task in Russian.'),
         prompt: z.string().min(1).max(500).optional().describe('Same as text (legacy name).'),
         options: z.array(z.string().min(1).max(100)).max(4).optional().describe('choose: 2–4 options; spot: 1–4 replacements. "—" = nothing.'),
         wrong: z.string().max(200).optional().describe('spot: the wrong word(s), exactly as they appear once in the text.'),
-        answer: z.string().min(1).max(300),
+        answer: z.string().min(1).max(300).optional().describe('Every type but write: the right answer.'),
+        rubric: z.string().max(500).optional().describe('write only: what a right answer must do, for the grader.'),
         accepted: z.array(z.string()).max(10).optional().describe('Legacy typed types only: other answers that are just as right.'),
         explain: z.string().max(500).optional(),
       })).min(1).max(50),

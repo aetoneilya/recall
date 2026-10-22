@@ -1,0 +1,21 @@
+{
+  "items": [
+    {
+      "id": "past-simple-ed",
+      "group": "Past tenses",
+      "title": "Past simple -ed (invented test topic)",
+      "level": "A2",
+      "summary": "Regular verbs: **verb + -ed** for a finished past action.",
+      "cards": [
+        { "front": "Test card: past of a regular verb?", "back": "**verb + -ed**: *walked*." },
+        { "front": "Test card: did in questions?", "back": "**did** + bare verb: *Did you walk?*" },
+        { "front": "Test card: spelling of stop + -ed?", "back": "**stopped** — the consonant doubles." }
+      ],
+      "exercises": [
+        { "type": "choose", "text": "We ___ the film yesterday.", "options": ["watched", "watch"], "answer": "watched", "explain": "yesterday — past simple" },
+        { "type": "choose", "text": "Did you ___ the door?", "options": ["lock", "locked"], "answer": "lock", "explain": "после did — без -ed" },
+        { "type": "spot", "text": "She cleaned her room and cook dinner.", "wrong": "cook", "options": ["cooked", "cooks"], "answer": "cooked", "explain": "оба действия в прошлом" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+[
+  {
+    "id": "third-person-s",
+    "group": "Present tenses",
+    "title": "Third person -s (invented test topic)",
+    "level": "A2",
+    "summary": "**he / she / it + verb-s** in the present simple.\n\n- *She works.* — not *She work.*",
+    "cards": [
+      { "front": "Test card: when does a verb take -s?", "back": "With **he / she / it** in the present simple." },
+      { "front": "Test card: -s after a modal?", "back": "**No**: *She can swim.*" },
+      { "front": "Test card: do / does in questions?", "back": "**does** + bare verb: *Does he swim?*" }
+    ],
+    "exercises": [
+      { "type": "choose", "text": "My cat ___ fish.", "options": ["likes", "like"], "answer": "likes", "explain": "cat — третье лицо" },
+      { "type": "choose", "text": "They ___ early.", "options": ["get up", "gets up"], "answer": "get up", "explain": "they — без -s" },
+      { "type": "spot", "text": "The bus stop near the park.", "wrong": "stop", "options": ["stops", "stopped"], "answer": "stops", "explain": "bus — он, нужен -s" },
+      { "type": "choose", "text": "___ she drive?", "options": ["Does", "Do"], "answer": "Does", "explain": "she — does" }
+    ],
+    "write": [
+      { "prompt": "Напиши тестовое предложение о соседе в present simple.", "rubric": "Subject he/she + verb with -s." }
+    ]
+  }
+]

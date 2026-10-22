@@ -27,6 +27,8 @@
   } = $props()
 
   const labels: Record<Rating, string> = { 1: 'Again', 2: 'Hard', 3: 'Good', 4: 'Easy' }
+  // The swipe each button stands for, so the mapping is learnt for good.
+  const glyph: Record<Rating, string> = { 1: '↓', 2: '←', 3: '→', 4: '↑' }
   const cls: Record<Rating, string> = { 1: 'again', 2: 'hard', 3: 'good', 4: 'easy' }
   const ratings: Rating[] = [1, 2, 3, 4]
 
@@ -50,7 +52,7 @@
       aria-label="{labels[r]}, {intervals[r]}{suggested === r ? ', suggested' : ''}"
       aria-keyshortcuts={String(r)}
     >
-      <span class="name">{labels[r]}</span>
+      <span class="name">{#if r === 3}{labels[r]}<i aria-hidden="true">{glyph[r]}</i>{:else}<i aria-hidden="true">{glyph[r]}</i>{labels[r]}{/if}</span>
       <span class="ivl">{intervals[r]}</span>
     </button>
   {/each}
@@ -120,5 +122,12 @@
   .easy {
     --c: var(--easy);
     --cb: var(--easy-bg);
+  }
+  .name i {
+    font-style: normal;
+    font-size: 11px;
+    font-weight: 500;
+    opacity: 0.55;
+    margin: 0 3px;
   }
 </style>

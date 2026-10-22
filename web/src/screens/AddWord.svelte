@@ -1,6 +1,7 @@
 <script lang="ts">
   import { cleanWord, dedupeKey, normalizeTerm, posLabel, type Word } from '@recall/core'
   import { onMount, tick, untrack } from 'svelte'
+  import AddTypeSwitch from '../components/AddTypeSwitch.svelte'
   import Header from '../components/Header.svelte'
   import Icon from '../components/Icon.svelte'
   import WordFields from '../components/WordFields.svelte'
@@ -204,7 +205,8 @@
   // "other"): not a duplicate for the server, but most likely the same word.
   const similar = $derived.by(() => {
     const t = normalizeTerm(term)
-    if (!t || (duplicate && dupActive)) return null
+    // Not while autofill is still to answer: it may well say "already there".
+    if (!t || (duplicate && dupActive) || phase !== 'ready' || filledFor !== key(term, context)) return null
     return words.all?.find((w) => w.status !== 'rejected' && normalizeTerm(w.term) === t) ?? null
   })
   const existing = $derived<Word | null>(duplicate && dupActive ? duplicate : similar)
@@ -273,7 +275,7 @@
     const id = wordOutbox.add(input)
     rememberTags(input.tags)
     added = [{ id: null, term: input.term, translation: input.translations[0] ?? '' }, ...added].slice(0, 5)
-    showToast(`Saved “${input.term}” — adds when you're back online`, { action: { label: 'Undo', run: () => void wordOutbox.remove(id) } })
+    showToast(`Saved “${input.term}” — adds when you're back online`, { action: { label: 'Undo', run: () => void (wordOutbox.remove(id) || showToast(`“${input.term}” was already on its way — delete it from Cards`)) } })
     if (clear) reset()
   }
 
@@ -369,7 +371,8 @@
 
 <div class="add-screen">
   <div class="screen scroll">
-    <Header title="Add word" />
+    <Header title="Add" />
+    <AddTypeSwitch current="word" deck={deckId ? session.decks[deckId] : undefined} />
 
     <div class="term-box" class:busy={phase === 'loading'}>
       <input
@@ -494,7 +497,7 @@
     position: absolute;
     right: 8px;
     width: 36px;
-    height: 36px;
+    height: 40px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -568,7 +571,7 @@
   }
   .skel-chips .skel {
     width: 84px;
-    height: 34px;
+    height: 40px;
     border-radius: 10px;
   }
   .alts {
@@ -585,7 +588,7 @@
     margin: 0 4px 0 4px;
   }
   .alt {
-    min-height: 34px;
+    min-height: 40px;
     padding: 0 12px;
     border-radius: 17px;
     font-size: 15px;

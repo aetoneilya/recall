@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { checkExercise, cleanExercise, correctedParts, exerciseKey, exerciseRating, exerciseReadings, normalizeExercise, spotSpan, spotTokens } from './exercises.ts'
+import { checkExercise, cleanExercise, correctedParts, exerciseKey, exerciseRating, exerciseReadings, isTapType, isWriteType, normalizeExercise, spotSpan, spotTokens } from './exercises.ts'
 
 describe('exercise grading', () => {
   const item = (answer: string, accepted: string[] = []) => ({ answer, accepted })
@@ -35,12 +35,18 @@ describe('exercise grading', () => {
     expect(exerciseRating([{ correct: false, bad: true }, { correct: false }, { correct: true }])).toBe(2)
     expect(exerciseRating([{ correct: false, bad: true }])).toBe(3)
   })
+
+  it('rates reviews of two or four items the same way', () => {
+    const r = (...c: boolean[]) => exerciseRating(c.map((correct) => ({ correct })))
+    expect([r(true, true), r(true, false), r(false, false)]).toEqual([3, 2, 1])
+    expect([r(true, true, true, true), r(true, false, true, true), r(true, false, false, true)]).toEqual([3, 2, 1])
+  })
 })
 
 describe('exercise items', () => {
   it('validates the shape of each type', () => {
     expect(cleanExercise({ type: 'gap', prompt: ' She  ___ here. (live) ', answer: ' lives ', accepted: ['lives', 'resides', ''] }))
-      .toEqual({ item: { type: 'gap', prompt: 'She ___ here. (live)', answer: 'lives', accepted: ['resides'], explain: null, options: [], wrong: null } })
+      .toEqual({ item: { type: 'gap', prompt: 'She ___ here. (live)', answer: 'lives', accepted: ['resides'], explain: null, options: [], wrong: null, rubric: null } })
     expect(cleanExercise({ type: 'gap', prompt: 'No gap here', answer: 'x' })).toEqual({ error: 'a gap prompt needs exactly one ___' })
     expect(cleanExercise({ type: 'rewrite', prompt: 'He left. → He has ___', answer: 'left' })).toMatchObject({ item: { type: 'rewrite' } })
     expect(cleanExercise({ type: 'rewrite', prompt: 'He left. He has ___', answer: 'left' })).toMatchObject({ error: expect.stringMatching(/rewrite/) })
@@ -55,7 +61,7 @@ describe('tap exercises', () => {
   const spot = (over: object = {}) => ({ type: 'spot' as const, text: 'His shoes gets wet every time it rains.', wrong: 'gets', options: ['get', 'getting', 'got'], answer: 'get', explain: 'shoes — мн. ч.', ...over })
 
   it('validates choose', () => {
-    expect(cleanExercise(choose())).toEqual({ item: { type: 'choose', prompt: 'The backup runs ___ 3 a.m.', answer: 'at', accepted: [], explain: 'at + clock time', options: ['at', 'in', 'on'], wrong: null } })
+    expect(cleanExercise(choose())).toEqual({ item: { type: 'choose', prompt: 'The backup runs ___ 3 a.m.', answer: 'at', accepted: [], explain: 'at + clock time', options: ['at', 'in', 'on'], wrong: null, rubric: null } })
     expect(cleanExercise(choose({ text: 'No gap at 3 a.m.' }))).toEqual({ error: 'a choose text needs exactly one ___' })
     expect(cleanExercise(choose({ options: ['at'] }))).toEqual({ error: 'choose needs 2–4 options' })
     expect(cleanExercise(choose({ options: ['at', 'in', 'on', 'by', 'for'] }))).toEqual({ error: 'choose needs 2–4 options' })
@@ -92,5 +98,23 @@ describe('tap exercises', () => {
 
   it('keeps tap and typed keys apart', () => {
     expect(exerciseKey('She ___ here.', 'choose')).toBe(`tap:${exerciseKey('She ___ here.')}`)
+  })
+})
+
+describe('write exercises', () => {
+  it('keeps a task and a rubric, nothing to check against', () => {
+    expect(cleanExercise({ type: 'write', prompt: '  Напиши предложение  о погоде. ', rubric: ' Use the past simple. ', answer: 'ignored', options: ['x'] }))
+      .toEqual({ item: { type: 'write', prompt: 'Напиши предложение о погоде.', answer: '', accepted: [], explain: null, options: [], wrong: null, rubric: 'Use the past simple.' } })
+    expect(cleanExercise({ type: 'write', text: 'Напиши вопрос.' })).toMatchObject({ item: { prompt: 'Напиши вопрос.', rubric: null } })
+    expect(cleanExercise({ type: 'write', prompt: ' ' })).toEqual({ error: 'the task is empty' })
+    expect(cleanExercise({ type: 'write', prompt: 'x'.repeat(501) })).toMatchObject({ error: expect.stringMatching(/500/) })
+    expect(cleanExercise({ type: 'write', prompt: 'x', rubric: 'y'.repeat(501) })).toMatchObject({ error: expect.stringMatching(/rubric/) })
+  })
+
+  it('is its own family', () => {
+    expect(isWriteType('write')).toBe(true)
+    expect(isTapType('write')).toBe(false)
+    expect(exerciseKey('Напиши  вопрос.', 'write')).toBe(`write:${exerciseKey('напиши вопрос')}`)
+    expect(exerciseKey('x', 'write')).not.toBe(exerciseKey('x', 'choose'))
   })
 })

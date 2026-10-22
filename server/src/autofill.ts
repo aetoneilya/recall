@@ -133,6 +133,8 @@ export interface StructuredCall {
   system: string
   content: string | BetaContentBlockParam[]
   schema: Record<string, unknown>
+  // The 422 message when Claude declines; default autofill's.
+  refusal?: string
 }
 
 // One structured-output call on the user's daily budget: 503 without a
@@ -176,7 +178,7 @@ export async function structuredCall(ctx: AppContext, user: User, call: Structur
   console.log(`${call.label} user=${user.id} ${call.detail} model=${msg.model} stop=${msg.stop_reason} in=${u.input_tokens} out=${u.output_tokens}`)
 
   if (msg.stop_reason === 'refusal') {
-    throw new HttpError(422, 'Claude declined to fill in this term', { category: msg.stop_details?.category ?? null })
+    throw new HttpError(422, call.refusal ?? 'Claude declined to fill in this term', { category: msg.stop_details?.category ?? null })
   }
   if (msg.stop_reason === 'max_tokens') throw new HttpError(502, 'autofill answer was cut off, try again')
   const text = msg.content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('')

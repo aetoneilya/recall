@@ -32,6 +32,8 @@ export function parentOf(r: Route): string | null {
   if (!a) return null
   if (a === 'word' || a === 'add') return r.query.get('from') ?? (a === 'add' ? '/' : '/words')
   if (a === 'fact') return r.query.get('from') ?? '/words'
+  if (a === 'practice') return r.query.get('from') ?? '/'
+  if (a === 'handbook') return b ? `/handbook?deck=${r.query.get('deck') ?? ''}` : r.query.get('from') ?? '/words'
   if (a === 'test') return '/progress'
   if (b) return `/${a}`
   return null

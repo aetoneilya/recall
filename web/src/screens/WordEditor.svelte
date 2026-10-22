@@ -346,7 +346,7 @@
     background: var(--easy);
   }
   .btn.small {
-    min-height: 36px;
+    min-height: 40px;
     padding: 0 12px;
     font-size: 14px;
     flex: none;

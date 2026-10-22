@@ -43,6 +43,8 @@ export interface Me {
   botUsername: string | null
   // Newer servers only.
   fsrs?: FsrsParams
+  // Written exercises can be graded here (Claude is configured).
+  grading?: boolean
   weeklyReport?: boolean
   // 0 = Sunday.
   weeklyReportDay?: number
@@ -107,6 +109,8 @@ export type TypeAnswer = 'off' | 'reverse' | 'both'
 
 export interface DeckSettings extends Deck {
   typeAnswer: TypeAnswer
+  // New cards allowed today on top of newPerDay ("+5 new"); 0 on older servers.
+  extraNewToday?: number
 }
 
 export interface DeckCounts {
@@ -201,6 +205,8 @@ export interface FactItem extends Fact {
   card: CardSummary | null
   // A rule with an exercise pool.
   exercises?: { active: number; flagged: number; needsReview: number }
+  // From the grammar handbook pack: its topic, as the rule or a theory card.
+  handbook?: { topic: string; role: 'rule' | 'card' }
 }
 
 // One item of a rule's exercise pool, with how it has gone.
@@ -368,4 +374,22 @@ export interface TestSummary {
   completedAt: string | null
   items: number
   result: TestResult | null
+}
+
+// The grammar handbook of a deck: the pack's topics there, and the owner's
+// own rules (tagged Grammar, not from the pack).
+export interface HandbookTopic {
+  id: string
+  group: string
+  title: string
+  level: string
+  summary: string
+  ruleFactId: string | null
+  cardFactIds: string[]
+  exercises: number
+}
+
+export interface Handbook {
+  topics: HandbookTopic[]
+  mine: { factId: string; title: string; rule: string; exercises: number }[]
 }

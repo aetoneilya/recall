@@ -1,7 +1,7 @@
 <script lang="ts">
   import { CEFR_LEVELS, PARTS_OF_SPEECH, posLabel, type CardType, type Direction } from '@recall/core'
   import { onMount } from 'svelte'
-  import AddPicker from '../components/AddPicker.svelte'
+  import { openAdd } from '../lib/add.ts'
   import DeckSwitcher from '../components/DeckSwitcher.svelte'
   import Icon from '../components/Icon.svelte'
   import { status } from '../lib/app.svelte.ts'
@@ -69,6 +69,7 @@
     if (f.tag && !contents.tags.some((t) => t.tag === f.tag)) f.tag = ''
     if (f.type && !presentTypes.includes(f.type)) f.type = ''
   })
+  const hasGrammar = $derived(contents.types.rule > 0 || contents.tags.some((t) => t.tag === 'Grammar' || t.tag === 'Grammar theory'))
   const filtered = $derived(!!(f.status || f.pos || f.cefr || f.state || f.tag || f.type))
   const wordsOnly = $derived(f.type === 'word' || (presentTypes.length === 1 && presentTypes[0] === 'word'))
 
@@ -98,7 +99,6 @@
     f.state = ''
   }
 
-  let addOpen = $state(false)
   const from = encodeURIComponent('/words')
   const openWord = (id: string) => navigate(`/word/${id}?from=${from}`)
   const openFact = (id: string) => navigate(`/fact/${id}?from=${from}`)
@@ -124,6 +124,14 @@
           <button role="radio" aria-checked={f.type === t} class:on={f.type === t} onclick={() => (f.type = t)}>{TYPE_NAMES[t]} <b>{contents.types[t]}</b></button>
         {/each}
       </div>
+    {/if}
+
+    {#if hasGrammar}
+      <button class="handbook" onclick={() => navigate(`/handbook?deck=${deckId}&from=${from}`)}>
+        <Icon name="words" size={18} />
+        <span class="grow">Grammar handbook<span class="sub">The theory behind the rules</span></span>
+        <Icon name="chevron" size={16} />
+      </button>
     {/if}
 
     <div class="filters" role="group" aria-label="Filters">
@@ -196,7 +204,7 @@
         {:else}
           <p><strong>No cards in {deck?.name ?? 'this deck'} yet</strong>Add words you meet, questions to remember, or grammar rules to practise.</p>
         {/if}
-        <button class="btn primary" onclick={() => (addOpen = true)}><Icon name="plus" size={18} /> Add a card</button>
+        <button class="btn primary" onclick={() => openAdd(deck, '/words', f.q.trim() ? { term: f.q.trim() } : {})}><Icon name="plus" size={18} /> {f.q.trim() ? `Add “${f.q.trim()}”` : 'Add a card'}</button>
       </div>
     {:else}
       <div class="group">
@@ -242,8 +250,7 @@
     {/if}
   </div>
 
-  <button class="fab" onclick={() => (addOpen = true)} aria-label="Add a card"><Icon name="plus" size={26} stroke={2.2} /></button>
-  {#if addOpen}<AddPicker {deck} from="/words" onclose={() => (addOpen = false)} />{/if}
+  <button class="fab" onclick={() => openAdd(deck, '/words')} aria-label="Add a card"><Icon name="plus" size={26} stroke={2.2} /></button>
 </div>
 
 <style>
@@ -299,7 +306,7 @@
     flex: none;
     display: inline-flex;
     align-items: center;
-    height: 32px;
+    height: 40px;
     padding: 0 26px 0 12px;
     border-radius: 16px;
     background: var(--surface);
@@ -530,5 +537,38 @@
   }
   .fact .dot {
     flex: none;
+  }
+  .handbook {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-height: 52px;
+    padding: 8px 14px;
+    margin: 0 0 10px;
+    border-radius: 14px;
+    text-align: left;
+    color: var(--accent);
+    background: var(--surface);
+  }
+  .handbook .grow {
+    flex: 1;
+    color: var(--text);
+    font-weight: 600;
+  }
+  .handbook .sub {
+    display: block;
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--muted);
+  }
+  /* The pill keeps its size; the tap area is 44px tall. */
+  .types button {
+    position: relative;
+  }
+  .types button::after {
+    content: '';
+    position: absolute;
+    inset: -6px -2px;
   }
 </style>

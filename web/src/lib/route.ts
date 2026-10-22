@@ -12,6 +12,15 @@ export interface Route {
   tab: Tab
 }
 
+// A malformed escape (#/word/%E0) is kept as typed rather than throwing.
+function decodeSafe(s: string): string {
+  try {
+    return decodeURIComponent(s)
+  } catch {
+    return s
+  }
+}
+
 export function parseRoute(hash: string): Route {
   const raw = hash.replace(/^#\/?/, '')
   const cut = raw.search(/[?&]/)
@@ -19,7 +28,7 @@ export function parseRoute(hash: string): Route {
   const q = new URLSearchParams(cut < 0 ? '' : raw.slice(cut + 1))
   for (const k of [...q.keys()]) if (k.startsWith('tgWebApp')) q.delete(k)
   if (p.startsWith('tgWebApp') || p.includes('=')) p = ''
-  let parts = p.split('/').filter(Boolean).map((s) => decodeURIComponent(s))
+  let parts = p.split('/').filter(Boolean).map(decodeSafe)
   const [a, b] = parts
   // Aliases: the bot's deep links (#/words/<id>, #/words/new?term=…,
   // #/dashboard), links from before words replaced notes, and the inbox
@@ -40,8 +49,10 @@ export function parseRoute(hash: string): Route {
       ? 'words'
       : first === 'word'
         ? 'review'
-      : first === 'add'
-        ? from.startsWith('/words') || from.startsWith('/word/') ? 'words' : 'review'
+      : first === 'add' || first === 'practice'
+        ? from.startsWith('/words') || from.startsWith('/word/') || from.startsWith('/handbook') ? 'words' : 'review'
+      : first === 'handbook'
+        ? 'words'
           : first === 'progress' || first === 'test'
             ? 'progress'
             : first === 'settings'

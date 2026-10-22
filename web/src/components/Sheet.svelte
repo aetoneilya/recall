@@ -5,12 +5,23 @@
 
   // A bottom sheet over a dimmed screen. It closes only from its own
   // buttons: what it shows (a one-time secret) shouldn't vanish on a stray tap.
-  let { title, children, label }: { title: string; children: Snippet; label?: string } = $props()
+  // `onclose`: Escape closes it too.
+  let { title, children, label, onclose }: { title: string; children: Snippet; label?: string; onclose?: () => void } = $props()
 
   const still = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
 </script>
 
-<div class="scrim" transition:fade={{ duration: 200 }}></div>
+<svelte:window
+  onkeydown={(e) => {
+    if (e.key === 'Escape' && onclose) {
+      e.preventDefault()
+      e.stopPropagation()
+      onclose()
+    }
+  }}
+/>
+
+<div class="scrim" data-sheet transition:fade={{ duration: 200 }}></div>
 <div class="sheet" role="dialog" aria-modal="true" aria-label={label ?? title} in:fly={{ y: still ? 0 : 80, opacity: 0, duration: 320, easing: quintOut }} out:fly={{ y: still ? 0 : 40, duration: 200, easing: cubicOut }}>
   <div class="grabber" aria-hidden="true"></div>
   <h2>{title}</h2>

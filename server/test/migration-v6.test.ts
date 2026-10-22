@@ -213,3 +213,43 @@ describe('migration to v9', () => {
     expect(listDecks(db, 'us_a').map((d) => [d.name, d.targetLang])).toEqual([['English', 'en'], ['Deutsch', 'de'], ['Concurrency', null], ['Programming', null], ['Reading', null]])
   })
 })
+
+describe('migration to v10', () => {
+  it('rebuilds fact_exercises for write items with a rubric, keeping every row and attempt; adds deck_extra_new', () => {
+    const db = new DatabaseSync(':memory:')
+    v5(db)
+    migrate(db, ENV, 9)
+    db.exec(`
+      INSERT INTO facts(id, user_id, deck_id, front, back, status, created_by, dedupe_key, created_at, updated_at) VALUES ('ft_1', 'us_a', 'dk_a', 'Rule', 'Text', 'active', 'import', 'rule', '2026-10-21', '2026-10-21');
+      INSERT INTO fact_exercises(id, fact_id, type, prompt, answer, accepted, options, wrong, explain, created_by, dedupe_key, import_ref, created_at, shown_count, last_shown_at, correct_count, wrong_count, status, needs_review) VALUES
+        ('ex_1', 'ft_1', 'gap', 'She ___ here. (live)', 'lives', '["resides"]', '[]', NULL, 'why', 'import', 'she ___ here live', 'r:0', '2026-10-21', 3, '2026-10-20', 2, 1, 'active', 1),
+        ('ex_2', 'ft_1', 'spot', 'He go home.', 'goes', '[]', '["goes","went"]', 'go', NULL, 'claude', 'tap:he go home', NULL, '2026-10-22', 0, NULL, 0, 0, 'flagged', 0),
+        ('ex_3', 'ft_1', 'choose', 'I ___ tea.', 'like', '[]', '["like","likes"]', NULL, NULL, 'user', 'tap:i ___ tea', NULL, '2026-10-23', 1, '2026-10-21', 0, 1, 'active', 0);
+      INSERT INTO review_logs(id, card_id, rating, reviewed_at, duration_ms, "before", "after") VALUES ('log_g', 'cd_1f', 3, '2026-10-21', 1, '{}', '{}');
+      INSERT INTO exercise_attempts(review_log_id, exercise_id, given, correct, at) VALUES ('log_g', 'ex_1', 'lives', 1, '2026-10-21'), ('log_g', 'ex_3', 'likes', 0, '2026-10-21');
+    `)
+    const before = dump(db, 'fact_exercises')
+    const others = Object.fromEntries(['exercise_attempts', 'decks', 'facts', 'cards', 'review_logs'].map((t) => [t, dump(db, t)]))
+    migrate(db, ENV, 10)
+    expect(schemaVersion(db)).toBe(10)
+    db.exec('PRAGMA foreign_keys = ON')
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    const after = dump(db, 'fact_exercises')
+    expect(without(after, ['rubric'])).toEqual(before)
+    expect(after.every((r: Record<string, unknown>) => r.rubric === null)).toBe(true)
+    for (const t of Object.keys(others)) expect(dump(db, t)).toEqual(others[t])
+    // Write items are allowed now; the spot CHECK and unknown types still fail.
+    db.exec("INSERT INTO fact_exercises(id, fact_id, type, prompt, answer, rubric, created_by, dedupe_key, created_at) VALUES ('ex_w', 'ft_1', 'write', 'Напиши…', '', 'use it', 'user', 'write:x', 'now')")
+    expect(() => db.exec("INSERT INTO fact_exercises(id, fact_id, type, prompt, answer, created_by, dedupe_key, created_at) VALUES ('ex_q', 'ft_1', 'quiz', 'p', 'a', 'user', 'q', 'now')")).toThrow(/CHECK/)
+    expect(() => db.exec("INSERT INTO fact_exercises(id, fact_id, type, prompt, answer, created_by, dedupe_key, created_at) VALUES ('ex_s', 'ft_1', 'spot', 'p', 'a', 'user', 's', 'now')")).toThrow(/CHECK/)
+    expect(() => db.exec("INSERT INTO fact_exercises(id, fact_id, type, prompt, answer, created_by, dedupe_key, created_at) VALUES ('ex_d', 'ft_1', 'gap', 'p', 'a', 'user', 'she ___ here live', 'now')")).toThrow(/UNIQUE/)
+    // Attempts still cascade from the rebuilt table.
+    db.exec("DELETE FROM fact_exercises WHERE id = 'ex_1'")
+    expect(dump(db, 'exercise_attempts').map((a: Record<string, unknown>) => a.exercise_id)).toEqual(['ex_3'])
+    // Extra new cards per deck and day, gone with the deck.
+    db.exec("INSERT INTO deck_extra_new(deck_id, day, n) VALUES ('dk_a2', '2026-10-21', 5)")
+    expect(() => db.exec("INSERT INTO deck_extra_new(deck_id, day, n) VALUES ('dk_none', '2026-10-21', 5)")).toThrow(/FOREIGN KEY/)
+    db.exec("DELETE FROM decks WHERE id = 'dk_a2'")
+    expect(dump(db, 'deck_extra_new')).toEqual([])
+  })
+})

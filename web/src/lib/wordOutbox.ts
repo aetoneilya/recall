@@ -37,6 +37,8 @@ export class WordOutbox {
   private store: WordOutboxStore
   private transport: WordOutboxTransport
   private seq = 0
+  // The word being uploaded right now.
+  private sending: string | null = null
 
   constructor(store: WordOutboxStore, transport: WordOutboxTransport) {
     this.store = store
@@ -70,8 +72,9 @@ export class WordOutbox {
     return id
   }
 
-  // Takes back a word that hasn't been sent yet.
+  // Takes back a word that hasn't been sent yet (false once it is on its way).
   remove(id: string): boolean {
+    if (id === this.sending) return false
     const before = this.words.length
     this.words = this.words.filter((w) => w.id !== id)
     if (this.words.length === before) return false
@@ -92,6 +95,7 @@ export class WordOutbox {
     const out: WordFlush = { ok: true, added: [], duplicates: [], failed: [] }
     while (this.words.length) {
       const w = this.words[0]
+      this.sending = w.id
       try {
         await this.transport.createWord(w.input)
         out.added.push(w.input.term)
@@ -101,6 +105,8 @@ export class WordOutbox {
         if (e instanceof HttpError && e.status === 409) out.duplicates.push(w.input.term)
         else if (e instanceof HttpError && e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429) out.failed.push({ term: w.input.term, error: e.message })
         else return { ...out, ok: false, reason: 'server' }
+      } finally {
+        this.sending = null
       }
       this.remove(w.id)
     }

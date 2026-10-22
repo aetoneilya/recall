@@ -157,6 +157,24 @@ function packInfo() {
   return { ...PACK, count: irregularVerbs.length, added: have.length > 0, missing: irregularVerbs.length - have.length, deckId: deck?.id, deckName: deck?.name ?? PACK.name }
 }
 
+// The handbook pack's topics added to English (the mock's own, invented).
+const handbookTopics: { id: string; group: string; title: string; level: string; ruleFactId: string; cardFactIds: string[] }[] = []
+
+function handbookOf(deck: MockDeck) {
+  const active = (id: string) => db.facts.find((f) => f.id === id && f.deckId === deck.id && f.status !== 'rejected')
+  const pool = (factId: string) => db.exercises.filter((e) => e.factId === factId && e.status === 'active').length
+  const linked = new Set(handbookTopics.flatMap((t) => [t.ruleFactId, ...t.cardFactIds]))
+  return {
+    topics: handbookTopics
+      .filter((t) => active(t.ruleFactId))
+      .map((t) => ({ ...t, summary: active(t.ruleFactId)!.back, cardFactIds: t.cardFactIds.filter((id) => active(id)), exercises: pool(t.ruleFactId) })),
+    mine: db.facts
+      .filter((f) => f.deckId === deck.id && f.status !== 'rejected' && f.tags.includes('Grammar') && !linked.has(f.id))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map((f) => ({ factId: f.id, title: f.front, rule: f.back, exercises: pool(f.id) })),
+  }
+}
+
 function seed() {
   const now = Date.now()
   const eng: MockDeck = {
@@ -207,13 +225,27 @@ function seed() {
   // Grammar rules, in English: reviewed through their exercises.
   grammar.forEach((r, k) => {
     const createdAt = iso(now - (20 - k) * D)
-    const fact: Fact = { id: id('ft'), deckId: eng.id, front: r.title, back: r.rule, tags: ['Grammar'], status: 'active', createdBy: 'import', createdAt, updatedAt: createdAt }
+    const t = r.topic
+    const fact: Fact = { id: id('ft'), deckId: eng.id, front: r.title, back: r.rule, tags: t ? ['Grammar', t.group] : ['Grammar'], status: 'active', createdBy: t ? 'import' : 'user', createdAt, updatedAt: createdAt }
     db.facts.push(fact)
     const ps = planState(r.plan, 200 + k, now)
     db.cards.push({ id: id('cd'), wordId: null, factId: fact.id, direction: 'forward', suspended: false, schedule: ps.state })
     for (const it of r.items) {
       db.exercises.push({ ...it, id: id('ex'), factId: fact.id, status: 'active', needsReview: false, createdBy: 'import', createdAt, shownCount: 0, lastShownAt: null, correctCount: 0, wrongCount: 0 })
     }
+    if (!t) return
+    // The grammar handbook pack's topic: write tasks and theory cards too.
+    for (const w of t.write) {
+      db.exercises.push({ type: 'write', prompt: w.prompt, answer: '', accepted: [], explain: null, rubric: w.rubric, id: id('ex'), factId: fact.id, status: 'active', needsReview: false, createdBy: 'import', createdAt, shownCount: 0, lastShownAt: null, correctCount: 0, wrongCount: 0 })
+    }
+    const cardFactIds = t.cards.map((c, n) => {
+      const at = iso(now - (20 - k) * D + n + 1)
+      const f: Fact = { id: id('ft'), deckId: eng.id, front: c.front, back: c.back, tags: ['Grammar theory', t.group], status: 'active', createdBy: 'import', createdAt: at, updatedAt: at }
+      db.facts.push(f)
+      db.cards.push({ id: id('cd'), wordId: null, factId: f.id, direction: 'forward', suspended: false, schedule: planState(n === 0 ? 'later' : 'new', 260 + k * 5 + n, now).state })
+      return f.id
+    })
+    handbookTopics.push({ id: t.id, group: t.group, title: r.title, level: t.level, ruleFactId: fact.id, cardFactIds })
   })
   // The irregular-verbs pack, added to English: a few already studied.
   irregularVerbs.forEach((v, k) => {
@@ -400,7 +432,7 @@ function buildQueue(now: Date, limit: number, deckId?: string, draft?: { deckId:
     const f = firstLog.get(c.id)
     if (f && isToday(f, now)) introduced.set(deckIdOf(c), (introduced.get(deckIdOf(c)) ?? 0) + 1)
   }
-  const budget = new Map(db.decks.map((d) => [d.id, Math.max(0, d.newPerDay - (introduced.get(d.id) ?? 0))]))
+  const budget = new Map(db.decks.map((d) => [d.id, Math.max(0, d.newPerDay + extraToday(d.id, now) - (introduced.get(d.id) ?? 0))]))
   // The reverse gate: a new reverse card waits until its forward card is
   // out of the new state and stable enough (ignored while forward is off).
   const gated = (c: Card) => {
@@ -565,18 +597,84 @@ function factItem(f: Fact, now: Date): FactItem {
   const exercises = pool.length
     ? { exercises: { active: pool.filter((e) => e.status === 'active').length, flagged: pool.filter((e) => e.status === 'flagged').length, needsReview: pool.filter((e) => e.needsReview).length } }
     : {}
-  return { ...f, deckName: deckOf(f.deckId).name, card: c ? summary(c, now) : null, ...exercises }
+  const t = handbookTopics.find((x) => x.ruleFactId === f.id || x.cardFactIds.includes(f.id))
+  const handbook = t ? { handbook: { topic: t.id, role: t.ruleFactId === f.id ? ('rule' as const) : ('card' as const) } } : {}
+  return { ...f, deckName: deckOf(f.deckId).name, card: c ? summary(c, now) : null, ...exercises, ...handbook }
 }
 
 // Three items for a review: least recently shown first, at most two of a type (as the server does).
-function pickExercises(factId: string) {
-  const pool = db.exercises.filter((e) => e.factId === factId && e.status === 'active')
-  if (pool.length < 3) return null
-  const order = pool.map((e) => ({ e, r: Math.random() })).sort((a, b) => (a.e.lastShownAt ?? '').localeCompare(b.e.lastShownAt ?? '') || a.r - b.r).map((x) => x.e)
+function pickExercises(factId: string, avoid: Set<string> = new Set()) {
+  const all = db.exercises.filter((e) => e.factId === factId && e.status === 'active')
+  const tap = all.filter((e) => e.type !== 'write')
+  if (tap.length < 3) return null
+  const shuffle = (xs: ExerciseInfo[]) => xs.map((e) => ({ e, r: Math.random() })).sort((a, b) => Number(avoid.has(a.e.id)) - Number(avoid.has(b.e.id)) || (a.e.lastShownAt ?? '').localeCompare(b.e.lastShownAt ?? '') || a.r - b.r).map((x) => x.e)
+  const order = shuffle(tap)
   const out: ExerciseInfo[] = []
+  // At most one written item, only when it can be graded.
+  const write = mockControl.autofill ? shuffle(all.filter((e) => e.type === 'write'))[0] : undefined
+  if (write && Math.random() < 0.5) out.push(write)
   for (const e of order) if (out.length < 3 && out.filter((x) => x.type === e.type).length < 2) out.push(e)
   for (const e of order) if (out.length < 3 && !out.includes(e)) out.push(e)
-  return out.map(({ id, type, prompt, answer, accepted, explain, options, wrong }) => ({ id, type, prompt, answer, accepted, explain, ...(options?.length ? { options, wrong } : {}) }))
+  return out.map(({ id, type, prompt, answer, accepted, explain, options, wrong, rubric }) => ({ id, type, prompt, answer, accepted, explain, ...(options?.length ? { options, wrong } : {}), ...(type === 'write' ? { rubric: rubric ?? null } : {}) }))
+}
+
+// "+5 new": extra new cards per deck per study day.
+const extraNew = new Map<string, number>()
+const extraToday = (deckId: string, now: Date) => extraNew.get(`${deckId}:${today(now)}`) ?? 0
+
+// A practice run: today's Again cards, then the hardest; nothing is written.
+function practice(now: Date, q: { deckId?: string; factId?: string }, limit = 20): QueueItem[] {
+  const itemOf = (c: Card): QueueItem => {
+    const o = ownerOf(c)
+    const deckName = deckOf(o.deckId).name
+    if (!c.factId) return { kind: 'word', card: c, word: formsOf(o as Word), deckName }
+    const exercises = pickExercises(c.factId)
+    return { kind: 'fact', card: c, fact: o as Fact, deckName, ...(exercises ? { exercises } : {}) }
+  }
+  if (q.factId) {
+    const f = factOf(q.factId)
+    const c = db.cards.find((x) => x.factId === q.factId)
+    if (!f || !c) throw new Fail(404, `fact ${q.factId} not found`)
+    const out: QueueItem[] = []
+    const used = new Set<string>()
+    for (let i = 0; i < 3; i++) {
+      const ex = pickExercises(f.id, used)
+      if (!ex) break
+      ex.forEach((e) => used.add(e.id))
+      out.push({ kind: 'fact', card: c, fact: f, deckName: deckOf(f.deckId).name, exercises: ex })
+    }
+    return out
+  }
+  const deck = deckOf(q.deckId!)
+  const againToday = new Map<string, string>()
+  for (const l of db.logs) if (l.rating === 1 && isToday(l.reviewedAt, now)) againToday.set(l.cardId, l.reviewedAt)
+  const seen = new Set<string>()
+  const cards = db.cards.filter((c) => {
+    const o = ownerOf(c)
+    return o.deckId === deck.id && o.status === 'active' && !c.suspended && c.schedule.state !== 0 && (!!c.factId || enabled(deck, c.direction)) && inReviewFilter(deck.reviewFilter, factsOf(c, o))
+  })
+  const rank = (c: Card) => (againToday.has(c.id) ? 0 : 1)
+  cards.sort((a, b) => rank(a) - rank(b) || (againToday.get(b.id) ?? '').localeCompare(againToday.get(a.id) ?? '') || b.schedule.lapses - a.schedule.lapses || retrievability(a.schedule, now) - retrievability(b.schedule, now))
+  const out: QueueItem[] = []
+  for (const c of cards) {
+    const key = c.factId ?? c.wordId!
+    if (seen.has(key) || out.length >= limit) continue
+    seen.add(key)
+    out.push(itemOf(c))
+  }
+  return out
+}
+
+// A fake grader: a sentence with a verb ending in -s after he/she/it, or any
+// sentence of five words or more, is right; short ones get a fix.
+function grade(e: ExerciseInfo, text: string) {
+  if (!mockControl.autofill) throw new Fail(503, 'autofill is not configured')
+  const t = text.replace(/\s+/g, ' ').trim()
+  if (!t) throw new Fail(400, 'text is empty')
+  const words = t.split(' ')
+  if (words.length >= 5) return { correct: true, corrected: t, explain: 'Всё верно: правило использовано как нужно.', score: 2 as const }
+  const corrected = /[.!?]$/.test(t) ? `I have ${t.replace(/^I\s+/i, '')}` : `${t.charAt(0).toUpperCase()}${t.slice(1)}.`
+  return { correct: false, corrected, explain: e.rubric ? `Не хватает: ${e.rubric}` : 'Предложение слишком короткое, чтобы показать правило.', score: 1 as const }
 }
 
 function createFact(body: Body, now: Date): Fact {
@@ -709,7 +807,8 @@ function place(inList: number): Pick<VocabEstimate, 'nativeEquivalent' | 'cefr' 
 // Lemmas known in the app per band: the baseline collection plus the
 // seeded words that are known now.
 function srsBands(now: Date, deckId?: string): number[] {
-  const counts = [...baselineSrs]
+  // A new account (no words) has nothing known yet.
+  const counts = db.words.length ? [...baselineSrs] : baselineSrs.map(() => 0)
   const seen = new Set<number>()
   for (const w of db.words) {
     if (w.status !== 'active' || (deckId && w.deckId !== deckId) || w.freqRank === null || !lemma(w.term) || seen.has(w.freqRank)) continue
@@ -908,7 +1007,7 @@ function dashboard(deck: MockDeck, now: Date): Dashboard {
 
   // Activity from every log (words and facts, any deck), per study day.
   const keys: string[] = []
-  for (let i = 89; i >= 0; i--) keys.push(dayKey(new Date(now.getTime() - i * D), DAY))
+  for (let i = 181; i >= 0; i--) keys.push(dayKey(new Date(now.getTime() - i * D), DAY))
   const perDay = new Map(keys.map((k) => [k, { day: k, reviews: 0, again: 0, timeMs: 0 }]))
   const studied = new Set<string>()
   const deckCards = new Set(db.cards.filter((c) => c.wordId && wordOf(c.wordId).deckId === deck.id).map((c) => c.id))
@@ -1043,6 +1142,8 @@ function me(now: Date) {
     weeklyReport: settings.weeklyReport,
     weeklyReportDay: settings.weeklyReportDay,
     weeklyReportTime: settings.weeklyReportTime,
+    // Written exercises are graded by a fake Claude here (off with ?mock=noautofill).
+    grading: mockControl.autofill,
   }
 }
 
@@ -1215,7 +1316,7 @@ function handle(method: string, url: URL, body: unknown): unknown {
   // ---------- decks ----------
 
   if (a === 'decks') {
-    if (!b && method === 'GET') return { decks: sortDecks(db.decks).map((d) => ({ ...d, counts: deckCounts(d, now), tags: deckTags(d.id) })) }
+    if (!b && method === 'GET') return { decks: sortDecks(db.decks).map((d) => ({ ...d, extraNewToday: extraToday(d.id, now), counts: deckCounts(d, now), tags: deckTags(d.id) })) }
     if (!b && method === 'POST') {
       const name = String(B.name ?? '').replace(/\s+/g, ' ').trim()
       const lang = B.targetLang ? String(B.targetLang).toLowerCase() : null
@@ -1247,11 +1348,19 @@ function handle(method: string, url: URL, body: unknown): unknown {
       db.cards = db.cards.filter((c) => !cardIds.has(c.id))
       db.logs = db.logs.filter((l) => !cardIds.has(l.cardId))
       db.decks = db.decks.filter((x) => x.id !== d.id)
+      for (const [ref, factId] of packRefs) if (ids.has(factId)) packRefs.delete(ref)
       return { ok: true, words: words.length, facts: facts.length }
     }
     if (method === 'PATCH') {
       patchDeck(d, B)
       return { deck: d }
+    }
+    if (c === 'extra-new' && method === 'POST') {
+      const n = B.n === undefined ? 5 : Number(B.n)
+      if (!Number.isInteger(n) || n < 1 || n > 100) throw new Fail(400, 'n must be 1..100')
+      const k = `${d.id}:${today(now)}`
+      extraNew.set(k, (extraNew.get(k) ?? 0) + n)
+      return { deck: { ...d, extraNewToday: extraToday(d.id, now) } }
     }
     if (c === 'merge' && method === 'POST') {
       const into = resolveDeck(String(B.into ?? ''))
@@ -1292,6 +1401,13 @@ function handle(method: string, url: URL, body: unknown): unknown {
     }
   }
 
+  if (p === '/api/practice') {
+    const fact = url.searchParams.get('fact')
+    const ref = url.searchParams.get('deck')
+    return { items: practice(now, fact ? { factId: fact } : { deckId: mustDeck(ref).id }, Math.min(50, Number(url.searchParams.get('limit') ?? 20) || 20)) }
+  }
+  if (p === '/api/handbook') return handbookOf(mustDeck(url.searchParams.get('deck')))
+
   // ---------- packs ----------
 
   if (p === '/api/packs') return { packs: [packInfo()] }
@@ -1316,6 +1432,10 @@ function handle(method: string, url: URL, body: unknown): unknown {
   if (a === 'exercises' && b) {
     const e = db.exercises.find((x) => x.id === b)
     if (!e) throw new Fail(404, `exercise ${b} not found`)
+    if (c === 'grade' && method === 'POST') {
+      if (e.type !== 'write') throw new Fail(400, 'not a write item')
+      return grade(e, String(B.text ?? ''))
+    }
     if (method === 'DELETE') {
       db.exercises = db.exercises.filter((x) => x.id !== b)
       return { ok: true }
@@ -1440,7 +1560,12 @@ function handle(method: string, url: URL, body: unknown): unknown {
         return (i === 0 || t >= start + i * D) && t < start + (i + 1) * D
       }).length,
     }))
-    return { forecast }
+    const n = Math.min(90, Math.max(1, Number(url.searchParams.get('days') ?? 30) || 30))
+    const days = Array.from({ length: n }, (_, i) => {
+      const day = dayKey(new Date(now.getTime() - (n - 1 - i) * D), DAY)
+      return { day, reviews: db.logs.filter((l) => dayKey(new Date(l.reviewedAt), DAY) === day).length, again: 0 }
+    })
+    return { forecast, days }
   }
   if (p === '/api/dashboard') return dashboard(mustDeck(url.searchParams.get('deck')), now)
   if (p === '/api/vocab-test' && method === 'POST') return new Reply(201, createTest(now))

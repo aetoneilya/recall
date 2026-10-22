@@ -1,6 +1,6 @@
 import { newCardState, type CardState, type Direction, type Fact, type QueueItem, type Word, type WordQueueItem } from '@recall/core'
 import { describe, expect, it } from 'vitest'
-import { applyRating, buildQueue, counts, deckCounts, dropWord, emptyQueue, keepExercises, LEARN_AHEAD_MS, nextItem, patchFact, patchWord, waiting, withSchedules } from './queue.ts'
+import { applyRating, buildQueue, counts, deckCounts, dropWord, emptyQueue, keepExercises, LEARN_AHEAD_MS, nextItem, patchFact, patchWord, practiceStep, waiting, withSchedules } from './queue.ts'
 
 const day = { timeZone: 'Europe/Moscow', startHour: 4 }
 // 13:00 MSK; the study day ends at 04:00 MSK tomorrow.
@@ -316,5 +316,15 @@ describe('the card on screen across a refresh', () => {
     const out = withSchedules([a, b], { f1: rated })
     expect(out[0]!.card.schedule).toEqual(rated)
     expect(out[1]).toBe(b)
+  })
+})
+
+describe('practice', () => {
+  it('drops a card got right and brings Again back three cards later', () => {
+    expect(practiceStep(['a', 'b', 'c', 'd', 'e'], true)).toEqual(['b', 'c', 'd', 'e'])
+    expect(practiceStep(['a', 'b', 'c', 'd', 'e'], false)).toEqual(['b', 'c', 'd', 'a', 'e'])
+    expect(practiceStep(['a', 'b'], false)).toEqual(['b', 'a'])
+    expect(practiceStep(['a'], false)).toEqual(['a'])
+    expect(practiceStep([], true)).toEqual([])
   })
 })

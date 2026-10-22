@@ -5,13 +5,18 @@
 //   'irregular-verbs'  items are {verb, past[], participle[], translation,
 //                      example: {text, translation}, note, rank}; the fact's
 //                      Markdown is generated here, and the verbs' forms are
-//                      shown on matching word cards (verbForms).
+//                      shown on matching word cards (verbForms);
+//   'grammar-handbook' items are topics {id, group, title, level, summary,
+//                      cards: [{front, back}], exercises: [choose | spot],
+//                      write?: [{prompt, rubric?}]}: per topic a rule fact
+//                      (title → summary) with its exercise pool, plus the
+//                      theory cards as plain facts (packs.ts).
 // Items are in the order cards should be introduced (most frequent first).
 // No database access here: repo.ts uses verbForms for word items, packs.ts
 // adds packs to a user's collection.
 import fs from 'node:fs'
 import path from 'node:path'
-import { formsLine, normalizeTerm, type PartOfSpeech, type VerbForms } from '@recall/core'
+import { CEFR_LEVELS, cleanExercise, exerciseKey, formsLine, normalizeTerm, type Cefr, type CleanExercise, type PartOfSpeech, type VerbForms } from '@recall/core'
 import { DEFAULT_DATA_DIR } from './config.ts'
 
 export interface PackFact {
@@ -32,18 +37,42 @@ export interface IrregularVerb {
   rank: number | null
 }
 
+// One topic of the grammar handbook.
+export interface HandbookTopic {
+  // lowercase-with-dashes, stable: import refs are built from it.
+  id: string
+  group: string
+  title: string
+  level: Cefr
+  // The cheat sheet (Markdown): the rule fact's back.
+  summary: string
+  cards: { front: string; back: string }[]
+  // Tap items (choose / spot), cleaned; in file order (import ref …:ex:<n>).
+  exercises: CleanExercise[]
+  // Write items as given (…:write:<n>); packs.ts tops them up to two.
+  write: CleanExercise[]
+}
+
 export interface Pack {
   id: string
   name: string
   description: string
   kind: 'topic'
-  format: 'facts' | 'irregular-verbs'
+  format: 'facts' | 'irregular-verbs' | 'grammar-handbook'
+  // Every fact the pack adds, in introduction order. For the handbook, per
+  // topic: the rule (key = topic id) then its cards (key <topic>:card:<n>).
   facts: PackFact[]
   // format 'irregular-verbs' only: by verb.
   verbs: Map<string, IrregularVerb> | null
+  // format 'grammar-handbook' only, in file order.
+  topics: HandbookTopic[] | null
 }
 
-export const PACK_FORMATS = ['facts', 'irregular-verbs'] as const
+export const PACK_FORMATS = ['facts', 'irregular-verbs', 'grammar-handbook'] as const
+export const HANDBOOK_CARDS = { min: 3, max: 6 }
+// A rule reviews through its pool once it has MIN_POOL (3) tap items.
+export const HANDBOOK_MIN_EXERCISES = 3
+const TOPIC_TEXT_MAX = { title: 200, group: 100, summary: 20000, front: 2000, back: 20000 }
 
 const isStr = (v: unknown): v is string => typeof v === 'string' && v.trim() !== ''
 const strings = (v: unknown): v is string[] => Array.isArray(v) && v.length > 0 && v.every(isStr)
@@ -82,21 +111,80 @@ function irregularVerb(x: unknown, i: number): IrregularVerb {
   return v
 }
 
+function handbookTopic(x: unknown, i: number): HandbookTopic {
+  const o = (x ?? {}) as Record<string, unknown>
+  const where = `topic ${i}${isStr(o.id) ? ` (${o.id})` : ''}`
+  if (!isStr(o.id) || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(o.id)) throw new Error(`${where}: id must be lowercase-with-dashes`)
+  for (const k of ['group', 'title', 'summary'] as const) {
+    if (!isStr(o[k])) throw new Error(`${where}: ${k} is missing`)
+    if ((o[k] as string).length > TOPIC_TEXT_MAX[k]) throw new Error(`${where}: ${k} is longer than ${TOPIC_TEXT_MAX[k]} characters`)
+  }
+  if (!(CEFR_LEVELS as readonly unknown[]).includes(o.level)) throw new Error(`${where}: level must be one of ${CEFR_LEVELS.join(', ')}`)
+  const cards = Array.isArray(o.cards) ? o.cards : []
+  if (cards.length < HANDBOOK_CARDS.min || cards.length > HANDBOOK_CARDS.max) throw new Error(`${where}: needs ${HANDBOOK_CARDS.min}–${HANDBOOK_CARDS.max} cards`)
+  const cleanCards = cards.map((c: unknown, n: number) => {
+    const f = (c ?? {}) as Record<string, unknown>
+    if (!isStr(f.front) || !isStr(f.back)) throw new Error(`${where}: card ${n} needs front and back`)
+    if (f.front.length > TOPIC_TEXT_MAX.front || f.back.length > TOPIC_TEXT_MAX.back) throw new Error(`${where}: card ${n} is too long`)
+    return { front: f.front.trim(), back: f.back.trim() }
+  })
+  const fronts = new Set<string>()
+  for (const c of [o.title as string, ...cleanCards.map((c) => c.front)]) {
+    const k = c.trim().toLowerCase()
+    if (fronts.has(k)) throw new Error(`${where}: "${c}" is both the title and a card, or two cards`)
+    fronts.add(k)
+  }
+  const items = (list: unknown, kind: 'exercise' | 'write'): CleanExercise[] => {
+    const keys = new Set<string>()
+    return (Array.isArray(list) ? list : []).map((e: unknown, n: number) => {
+      const input = (e ?? {}) as Record<string, unknown>
+      const type = kind === 'write' ? 'write' : input.type
+      if (kind === 'exercise' && type !== 'choose' && type !== 'spot') throw new Error(`${where}: exercise ${n} must be choose or spot`)
+      const r = cleanExercise({ ...(input as object), type } as Parameters<typeof cleanExercise>[0])
+      if ('error' in r) throw new Error(`${where}: ${kind} ${n}: ${r.error}`)
+      const k = exerciseKey(r.item.prompt, r.item.type)
+      if (keys.has(k)) throw new Error(`${where}: ${kind} ${n} repeats an earlier text`)
+      keys.add(k)
+      return r.item
+    })
+  }
+  const exercises = items(o.exercises, 'exercise')
+  if (exercises.length < HANDBOOK_MIN_EXERCISES) throw new Error(`${where}: needs at least ${HANDBOOK_MIN_EXERCISES} exercises`)
+  if (o.write !== undefined && !Array.isArray(o.write)) throw new Error(`${where}: write must be a list`)
+  return {
+    id: o.id, group: (o.group as string).trim(), title: (o.title as string).trim(), level: o.level as Cefr, summary: (o.summary as string).trim(),
+    cards: cleanCards, exercises, write: items(o.write, 'write'),
+  }
+}
+
+// The handbook's facts: per topic the rule (front = title, back = the
+// summary, tags Grammar + group), then its theory cards (Grammar theory + group).
+export function handbookFacts(topics: HandbookTopic[]): PackFact[] {
+  return topics.flatMap((t) => [
+    { key: t.id, front: t.title, back: t.summary, tags: ['Grammar', t.group] },
+    ...t.cards.map((c, n) => ({ key: `${t.id}:card:${n}`, front: c.front, back: c.back, tags: ['Grammar theory', t.group] })),
+  ])
+}
+
 // Validates a parsed pack file; throws with what is wrong.
 export function parsePack(data: unknown): Pack {
   const o = (data ?? {}) as Record<string, unknown>
   if (!isStr(o.id) || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(o.id)) throw new Error('id must be lowercase-with-dashes')
   if (!isStr(o.name)) throw new Error('name is missing')
-  if (o.kind !== 'topic') throw new Error('kind must be "topic"')
+  if (o.kind !== undefined && o.kind !== 'topic') throw new Error('kind must be "topic"')
   const format = (o.format ?? 'facts') as Pack['format']
   if (!PACK_FORMATS.includes(format)) throw new Error(`format must be one of ${PACK_FORMATS.join(', ')}`)
   if (!Array.isArray(o.items) || !o.items.length) throw new Error('items must be a non-empty list')
   let facts: PackFact[]
   let verbs: Map<string, IrregularVerb> | null = null
+  let topics: HandbookTopic[] | null = null
   if (format === 'irregular-verbs') {
     const list = o.items.map(irregularVerb)
     verbs = new Map(list.map((v) => [v.verb, v]))
     facts = list.map(irregularVerbFact)
+  } else if (format === 'grammar-handbook') {
+    topics = o.items.map(handbookTopic)
+    facts = handbookFacts(topics)
   } else {
     facts = o.items.map((x, i) => {
       const f = (x ?? {}) as Record<string, unknown>
@@ -107,10 +195,10 @@ export function parsePack(data: unknown): Pack {
   }
   const seen = new Set<string>()
   for (const f of facts) {
-    if (seen.has(f.key)) throw new Error(`item "${f.key}" appears twice`)
+    if (seen.has(f.key)) throw new Error(`${topics ? 'topic' : 'item'} "${f.key}" appears twice`)
     seen.add(f.key)
   }
-  return { id: o.id, name: o.name.trim(), description: isStr(o.description) ? o.description.trim() : '', kind: 'topic', format, facts, verbs }
+  return { id: o.id, name: o.name.trim(), description: isStr(o.description) ? o.description.trim() : '', kind: 'topic', format, facts, verbs, topics }
 }
 
 const RECHECK_MS = 30_000

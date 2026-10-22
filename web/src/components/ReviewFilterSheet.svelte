@@ -64,7 +64,7 @@
   }
 </script>
 
-<Sheet title="What to review" label="What to review in {deckName}">
+<Sheet title="What to review" label="What to review in {deckName}" {onclose}>
   <p class="sub">{deckName} · {today === null ? (error ? 'counts need a connection' : '…') : `${today} ${today === 1 ? 'card' : 'cards'} today`}</p>
   {#if error && !options}
     <p class="note">{error}</p>
@@ -141,7 +141,7 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    min-height: 36px;
+    min-height: 40px;
     padding: 0 13px;
     border-radius: 18px;
     font-size: 15px;

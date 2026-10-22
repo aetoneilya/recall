@@ -91,7 +91,10 @@ export type TypeAnswer = 'off' | 'reverse' | 'both'
 export const TYPE_ANSWERS: readonly TypeAnswer[] = ['off', 'reverse', 'both']
 
 // A deck as the server returns it: the core shape plus server-side settings.
-export type DeckInfo = Deck & { typeAnswer: TypeAnswer }
+// extraNewToday: new cards added on top of newPerDay for the current study
+// day ("+5 today"); filled where the day is known (listDecks / getDeck with
+// `today`), 0 otherwise and when none.
+export type DeckInfo = Deck & { typeAnswer: TypeAnswer; extraNewToday: number }
 
 export function toCard(r: CardRow): Card {
   return { id: r.id, wordId: r.word_id, factId: r.fact_id ?? null, direction: r.direction as Direction, suspended: r.suspended === 1, schedule: toState(r) }
@@ -139,7 +142,7 @@ function withForms(term: string, pos: PartOfSpeech): { forms?: VerbForms } {
   return f ? { forms: f } : {}
 }
 
-function toDeck(r: DeckRow): DeckInfo {
+function toDeck(r: DeckRow, extraNewToday = 0): DeckInfo {
   let filter: ReviewFilter | null = null
   try {
     filter = r.review_filter ? cleanReviewFilter(JSON.parse(r.review_filter) as ReviewFilter) : null
@@ -158,7 +161,15 @@ function toDeck(r: DeckRow): DeckInfo {
     typeAnswer: (TYPE_ANSWERS as readonly string[]).includes(r.type_answer) ? (r.type_answer as TypeAnswer) : 'off',
     reviewFilter: filter,
     createdAt: r.created_at,
+    extraNewToday,
   }
+}
+
+// Each deck's extra new cards on study day `today` (study.addExtraNew).
+function extraOn(db: Db, deckIds: string[], today: string | undefined): Map<string, number> {
+  if (!today || !deckIds.length) return new Map()
+  const rows = db.prepare(`SELECT deck_id, n FROM deck_extra_new WHERE day = ? AND deck_id IN (${deckIds.map(() => '?').join(',')})`).all(today, ...deckIds) as { deck_id: string; n: number }[]
+  return new Map(rows.map((r) => [r.deck_id, r.n]))
 }
 
 // Columns of `cards` that hold the schedule, in CardState order.
@@ -177,14 +188,17 @@ export const ENABLED_DIRECTION = "((c.direction = 'forward' AND d.forward_enable
 export const LANGUAGE_NAMES: Record<string, string> = { en: 'English', ru: 'Russian', de: 'German', fr: 'French', es: 'Spanish', it: 'Italian' }
 const LANG = /^[a-z]{2,3}$/
 
-// Decks with languages first, then the rest; each in the order they were made.
-export function listDecks(db: Db, userId: string): DeckInfo[] {
-  return (db.prepare('SELECT * FROM decks WHERE user_id = ? ORDER BY target_lang IS NULL, created_at, name COLLATE NOCASE').all(userId) as unknown as DeckRow[]).map(toDeck)
+// Decks with languages first, then the rest; each in the order they were
+// made. `today` (a study day key) fills extraNewToday.
+export function listDecks(db: Db, userId: string, today?: string): DeckInfo[] {
+  const rows = db.prepare('SELECT * FROM decks WHERE user_id = ? ORDER BY target_lang IS NULL, created_at, name COLLATE NOCASE').all(userId) as unknown as DeckRow[]
+  const extra = extraOn(db, rows.map((r) => r.id), today)
+  return rows.map((r) => toDeck(r, extra.get(r.id) ?? 0))
 }
 
-export function getDeck(db: Db, userId: string, id: string): DeckInfo | null {
+export function getDeck(db: Db, userId: string, id: string, today?: string): DeckInfo | null {
   const r = db.prepare('SELECT * FROM decks WHERE id = ? AND user_id = ?').get(id, userId) as DeckRow | undefined
-  return r ? toDeck(r) : null
+  return r ? toDeck(r, extraOn(db, [r.id], today).get(r.id) ?? 0) : null
 }
 
 export function findDeckByName(db: Db, userId: string, name: string): DeckInfo | null {
@@ -292,8 +306,8 @@ export interface DeckPatch {
 
 // Turning a direction off keeps its cards and history; they are just not
 // studied or counted until it is turned back on.
-export function updateDeck(db: Db, userId: string, id: string, patch: DeckPatch): DeckInfo {
-  const deck = getDeck(db, userId, id)
+export function updateDeck(db: Db, userId: string, id: string, patch: DeckPatch, today?: string): DeckInfo {
+  const deck = getDeck(db, userId, id, today)
   if (!deck) throw new HttpError(404, 'deck not found')
   if (patch.name !== undefined) deck.name = checkDeckName(db, userId, patch.name, id)
   if (patch.newPerDay !== undefined) deck.newPerDay = checkNewPerDay(patch.newPerDay)

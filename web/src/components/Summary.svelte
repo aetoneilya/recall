@@ -5,14 +5,11 @@
   import { session } from '../lib/review.svelte.ts'
   import { openTelegramLink } from '../lib/telegram.ts'
   import { checkpoint } from '../lib/update.ts'
+  import { openAdd } from '../lib/add.ts'
+  import type { DeckWithCounts } from '../lib/types.ts'
   import Icon from './Icon.svelte'
 
   const s = $derived(session.stats)
-  const retention = $derived.by(() => {
-    const base = s.matured || s.reviewed
-    const lapses = s.matured ? s.maturedAgain : s.again
-    return base ? Math.round((1 - lapses / base) * 100) : null
-  })
   const minutes = $derived(Math.max(1, Math.round(s.ms / 60000)))
   const w = $derived.by(() => {
     void session.now
@@ -44,6 +41,31 @@
   // The session is over: a good moment for a waiting app update.
   $effect(() => {
     if (session.loaded && !session.current) checkpoint('summary')
+  })
+
+  // What's left to do elsewhere, and what this session missed.
+  const others = $derived(session.choices.filter((d) => d.id !== deckId && d.left > 0))
+  const missed = $derived(session.missed)
+  let showAll = $state(false)
+  const extra = $derived(session.decks[deckId]?.extraNewToday ?? 0)
+  // Cards not started yet in this deck (unknown on older caches: offer it).
+  const unseen = $derived((session.decks[deckId] as Partial<DeckWithCounts> | undefined)?.counts?.newTotal ?? 1)
+  let adding = $state(false)
+  async function moreNew() {
+    adding = true
+    await session.moreNew(5)
+    adding = false
+  }
+  let week = $state<boolean[] | null>(null)
+  $effect(() => {
+    if (!session.loaded || firstRun) return
+    let live = true
+    void session.week().then((d) => {
+      if (live) week = d
+    })
+    return () => {
+      live = false
+    }
   })
 
   function openBot(e: MouseEvent) {
@@ -93,29 +115,62 @@
         <circle cx="28" cy="28" r="27" />
         <path d="M17 29l7.5 7.5L39.5 21" />
       </svg>
-      <h2>{s.reviewed ? 'Done for now' : 'Nothing due'}</h2>
+      <h2>{s.reviewed ? 'Done for now' : 'All caught up'}</h2>
       {#if s.reviewed}
-        <p class="tally">
-          <b>{s.reviewed}</b>
-          {s.reviewed === 1 ? 'card' : 'cards'} in <b>{minutes}</b> min{#if retention !== null}<span class="sep">·</span><b>{retention}%</b> remembered{/if}
-        </p>
+        <div class="tally" aria-label="{s.reviewed} reviewed, {s.again} again, {s.fresh ?? 0} new, {minutes} minutes">
+          <span><b>{s.reviewed}</b><small>reviewed</small></span>
+          <span><b>{s.again}</b><small>again</small></span>
+          <span><b>{s.fresh ?? 0}</b><small>new</small></span>
+          <span><b>{minutes}</b><small>min</small></span>
+        </div>
       {:else}
-        <p class="muted">You're all caught up. Reviews and new words appear here as they come due.</p>
+        <p class="muted">Reviews and new cards appear here as they come due.</p>
       {/if}
       {#if w.count}
-        <p class="next">
-          <Icon name="clock" size={16} />
-          {w.count} learning {w.count === 1 ? 'card' : 'cards'} back in {inMin} min
-        </p>
+        <p class="next"><Icon name="clock" size={16} /> {w.count} learning {w.count === 1 ? 'card' : 'cards'} back in {inMin} min</p>
+      {:else if tomorrow !== null}
+        <p class="next"><Icon name="clock" size={16} /> {tomorrow ? `Tomorrow: ${tomorrow} ${tomorrow === 1 ? 'review' : 'reviews'}` : 'No reviews due tomorrow'}</p>
       {/if}
-      {#if tomorrow !== null && !w.count}
-        <p class="next">
-          <Icon name="clock" size={16} />
-          {tomorrow ? `Tomorrow: ${tomorrow} ${tomorrow === 1 ? 'review' : 'reviews'}` : 'No reviews due tomorrow'}
-        </p>
+      {#if week}
+        <div class="week" aria-label="Studied {week.filter(Boolean).length} of the last 7 days">
+          {#each week as on, i (i)}<i class:on></i>{/each}
+        </div>
       {/if}
+
+      {#if missed.length}
+        <div class="missed">
+          <p class="label">{missed.length} you missed</p>
+          <div class="group">
+            {#each showAll ? missed : missed.slice(0, 3) as m (m.cardId)}
+              <button class="row" onclick={() => navigate(m.kind === 'word' ? `/word/${m.id}?from=/` : `/fact/${m.id}?from=/`)}>
+                <span class="term">{m.title}</span>{#if m.sub}<span class="sub-tr">{m.sub}</span>{/if}
+              </button>
+            {/each}
+            {#if missed.length > 3 && !showAll}<button class="row all" onclick={() => (showAll = true)}>Show all {missed.length}</button>{/if}
+          </div>
+        </div>
+      {/if}
+
       <div class="next-steps group">
-        <button class="row" onclick={() => navigate(takesWords ? `/add?from=/&deck=${deckId}` : `/fact/new?from=/&deck=${deckId}`)}>
+        <button class="row" onclick={() => navigate(`/practice?deck=${deckId}&from=/`)}>
+          <Icon name="refresh" size={20} />
+          <span>{missed.length ? 'Go over them once more' : 'Practice hard cards'}<small>Doesn't change the schedule</small></span>
+          <Icon name="chevron" size={18} />
+        </button>
+        {#if unseen > 0}
+        <button class="row" onclick={moreNew} disabled={adding}>
+          <Icon name="plus" size={20} stroke={2} />
+          <span>{adding ? 'Adding…' : '+5 new cards today'}{#if extra}<small>{extra} extra today</small>{/if}</span>
+        </button>
+        {/if}
+        {#each others as d (d.id)}
+          <button class="row" onclick={() => session.selectDeck(d.id)}>
+            <Icon name="review" size={20} />
+            <span>{d.name} · {d.left} {d.left === 1 ? 'card' : 'cards'}</span>
+            <Icon name="chevron" size={18} />
+          </button>
+        {/each}
+        <button class="row" onclick={() => openAdd(session.decks[deckId], '/')}>
           <Icon name="plus" size={20} stroke={2} />
           <span>{takesWords ? 'Add words' : 'Add cards'}</span>
           <Icon name="chevron" size={18} />
@@ -134,16 +189,27 @@
 {/if}
 
 <style>
+  /* Centred when it fits; scrolls when the lists make it long. */
   .summary {
     height: 100%;
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
     text-align: center;
     gap: 10px;
-    padding: 24px 12px 64px;
+    padding: 24px 12px 32px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     animation: rise var(--t-base) var(--ease-out);
+  }
+  .summary > :global(*) {
+    flex: none;
+  }
+  .summary > :global(:first-child) {
+    margin-top: auto;
+  }
+  .summary > :global(:last-child) {
+    margin-bottom: auto;
   }
   .summary > :global(svg:first-child) {
     color: var(--faint);
@@ -161,17 +227,81 @@
     max-width: 300px;
     text-wrap: balance;
   }
+  /* Four numbers in a row, captions under them, no tiles. */
   .tally {
-    font-size: 17px;
-    color: var(--muted);
+    display: flex;
+    gap: 22px;
+    margin-top: 2px;
     font-variant-numeric: tabular-nums;
   }
-  .tally b {
-    color: var(--text);
-    font-weight: 650;
+  .tally span {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
   }
-  .sep {
-    margin: 0 8px;
+  .tally b {
+    font-size: 22px;
+    font-weight: 650;
+    line-height: 1.2;
+  }
+  .tally small {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  /* Studied days this week: quiet dots, no streak counter. */
+  .week {
+    display: flex;
+    gap: 6px;
+  }
+  .week i {
+    width: 8px;
+    height: 8px;
+    border-radius: 4px;
+    background: var(--surface-2);
+  }
+  .week i.on {
+    background: var(--accent);
+  }
+  .missed {
+    width: 100%;
+    max-width: 340px;
+    margin-top: 10px;
+    text-align: left;
+  }
+  .missed .label {
+    margin: 0 4px 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  .missed .row {
+    gap: 10px;
+    min-height: 44px;
+    font-size: 15px;
+  }
+  .missed .term {
+    font-weight: 600;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .missed .sub-tr {
+    flex: 1;
+    min-width: 0;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .missed .all {
+    justify-content: center;
+    color: var(--accent);
+    font-weight: 500;
+  }
+  .next-steps .row small {
+    display: block;
+    font-size: 12.5px;
     color: var(--faint);
   }
   .next {

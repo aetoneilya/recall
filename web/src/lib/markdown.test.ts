@@ -59,3 +59,16 @@ describe('renderMarkdown', () => {
     expect(renderMarkdown('~~~\n```\n~~~')).toBe('<pre><code>```</code></pre>')
   })
 })
+
+describe('tables and long code', () => {
+  it('renders a simple pipe table, escaped, inside a scrolling wrap', () => {
+    expect(renderMarkdown('| Tense | Form |\n|---|:--|\n| Past | **did** |\n| Present | <do> |')).toBe(
+      '<div class="table-wrap"><table><thead><tr><th>Tense</th><th>Form</th></tr></thead><tbody><tr><td>Past</td><td><strong>did</strong></td></tr><tr><td>Present</td><td>&lt;do&gt;</td></tr></tbody></table></div>',
+    )
+    expect(renderMarkdown('a | b')).toBe('<p>a | b</p>')
+  })
+  it('lets long inline code wrap at dots and camel humps', () => {
+    expect(renderInline('`ConcurrentHashMap.computeIfAbsent`')).toBe('<code>Concurrent<wbr>Hash<wbr>Map.<wbr>compute<wbr>If<wbr>Absent</code>')
+    expect(renderInline('`x.y`')).toBe('<code>x.y</code>')
+  })
+})

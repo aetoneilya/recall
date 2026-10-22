@@ -54,7 +54,34 @@
     padding: 0.1em 0.35em;
     border-radius: 5px;
     background: var(--surface-2);
-    overflow-wrap: anywhere;
+    /* Wraps only where the renderer put a <wbr> (dots, camel humps). */
+    overflow-wrap: break-word;
+  }
+  /* Tables, like code blocks, bleed 10px and scroll sideways. */
+  .md :global(.table-wrap) {
+    margin: 0 -10px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+  .md :global(* + .table-wrap),
+  .md :global(.table-wrap + *) {
+    margin-top: 0.7em;
+  }
+  .md :global(table) {
+    border-collapse: collapse;
+    min-width: 100%;
+    font-size: 0.9em;
+  }
+  .md :global(th),
+  .md :global(td) {
+    padding: 6px 10px;
+    text-align: left;
+    vertical-align: top;
+    box-shadow: inset 0 -0.5px 0 var(--hairline);
+  }
+  .md :global(th) {
+    font-weight: 600;
+    background: var(--surface-2);
   }
   /* Code blocks bleed into the card padding and scroll sideways on their own. */
   .md :global(pre) {

@@ -2,6 +2,7 @@
   import { cleanExercise, cleanFact, formatInterval, type ExerciseType, type ReviewLog } from '@recall/core'
   import ConfirmButton from '../components/ConfirmButton.svelte'
   import { onDestroy, tick, untrack } from 'svelte'
+  import AddTypeSwitch from '../components/AddTypeSwitch.svelte'
   import Header from '../components/Header.svelte'
   import Icon from '../components/Icon.svelte'
   import Markdown from '../components/Markdown.svelte'
@@ -76,7 +77,7 @@
 
   ;(() => {
     if (isNew) {
-      const f: Form = { deckId: router.route.query.get('deck') || readLast() || session.deckId, front: '', back: '', tags: asRule ? 'Grammar' : '' }
+      const f: Form = { deckId: router.route.query.get('deck') || readLast() || session.deckId, front: router.route.query.get('term') ?? '', back: '', tags: asRule ? 'Grammar' : '' }
       form = f
       saved = key(f)
       return
@@ -132,7 +133,7 @@
   async function addItem() {
     const list = (v: string) => v.split(';').map((a) => a.trim()).filter(Boolean)
     const tapType = draft.type === 'choose' || draft.type === 'spot'
-    const input = {
+    const input = draft.type === 'write' ? { type: draft.type, prompt: draft.prompt, answer: '', rubric: draft.explain || null } : {
       type: draft.type, prompt: draft.prompt, answer: draft.answer, explain: draft.explain || null,
       ...(tapType ? { options: list(draft.options), wrong: draft.type === 'spot' ? draft.wrong : null } : { accepted: list(draft.accepted) }),
     }
@@ -155,7 +156,7 @@
       draftError = errorText(err)
     }
   }
-  const TYPE_NAMES: Record<ExerciseType, string> = { choose: 'Choose', spot: 'Spot', gap: 'Gap', fix: 'Fix', rewrite: 'Rewrite' }
+  const TYPE_NAMES: Record<ExerciseType, string> = { choose: 'Choose', spot: 'Spot', gap: 'Gap', fix: 'Fix', rewrite: 'Rewrite', write: 'Write' }
 
   async function load() {
     if (isNew) return
@@ -369,7 +370,7 @@
   })
   const recent = $derived(logs.slice(0, 16).reverse())
   const cstate = $derived(dirState(fact?.card))
-  const title = $derived(isNew ? (asRule ? 'New grammar rule' : 'New card') : 'Card')
+  const title = $derived(isNew ? 'Add' : 'Card')
   // Opened right after adding a rule: the pool is what's left to fill.
   let exPrompt: HTMLInputElement | undefined = $state()
   $effect(() => {
@@ -381,6 +382,7 @@
 <div class="editor">
   <div class="screen scroll">
     <Header {title} />
+    {#if isNew}<AddTypeSwitch current={asRule ? 'rule' : 'question'} deck={form ? session.decks[form.deckId] : undefined} />{/if}
     {#if isNew && !decks.length}
       <div class="empty">
         <Icon name="words" size={40} stroke={1.4} />
@@ -452,7 +454,7 @@
         <div class="group">
           <div class="row card-row">
             <div class="cmain">
-              <div class="ctitle">Review <span class="state {cstate}">{cstate ? STATE_TEXT[cstate] : ''}</span></div>
+              <div class="ctitle">This card <span class="state {cstate}">{cstate ? STATE_TEXT[cstate] : ''}</span></div>
               <div class="cstats">{cardStats}</div>
               {#if recent.length}
                 <div class="ratings" aria-label="Recent ratings">
@@ -482,6 +484,8 @@
                     <div class="exans"><span class="was">{e.wrong}</span> → {e.answer}{#if (e.options?.length ?? 0) > 1}<span class="faint-n"> · of {e.options!.join(' · ')}</span>{/if}</div>
                   {:else if e.type === 'choose'}
                     <div class="exans">{e.answer}<span class="faint-n"> · of {(e.options ?? []).join(' · ')}</span></div>
+                  {:else if e.type === 'write'}
+                    <div class="exans">Graded by Claude{#if e.rubric}<span class="faint-n"> · {e.rubric}</span>{/if}</div>
                   {:else}
                     <div class="exans">→ {e.answer}{#if e.accepted.length}<span class="faint-n"> · {e.accepted.join(' · ')}</span>{/if}<span class="faint-n"> · typed (legacy)</span></div>
                   {/if}
@@ -507,17 +511,20 @@
             <select bind:value={draft.type} aria-label="Type">
               <option value="choose">Choose</option>
               <option value="spot">Spot</option>
+              <option value="write">Write</option>
             </select>
-            <input bind:this={exPrompt} bind:value={draft.prompt} maxlength="500" placeholder={draft.type === 'choose' ? 'The backup runs ___ 3 a.m.' : 'His shoes gets wet.'} aria-label="Sentence" autocomplete="off" />
+            <input bind:this={exPrompt} bind:value={draft.prompt} maxlength="500" placeholder={draft.type === 'choose' ? 'The backup runs ___ 3 a.m.' : draft.type === 'write' ? 'Напиши предложение с …' : 'His shoes gets wet.'} aria-label={draft.type === 'write' ? 'Task' : 'Sentence'} autocomplete="off" />
           </div>
           {#if draft.type === 'spot'}
             <input bind:value={draft.wrong} placeholder="The wrong word(s), as in the sentence" aria-label="Wrong word" autocomplete="off" autocapitalize="off" />
           {/if}
-          <input bind:value={draft.options} placeholder={draft.type === 'choose' ? 'Options: at; in; on (— = nothing)' : 'Replacements: get; getting (— = delete)'} aria-label="Options" autocomplete="off" autocapitalize="off" />
-          <input bind:value={draft.answer} maxlength="300" placeholder="The right option" aria-label="Answer" autocomplete="off" autocapitalize="off" />
-          <input bind:value={draft.explain} maxlength="500" placeholder="Why (one line, optional)" aria-label="Why" autocomplete="off" />
+          {#if draft.type !== 'write'}
+            <input bind:value={draft.options} placeholder={draft.type === 'choose' ? 'Options: at; in; on (— = nothing)' : 'Replacements: get; getting (— = delete)'} aria-label="Options" autocomplete="off" autocapitalize="off" />
+            <input bind:value={draft.answer} maxlength="300" placeholder="The right option" aria-label="Answer" autocomplete="off" autocapitalize="off" />
+          {/if}
+          <input bind:value={draft.explain} maxlength="500" placeholder={draft.type === 'write' ? 'What a right sentence does (optional)' : 'Why (one line, optional)'} aria-label={draft.type === 'write' ? 'Rubric' : 'Why'} autocomplete="off" />
           {#if draftError}<p class="problem">{draftError}</p>{/if}
-          <button class="btn" type="submit" disabled={!draft.prompt.trim() || !draft.answer.trim()}><Icon name="plus" size={16} stroke={2.2} /> Add exercise</button>
+          <button class="btn" type="submit" disabled={!draft.prompt.trim() || (draft.type !== 'write' && !draft.answer.trim())}><Icon name="plus" size={16} stroke={2.2} /> Add exercise</button>
           {#if poolActive < 3}<p class="hint" class:wanted={asRule}>{asRule ? `A grammar rule wants at least three exercises (${poolActive} so far): it is` : 'With three or more, this card is'} reviewed through three of them at a time, by tapping, instead of question and answer.</p>{/if}
         </form>
         <div class="danger-zone">
@@ -816,7 +823,7 @@
     color: var(--faint);
   }
   .btn.small {
-    min-height: 36px;
+    min-height: 40px;
     padding: 0 12px;
     font-size: 14px;
     flex: none;

@@ -3,6 +3,7 @@
 // refreshed in the background, patched in place after edits.
 import { api, kv, status } from './app.svelte.ts'
 import { session } from './review.svelte.ts'
+import { haptic } from './telegram.ts'
 import { errorText, showToast } from './toast.svelte.ts'
 import type { WordItem } from './types.ts'
 
@@ -38,6 +39,7 @@ class WordStore {
   async load() {
     if (this.loading) return
     this.loading = true
+    this.touched = new Map()
     const version = status.wordsVersion
     try {
       const out: WordItem[] = []
@@ -46,23 +48,32 @@ class WordStore {
         out.push(...page.words)
         if (page.words.length < PAGE || out.length >= page.total) break
       }
-      this.all = out.filter((w) => !this.deleting.has(w.id))
+      // Changed here while the pages loaded: the local copy is newer.
+      const touched = this.touched
+      const merged = out.map((w) => touched.get(w.id) ?? w)
+      for (const [id, x] of touched) if (!out.some((y) => y.id === id)) merged.unshift(x)
+      this.all = merged.filter((w) => !this.deleting.has(w.id))
       this.loadedAt = Date.now()
       this.version = version
       this.error = ''
-      void kv.set('words', out)
+      // Without what is held for an undo: it doesn't come back on a cold start.
+      void kv.set('words', this.all)
     } catch (e) {
       this.error = errorText(e)
     } finally {
       this.loading = false
+      this.touched = new Map()
     }
   }
+  // What upsert changed during a load.
+  private touched = new Map<string, WordItem>()
 
   get(id: string): WordItem | undefined {
     return this.all?.find((w) => w.id === id)
   }
 
   upsert(w: WordItem) {
+    if (this.loading) this.touched.set(w.id, w)
     const list = this.all ?? []
     const i = list.findIndex((x) => x.id === w.id)
     this.all = i < 0 ? [w, ...list] : [...list.slice(0, i), w, ...list.slice(i + 1)]
@@ -78,6 +89,7 @@ class WordStore {
   // Deletes with an undo: the word disappears at once, the DELETE goes out
   // when the toast does (or the page is hidden). Undo puts it back as it was.
   deleteWithUndo(w: WordItem, onUndo?: () => void) {
+    haptic.impact('medium')
     const index = this.all?.findIndex((x) => x.id === w.id) ?? -1
     this.deleting.add(w.id)
     this.remove(w.id)

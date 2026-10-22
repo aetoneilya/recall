@@ -1,7 +1,8 @@
 // A small Markdown renderer for fact cards: paragraphs and line breaks
 // (a lone bold first line is the lead, set larger),
-// "-" / "1." lists, **bold**, *em*, `code`, ``` fenced blocks, headings as
-// bold lines, and Obsidian [[target|alias]] wikilinks as emphasised text.
+// "-" / "1." lists, **bold**, *em*, `code`, ``` fenced blocks, simple pipe
+// tables, headings as bold lines, and Obsidian [[target|alias]] wikilinks as
+// emphasised text.
 // Everything the source says is escaped before any tag is added, and the
 // only tags and attributes are the ones written here, so the result is safe
 // for {@html}. No links, images or raw HTML.
@@ -28,11 +29,22 @@ export function renderInline(src: string): string {
   for (let m = re.exec(src); m; m = re.exec(src)) {
     out += emphasis(escapeHtml(src.slice(last, m.index)))
     if (m[3] !== undefined) out += `<em class="wl">${escapeHtml(wikiText(m[3]))}</em>`
-    else out += `<code>${escapeHtml(m[2]!.replace(/^ (.*) $/, '$1'))}</code>`
+    else out += `<code>${breakable(escapeHtml(m[2]!.replace(/^ (.*) $/, '$1')))}</code>`
     last = m.index + m[0].length
   }
   return out + emphasis(escapeHtml(src.slice(last)))
 }
+
+// Long identifiers in inline code may wrap at a dot, a bracket or a camel
+// hump ("ConcurrentHashMap.<wbr>computeIfAbsent"), never mid-word.
+function breakable(s: string): string {
+  if (s.length < 16) return s
+  return s.replace(/([.(/])(?=\w)/g, '$1<wbr>').replace(/([a-z])(?=[A-Z][a-z])/g, '$1<wbr>')
+}
+
+// A table row's cells: "| a | b |" → ["a", "b"].
+const cells = (line: string) => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim())
+const TABLE_SEP = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/
 
 // On already escaped text: ** / __ strong, * / _ emphasis. Underscores only
 // at word edges, so snake_case stays as it is.
@@ -92,6 +104,18 @@ export function renderMarkdown(src: string): string {
       // A blank line ends a list unless the next line carries on with it.
       const next = lines.slice(i + 1).find((l) => l.trim())
       if (list && !(next && ITEM.exec(next) && isOrdered(next) === list.ordered)) flushList()
+      continue
+    }
+    // A pipe table: a header row, a separator row, then rows.
+    if (line.includes('|') && TABLE_SEP.test(lines[i + 1] ?? '') && lines[i + 1]!.includes('-')) {
+      flushPara()
+      flushList()
+      const head = cells(line)
+      const rows: string[][] = []
+      for (i += 2; i < lines.length && lines[i]!.includes('|') && lines[i]!.trim(); i++) rows.push(cells(lines[i]!))
+      i--
+      const tr = (r: string[], tag: string) => `<tr>${head.map((_, k) => `<${tag}>${renderInline(r[k] ?? '')}</${tag}>`).join('')}</tr>`
+      out.push(`<div class="table-wrap"><table><thead>${tr(head, 'th')}</thead><tbody>${rows.map((r) => tr(r, 'td')).join('')}</tbody></table></div>`)
       continue
     }
     const heading = HEADING.exec(line)

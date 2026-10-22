@@ -42,3 +42,9 @@ describe('parseRoute', () => {
     expect(r('#/inbox/wd_1')).toMatchObject({ path: '/word/wd_1', tab: 'words' })
   })
 })
+
+describe('malformed hashes', () => {
+  it('keeps a bad escape as typed instead of throwing', () => {
+    expect(parseRoute('#/word/%E0')).toMatchObject({ path: '/word/%E0' })
+  })
+})

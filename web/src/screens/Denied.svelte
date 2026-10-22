@@ -67,7 +67,7 @@
     user-select: all;
   }
   .id .btn {
-    min-height: 38px;
+    min-height: 40px;
     padding: 0 14px;
     font-size: 15px;
   }

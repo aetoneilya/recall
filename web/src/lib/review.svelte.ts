@@ -1,6 +1,6 @@
 // The review session: cached queue, current card, ratings applied locally
 // and queued for upload, undo.
-import { dayKey, itemOf, type Card, type CardState, type ExerciseAttempt, type Fact, type QueueItem, type Rating, type ReviewFilter, type Word } from '@recall/core'
+import { dayKey, itemOf, type AnswerCheck, type Card, type CardState, type ExerciseAttempt, type Fact, type QueueItem, type Rating, type ReviewFilter, type Word } from '@recall/core'
 import { api, flushNow, kv, outbox, scheduleFlush, status } from './app.svelte.ts'
 import { AuthError, NetworkError, normalizeItem } from './api.ts'
 import { getDecks } from './decks.ts'
@@ -18,6 +18,17 @@ interface SessionStats {
   matured: number
   maturedAgain: number
   ms: number
+  // New cards seen for the first time.
+  fresh?: number
+}
+
+// A card rated Again this session, for the summary's "you missed" list.
+export interface Missed {
+  cardId: string
+  kind: 'word' | 'fact'
+  id: string
+  title: string
+  sub: string
 }
 
 interface Cache {
@@ -35,6 +46,7 @@ interface Cache {
   buried: Record<string, string>
   local: Record<string, CardState>
   stats: SessionStats
+  missed?: Missed[]
   fetchedAt?: number
 }
 
@@ -43,6 +55,7 @@ export interface DeckChoice {
   id: string
   name: string
   left: number
+  counts: { new: number; learning: number; review: number }
 }
 
 const DECK_KEY = 'reviewDeck'
@@ -60,6 +73,7 @@ interface UndoEntry {
   current: QueueItem
   local: CardState | undefined
   stats: SessionStats
+  missed: Missed[]
 }
 
 const MAX_DURATION_MS = 120_000
@@ -68,9 +82,14 @@ const MAX_DURATION_MS = 120_000
 const LOCK_MS = 280
 const STALE_MS = 60_000
 
+function missedOf(it: QueueItem): Missed {
+  if (it.kind === 'word') return { cardId: it.card.id, kind: 'word', id: it.word.id, title: it.word.term, sub: it.word.translations[0] ?? '' }
+  return { cardId: it.card.id, kind: 'fact', id: it.fact.id, title: it.fact.front.replace(/[`*_#>]/g, '').split('\n')[0] ?? '', sub: '' }
+}
+
 class Superseded extends Error {}
 
-const zeroStats = (): SessionStats => ({ reviewed: 0, again: 0, matured: 0, maturedAgain: 0, ms: 0 })
+const zeroStats = (): SessionStats => ({ reviewed: 0, again: 0, matured: 0, maturedAgain: 0, ms: 0, fresh: 0 })
 
 class ReviewSession {
   queue = $state.raw<QueueState>(emptyQueue())
@@ -80,6 +99,7 @@ class ReviewSession {
   refreshing = $state(false)
   error = $state<string | null>(null)
   stats = $state<SessionStats>(zeroStats())
+  missed = $state.raw<Missed[]>([])
   history = $state.raw<UndoEntry[]>([])
   // Deck settings by id: in review, which directions are studied, typed answers.
   decks = $state.raw<Record<string, DeckSettings>>({})
@@ -108,6 +128,7 @@ class ReviewSession {
       this.day = cache.day
       this.local = cache.local ?? {}
       this.stats = cache.stats ?? zeroStats()
+      this.missed = cache.missed ?? []
       this.decks = cache.decks ?? {}
       this.queueDecks = cache.queueDecks ?? []
       this.byDeck = cache.byDeck ?? {}
@@ -224,7 +245,10 @@ class ReviewSession {
   // server's numbers.
   get choices(): DeckChoice[] {
     const sum = (c: Counts) => c.new + c.learning + c.review
-    return this.queueDecks.map((d) => ({ id: d.id, name: d.name, left: d.id === this.deckId ? sum(counts(this.queue)) : sum(d.counts) }))
+    return this.queueDecks.map((d) => {
+      const c = d.id === this.deckId ? counts(this.queue) : d.counts
+      return { id: d.id, name: d.name, left: sum(c), counts: { new: c.new, learning: c.learning, review: c.review } }
+    })
   }
 
   // Another deck: its cached queue at once (offline too), then the server's.
@@ -330,6 +354,33 @@ class ReviewSession {
     }
   }
 
+  // "+5 new": today's allowance of the deck under review goes up (on the
+  // server, for this study day), then the queue brings the extra cards.
+  async moreNew(n = 5): Promise<boolean> {
+    const id = this.deckId
+    if (!id) return false
+    try {
+      const d = await api.extraNew(id, n)
+      this.editedAt[id] = Date.now()
+      this.decks = { ...this.decks, [id]: { ...(this.decks[id] ?? d), extraNewToday: d.extraNewToday } }
+      await this.refresh()
+      return true
+    } catch (e) {
+      showToast(e instanceof NetworkError ? 'Offline — more new cards need a connection' : errorText(e))
+      return false
+    }
+  }
+
+  // Reviews per study day this week (every deck), for the summary's dots.
+  async week(): Promise<boolean[] | null> {
+    try {
+      const days = await api.activity(7)
+      return days.slice(-7).map((d) => d.reviews > 0)
+    } catch {
+      return null
+    }
+  }
+
   // Words in the collection, from the cached deck counts; null until known.
   get wordCount(): number | null {
     const ds = Object.values(this.decks) as Partial<DeckWithCounts>[]
@@ -354,6 +405,8 @@ class ReviewSession {
 
   // An exercise review's items, by card, for showing them again after an undo.
   exerciseResults: Record<string, ExerciseAttempt[]> = {}
+  // The same for a typed answer and its verdict.
+  typedAnswers: Record<string, { answer: string; check: AnswerCheck }> = {}
 
   rate(rating: Rating, extra: { exercises?: ExerciseAttempt[] } = {}): boolean {
     const item = this.current
@@ -362,7 +415,7 @@ class ReviewSession {
     const exercises = extra.exercises?.length ? ($state.snapshot(extra.exercises) as ExerciseAttempt[]) : undefined
     const now = new Date()
     this.rollDay()
-    const before = { queue: this.queue, current: item, local: this.local[item.card.id], stats: { ...this.stats } }
+    const before = { queue: this.queue, current: item, local: this.local[item.card.id], stats: { ...this.stats }, missed: this.missed }
     const { queue, after } = applyRating(this.queue, item, rating, now, status.day, fsrs())
     const input = {
       id: uuid(),
@@ -383,9 +436,12 @@ class ReviewSession {
       matured: this.stats.matured + (matured ? 1 : 0),
       maturedAgain: this.stats.maturedAgain + (matured && rating === 1 ? 1 : 0),
       ms: this.stats.ms + input.durationMs,
+      fresh: (this.stats.fresh ?? 0) + (item.card.schedule.state === 0 ? 1 : 0),
     }
+    if (rating === 1 && !this.missed.some((m) => m.cardId === item.card.id)) this.missed = [...this.missed, missedOf(item)]
     this.queue = queue
-    haptic.impact(rating === 1 ? 'medium' : 'light')
+    // Light and frequent; Again distinct without feeling like an error.
+    haptic.impact(rating === 1 ? 'rigid' : 'light')
     this.pick()
     this.lock()
     if (!this.current) haptic.notify('success')
@@ -399,6 +455,7 @@ class ReviewSession {
     const last = this.history.at(-1)
     if (!last) return false
     this.history = this.history.slice(0, -1)
+    haptic.impact('soft')
     outbox.undo(last.id)
     this.queue = last.queue
     this.current = last.current
@@ -407,6 +464,7 @@ class ReviewSession {
     else delete local[last.current.card.id]
     this.local = local
     this.stats = last.stats
+    this.missed = last.missed
     // Back on the answer side: undo is usually a mis-tap, so the right
     // rating should be one tap away.
     this.revealed = true
@@ -432,11 +490,26 @@ class ReviewSession {
     this.current = nextItem(this.queue, now)
     this.revealed = false
     this.shownAt = now.getTime()
+    this.freshExercises()
     if (!this.current) {
       // Wake up when the next learning card becomes showable.
       const w = waiting(this.queue, now)
       if (w.next) this.wake = setTimeout(() => this.pick(), Math.max(1000, w.next.getTime() - LEARN_AHEAD_MS - now.getTime() + 500))
     }
+  }
+
+  // A rule back after Again (a learning step) would show the three items it
+  // was just answered with; online, it gets a newly picked set — only if it
+  // arrives before anything could have been answered.
+  private freshExercises() {
+    const cur = this.current
+    if (!cur || cur.kind !== 'fact' || !cur.exercises?.length || !this.local[cur.card.id] || !status.online) return
+    const asked = Date.now()
+    void api.practice({ fact: cur.fact.id }).then((items) => {
+      const ex = items[0]?.kind === 'fact' ? items[0].exercises : undefined
+      if (!ex?.length || this.current !== cur || this.revealed || Date.now() - asked > 400) return
+      this.current = { ...cur, exercises: ex }
+    }, () => {})
   }
 
   // A new study day: yesterday's burying and stats no longer apply. Ratings
@@ -451,6 +524,7 @@ class ReviewSession {
     this.byDeck = Object.fromEntries(Object.entries(this.byDeck).map(([id, d]) => [id, { ...d, items: fold(d.items) }]))
     this.local = {}
     this.stats = zeroStats()
+    this.missed = []
     this.history = []
     this.queue = { ...this.queue, buried: {} }
   }
@@ -491,6 +565,7 @@ class ReviewSession {
         buried: this.queue.buried,
         local: this.local,
         stats: $state.snapshot(this.stats),
+        missed: this.missed,
       }
       void kv.set('review', cache)
     })

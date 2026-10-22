@@ -141,8 +141,9 @@ describe('dashboard', () => {
     expect(d.growth.at(-4)!.known).toBe(0)
     // 20 weeks back (3 June) "to cry" was fresh.
     expect(d.growth.at(-21)).toEqual({ date: '2026-06-03', known: 1 })
-    expect(d.activity.days).toHaveLength(90)
-    expect(d.activity.totals).toEqual({ reviews: 3, timeMs: 15000 })
+    expect(d.activity.days).toHaveLength(182)
+    // 26 weeks back: the June review of "to cry" counts too.
+    expect(d.activity.totals).toEqual({ reviews: 4, timeMs: 20000 })
     expect(d.activity.days.find((x) => x.day === '2026-10-02')).toEqual({ day: '2026-10-02', reviews: 1, again: 1, timeMs: 5000 })
     expect(d.activity.streak).toEqual({ current: 1, longest: 2, studiedToday: false })
     expect(d.retention).toEqual({ forward: { rate: null, reviews: 0 }, reverse: { rate: 0.5, reviews: 2 } })

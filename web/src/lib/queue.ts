@@ -194,3 +194,11 @@ export function withSchedules(list: QueueItem[], schedules: Record<string, CardS
   })
 }
 
+
+// A practice run's next order: a card got right is done; Again puts it back
+// three cards later (at the end, in a short run).
+export function practiceStep<T>(queue: T[], ok: boolean): T[] {
+  const [head, ...rest] = queue
+  if (head === undefined || ok) return rest
+  return [...rest.slice(0, 3), head, ...rest.slice(3)]
+}

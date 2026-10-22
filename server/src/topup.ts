@@ -61,12 +61,13 @@ interface Candidate {
   fact_id: string
 }
 
-// Rules (facts with a pool) running low on fresh items and not attempted in a day.
+// Rules (facts with a pool) running low on fresh items and not attempted in a
+// day. Write items don't count either way: the top-up writes tap items only.
 export function topupCandidates(ctx: AppContext): Candidate[] {
   const since = new Date(ctx.now().getTime() - DAY_MS).toISOString()
   return ctx.db.prepare(`
     SELECT f.user_id, f.id AS fact_id FROM facts f
-    JOIN fact_exercises e ON e.fact_id = f.id
+    JOIN fact_exercises e ON e.fact_id = f.id AND e.type <> 'write'
     LEFT JOIN exercise_topups t ON t.fact_id = f.id
     WHERE f.status = 'active' AND (t.attempted_at IS NULL OR t.attempted_at < ?)
     GROUP BY f.id HAVING sum(e.status = 'active' AND e.shown_count = 0) < ?
@@ -94,7 +95,7 @@ export async function topupFact(ctx: AppContext, userId: string, factId: string)
     fact.back,
     '',
     `Existing sentences (don't repeat these):`,
-    ...pool.map((e) => `- ${e.prompt}`),
+    ...pool.filter((e) => e.type !== 'write').map((e) => `- ${e.prompt}`),
     '',
     `Write ${TOPUP_COUNT} new items.`,
   ].join('\n')

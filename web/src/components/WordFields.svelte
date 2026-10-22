@@ -185,7 +185,7 @@
     top: 4px;
     right: 4px;
     width: 36px;
-    height: 36px;
+    height: 40px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -196,7 +196,7 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    min-height: 36px;
+    min-height: 40px;
     padding: 0 12px;
     border-radius: 10px;
     font-size: 15px;

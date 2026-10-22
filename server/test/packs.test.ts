@@ -22,7 +22,7 @@ afterEach(() => usePackDir(DEFAULT_DATA_DIR))
 
 describe('pack data', () => {
   it('loads the bundled irregular verbs pack', () => {
-    const [p] = currentPacks()
+    const p = currentPacks().find((x) => x.id === 'irregular-verbs')
     expect(p).toMatchObject({ id: 'irregular-verbs', name: 'Irregular verbs', kind: 'topic', format: 'irregular-verbs' })
     expect(p!.facts).toHaveLength(159)
     expect(p!.facts[0]).toEqual({
@@ -162,11 +162,13 @@ describe('pack routes and tools', () => {
 
   it('lists and adds packs over REST and MCP', async () => {
     const list = (await (await fetch(`${url}/api/packs`)).json()) as any
-    expect(list.packs).toEqual([expect.objectContaining({ id: 'irregular-verbs', name: 'Irregular verbs', count: 159, added: false, missing: 159 })])
+    const verbs = (packs: any[]) => packs.filter((p) => p.id === 'irregular-verbs')
+    expect(verbs(list.packs)).toEqual([expect.objectContaining({ id: 'irregular-verbs', name: 'Irregular verbs', count: 159, added: false, missing: 159 })])
     const added = (await (await send(`${url}/api/packs/irregular-verbs`, 'POST', {})).json()) as any
-    expect(added).toMatchObject({ added: 159, deck: { name: 'English' }, packs: [{ added: true, missing: 0, deckName: 'English' }] })
+    expect(added).toMatchObject({ added: 159, deck: { name: 'English' } })
+    expect(verbs(added.packs)).toMatchObject([{ added: true, missing: 0, deckName: 'English' }])
     expect((await send(`${url}/api/packs/nope`, 'POST', {})).status).toBe(404)
-    expect(await callTool(url, 'static-mcp-token', 'list_packs')).toEqual([expect.objectContaining({ id: 'irregular-verbs', added: true, deckId: added.deck.id })])
+    expect(verbs(await callTool(url, 'static-mcp-token', 'list_packs'))).toEqual([expect.objectContaining({ id: 'irregular-verbs', added: true, deckId: added.deck.id })])
     expect(await callTool(url, 'static-mcp-token', 'add_pack', { id: 'irregular-verbs' })).toMatchObject({ added: 0, alreadyAdded: 159 })
     // First thing in the session: the most frequent verb.
     const q = (await (await fetch(`${url}/api/queue`)).json()) as any

@@ -31,6 +31,8 @@ import {
   type FactInput,
   formsLine,
   inReviewFilter,
+  tagAncestors,
+  tagMatches,
   type QueueItem,
   type Rating,
   type ReviewFilter,
@@ -169,7 +171,7 @@ function handbookOf(deck: MockDeck) {
       .filter((t) => active(t.ruleFactId))
       .map((t) => ({ ...t, summary: active(t.ruleFactId)!.back, cardFactIds: t.cardFactIds.filter((id) => active(id)), exercises: pool(t.ruleFactId) })),
     mine: db.facts
-      .filter((f) => f.deckId === deck.id && f.status !== 'rejected' && f.tags.includes('Grammar') && !linked.has(f.id))
+      .filter((f) => f.deckId === deck.id && f.status !== 'rejected' && f.tags.some((t) => tagMatches('Grammar', t)) && !linked.has(f.id))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .map((f) => ({ factId: f.id, title: f.front, rule: f.back, exercises: pool(f.id) })),
   }
@@ -226,7 +228,7 @@ function seed() {
   grammar.forEach((r, k) => {
     const createdAt = iso(now - (20 - k) * D)
     const t = r.topic
-    const fact: Fact = { id: id('ft'), deckId: eng.id, front: r.title, back: r.rule, tags: t ? ['Grammar', t.group] : ['Grammar'], status: 'active', createdBy: t ? 'import' : 'user', createdAt, updatedAt: createdAt }
+    const fact: Fact = { id: id('ft'), deckId: eng.id, front: r.title, back: r.rule, tags: t ? [`Grammar/${t.group}`] : ['Grammar/My rules'], status: 'active', createdBy: t ? 'import' : 'user', createdAt, updatedAt: createdAt }
     db.facts.push(fact)
     const ps = planState(r.plan, 200 + k, now)
     db.cards.push({ id: id('cd'), wordId: null, factId: fact.id, direction: 'forward', suspended: false, schedule: ps.state })
@@ -240,7 +242,7 @@ function seed() {
     }
     const cardFactIds = t.cards.map((c, n) => {
       const at = iso(now - (20 - k) * D + n + 1)
-      const f: Fact = { id: id('ft'), deckId: eng.id, front: c.front, back: c.back, tags: ['Grammar theory', t.group], status: 'active', createdBy: 'import', createdAt: at, updatedAt: at }
+      const f: Fact = { id: id('ft'), deckId: eng.id, front: c.front, back: c.back, tags: [`Grammar/${t.group}`], status: 'active', createdBy: 'import', createdAt: at, updatedAt: at }
       db.facts.push(f)
       db.cards.push({ id: id('cd'), wordId: null, factId: f.id, direction: 'forward', suspended: false, schedule: planState(n === 0 ? 'later' : 'new', 260 + k * 5 + n, now).state })
       return f.id
@@ -533,24 +535,36 @@ function deckTags(deckId: string) {
   return [...m].map(([tag, n]) => ({ tag, n })).sort((a, b) => b.n - a.n || a.tag.localeCompare(b.tag))
 }
 
-// "What to review": what a deck has, and today's count under a draft filter.
+// "What to review", drilling down: today's count under the draft, and each
+// facet's options counted among the cards the draft already matches (every
+// pick narrows, AND); only options with cards, plus the picked ones. A tag
+// counts for its ancestors too, once per card.
 function reviewOptions(deck: MockDeck, filter: ReviewFilter | null, now: Date) {
   const q = buildQueue(now, 10_000, deck.id, { deckId: deck.id, filter })
-  const words = db.words.filter((w) => w.deckId === deck.id && w.status === 'active')
-  const facts = db.facts.filter((f) => f.deckId === deck.id && f.status === 'active')
-  const count = <T extends string>(xs: (T | null)[]) => {
+  const owners = [...db.words, ...db.facts].filter((o) => o.deckId === deck.id && o.status === 'active')
+  const dirsOn = (['forward', 'reverse'] as const).filter((d) => enabled(deck, d))
+  // A word matches if one of its enabled directions does.
+  const matching = owners.filter((o) =>
+    'term' in o
+      ? dirsOn.some((d) => inReviewFilter(filter, { type: 'word', tags: o.tags, pos: o.pos, cefr: o.cefr, direction: d }))
+      : inReviewFilter(filter, { type: typeOf(o), tags: o.tags }),
+  )
+  const count = <T extends string>(xs: T[][], picked: readonly T[] = []) => {
     const m = new Map<T, number>()
-    for (const x of xs) if (x) m.set(x, (m.get(x) ?? 0) + 1)
+    for (const set of xs) for (const x of new Set(set)) m.set(x, (m.get(x) ?? 0) + 1)
+    for (const p of picked) if (!m.has(p)) m.set(p, 0)
     return [...m].map(([value, n]) => ({ value, n })).sort((a, b) => b.n - a.n || a.value.localeCompare(b.value))
   }
-  const directions = words.length ? (['forward', 'reverse'] as const).filter((d) => enabled(deck, d)).map((value) => ({ value, n: words.length })) : []
+  const words = matching.filter((o): o is Word => 'term' in o)
+  const wordsPossible = !filter?.types?.length || filter.types.includes('word')
+  const paths = (tags: string[]) => tags.flatMap((t) => [...tagAncestors(t), t])
   return {
     counts: q.counts,
-    types: count<CardType>([...words, ...facts].map(typeOf)),
-    tags: count([...words, ...facts].flatMap((x) => x.tags)),
-    pos: count(words.map((w) => w.pos)),
-    cefr: count(words.map((w) => w.cefr)),
-    directions,
+    types: count(matching.map((o) => [typeOf(o)]), filter?.types),
+    tags: count(matching.map((o) => paths(o.tags)), filter?.tags),
+    pos: wordsPossible ? count(words.map((w) => [w.pos]), filter?.pos) : [],
+    cefr: wordsPossible ? count(words.map((w) => (w.cefr ? [w.cefr] : [])), filter?.cefr) : [],
+    directions: wordsPossible && words.length ? count(words.map(() => dirsOn.filter((d) => !filter?.directions?.length || filter.directions.includes(d))), filter?.directions) : [],
   }
 }
 
@@ -734,7 +748,7 @@ function searchWords(url: URL, now: Date) {
     [w.term, ...w.translations, ...w.examples.flatMap((e) => [e.text, e.translation ?? '']), w.note ?? '', ...w.tags].join('\n').toLowerCase()
   const maxOf = (w: Word, f: (c: Card) => number) => Math.max(0, ...cardsOf(w.id).map(f))
   const all = db.words
-    .filter((w) => (!deck || w.deckId === deck.id) && (!status || w.status === status) && (!pos || w.pos === pos) && (!cefr || w.cefr === cefr) && (!tag || w.tags.includes(tag)))
+    .filter((w) => (!deck || w.deckId === deck.id) && (!status || w.status === status) && (!pos || w.pos === pos) && (!cefr || w.cefr === cefr) && (!tag || w.tags.some((t) => tagMatches(tag, t))))
     .filter((w) => !q || haystack(w).includes(q))
     .sort((a, b) => {
       if (sort === 'alpha') return normalizeTerm(a.term).localeCompare(normalizeTerm(b.term))
@@ -1355,6 +1369,26 @@ function handle(method: string, url: URL, body: unknown): unknown {
       patchDeck(d, B)
       return { deck: d }
     }
+    if (c === 'tags' && (parts[3] === 'rename' || parts[3] === 'delete') && method === 'POST') {
+      const from = String(parts[3] === 'rename' ? B.from ?? '' : B.tag ?? '').trim()
+      const to = String(B.to ?? '').trim()
+      if (!from || (parts[3] === 'rename' && (!to || to === from))) throw new Fail(400, 'from and to are needed, and must differ')
+      const out = { cards: 0, words: 0, facts: 0 }
+      for (const x of [...db.words, ...db.facts]) {
+        if (x.deckId !== d.id || !x.tags.some((t) => tagMatches(from, t))) continue
+        const next: string[] = []
+        for (const t of x.tags) {
+          const r = !tagMatches(from, t) ? t : parts[3] === 'rename' ? to + t.slice(from.length) : null
+          if (r !== null && !next.includes(r)) next.push(r)
+        }
+        x.tags = next
+        x.updatedAt = now.toISOString()
+        out.cards++
+        if ('term' in x) out.words++
+        else out.facts++
+      }
+      return { deck: { id: d.id, name: d.name }, ...out }
+    }
     if (c === 'extra-new' && method === 'POST') {
       const n = B.n === undefined ? 5 : Number(B.n)
       if (!Number.isInteger(n) || n < 1 || n > 100) throw new Fail(400, 'n must be 1..100')
@@ -1456,7 +1490,7 @@ function handle(method: string, url: URL, body: unknown): unknown {
       const q = (url.searchParams.get('q') ?? '').trim().toLowerCase()
       const tag = url.searchParams.get('tag')
       const facts = db.facts
-        .filter((f) => (!ref || f.deckId === deck?.id) && (!tag || f.tags.includes(tag)) && (!q || `${f.front}\n${f.back}\n${f.tags.join(' ')}`.toLowerCase().includes(q)))
+        .filter((f) => (!ref || f.deckId === deck?.id) && (!tag || f.tags.some((t) => tagMatches(tag, t))) && (!q || `${f.front}\n${f.back}\n${f.tags.join(' ')}`.toLowerCase().includes(q)))
         .map((f) => factItem(f, now))
       return { facts, total: facts.length }
     }

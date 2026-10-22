@@ -1,17 +1,20 @@
 <script lang="ts">
-  import { CEFR_LEVELS, PARTS_OF_SPEECH, posLabel, type CardType, type Direction } from '@recall/core'
+  import { posLabel, tagMatches, type CardType, type Direction } from '@recall/core'
+  import Sheet from '../components/Sheet.svelte'
+  import TagTree from '../components/TagTree.svelte'
+  import { tagLabel } from '../lib/tagTree.ts'
   import { onMount } from 'svelte'
   import { openAdd } from '../lib/add.ts'
   import DeckSwitcher from '../components/DeckSwitcher.svelte'
   import Icon from '../components/Icon.svelte'
   import { status } from '../lib/app.svelte.ts'
   import { facts } from '../lib/facts.svelte.ts'
-  import { deckContents, libraryRows, type LibrarySort } from '../lib/library.ts'
+  import { deckContents, libraryFacets, libraryRows, type LibrarySort } from '../lib/library.ts'
   import { renderInline } from '../lib/markdown.ts'
   import { session } from '../lib/review.svelte.ts'
   import { TYPE_NAMES } from '../lib/reviewFilter.ts'
   import { navigate } from '../lib/router.svelte.ts'
-  import { DIR_STATES, dirState, type DirState } from '../lib/wordFilter.ts'
+  import { dirState, type DirState } from '../lib/wordFilter.ts'
   import { POS_NAMES } from '../lib/wordForm.ts'
   import { wordsView } from '../lib/wordsView.svelte.ts'
   import { words } from '../lib/words.svelte.ts'
@@ -56,7 +59,7 @@
   let shown = $state(Math.max(80, Math.ceil(wordsView.scrollTop / 60) + 40))
   let first = true
   $effect(() => {
-    void [f.q, f.type, f.tag, f.status, f.pos, f.cefr, f.state, f.sort, deckId]
+    void [f.q, f.type, f.tags, f.status, f.pos, f.cefr, f.state, f.sort, deckId]
     if (first) first = false
     else {
       shown = 80
@@ -66,11 +69,23 @@
   // A tag or type the new deck doesn't have is dropped on a switch.
   $effect(() => {
     if (!loaded) return
-    if (f.tag && !contents.tags.some((t) => t.tag === f.tag)) f.tag = ''
+    if (f.tags.length && !f.tags.every((s) => contents.tags.some((t) => tagMatches(s, t.tag)))) f.tags = f.tags.filter((s) => contents.tags.some((t) => tagMatches(s, t.tag)))
     if (f.type && !presentTypes.includes(f.type)) f.type = ''
   })
-  const hasGrammar = $derived(contents.types.rule > 0 || contents.tags.some((t) => t.tag === 'Grammar' || t.tag === 'Grammar theory'))
-  const filtered = $derived(!!(f.status || f.pos || f.cefr || f.state || f.tag || f.type))
+  const hasGrammar = $derived(contents.types.rule > 0 || contents.tags.some((t) => t.tag.startsWith('Grammar/') || t.tag === 'Grammar' || t.tag === 'Grammar theory'))
+  const filtered = $derived(!!(f.status || f.pos || f.cefr || f.state || f.tags.length || f.type))
+  let tagsOpen = $state(false)
+  // A subtree's cards, counted once each.
+  // Drill-down: the options are what the cards shown so far have (each pick
+  // narrows); picked ones stay listed so they can be taken off. The type
+  // chips are a mode switch instead: counted without the type.
+  const facets = $derived(libraryFacets(rows ?? []))
+  const typeCounts = $derived(libraryFacets(loaded ? libraryRows(words.all!, facts.all!, deckId, { ...f, type: '' }) : []).types)
+  const keep = <T extends string>(xs: { value: T; n: number }[], picked: T[]) => [...xs, ...picked.filter((p) => p && !xs.some((x) => x.value === p)).map((value) => ({ value, n: 0 }))]
+  const tagOptions = $derived(keep(facets.tags, f.tags))
+  const posOptions = $derived(keep(facets.pos, f.pos ? [f.pos] : []))
+  const cefrOptions = $derived(keep(facets.cefr, f.cefr ? [f.cefr] : []))
+  const stateOptions = $derived(keep(facets.states, f.state ? [f.state] : []))
   const wordsOnly = $derived(f.type === 'word' || (presentTypes.length === 1 && presentTypes[0] === 'word'))
 
   const STATE_NAMES: Record<DirState, string> = { new: 'New', learning: 'Learning', known: 'Known', fading: 'Fading', suspended: 'Suspended', off: 'Off' }
@@ -92,7 +107,7 @@
 
   function clearFilters() {
     f.type = ''
-    f.tag = ''
+    f.tags = []
     f.status = ''
     f.pos = ''
     f.cefr = ''
@@ -121,7 +136,7 @@
       <div class="types" role="radiogroup" aria-label="Card type">
         <button role="radio" aria-checked={!f.type} class:on={!f.type} onclick={() => (f.type = '')}>All</button>
         {#each presentTypes as t (t)}
-          <button role="radio" aria-checked={f.type === t} class:on={f.type === t} onclick={() => (f.type = t)}>{TYPE_NAMES[t]} <b>{contents.types[t]}</b></button>
+          <button role="radio" aria-checked={f.type === t} class:on={f.type === t} onclick={() => (f.type = t)} disabled={!typeCounts[t] && f.type !== t}>{TYPE_NAMES[t]} <b>{typeCounts[t] ?? 0}</b></button>
         {/each}
       </div>
     {/if}
@@ -142,19 +157,15 @@
         </select>
       </label>
       {#if contents.tags.length}
-        <label class="pick" class:on={f.tag}>
-          <span>{f.tag || 'Any tag'}</span>
-          <select bind:value={f.tag} aria-label="Tag">
-            <option value="">Any tag</option>
-            {#each contents.tags as t (t.tag)}<option value={t.tag}>{t.tag} ({t.n})</option>{/each}
-          </select>
-        </label>
+        <button class="pick" class:on={f.tags.length} onclick={() => (tagsOpen = true)} aria-haspopup="dialog">
+          <span>{f.tags.length ? f.tags.map((t) => tagLabel(t).leaf).join(', ') : 'Any tag'}</span>
+        </button>
       {/if}
       <label class="pick" class:on={f.state}>
         <span>{f.state ? STATE_NAMES[f.state] : 'Any state'}</span>
         <select bind:value={f.state} aria-label="State">
           <option value="">Any state</option>
-          {#each DIR_STATES as s (s)}<option value={s}>{STATE_NAMES[s]}</option>{/each}
+          {#each stateOptions as s (s.value)}<option value={s.value}>{STATE_NAMES[s.value]} ({s.n})</option>{/each}
         </select>
       </label>
       <label class="pick" class:on={f.status}>
@@ -168,14 +179,14 @@
           <span>{f.pos ? POS_NAMES[f.pos] : 'Any part'}</span>
           <select bind:value={f.pos} aria-label="Part of speech">
             <option value="">Any part of speech</option>
-            {#each PARTS_OF_SPEECH as p (p)}<option value={p}>{POS_NAMES[p]}</option>{/each}
+            {#each posOptions as p (p.value)}<option value={p.value}>{POS_NAMES[p.value]} ({p.n})</option>{/each}
           </select>
         </label>
         <label class="pick" class:on={f.cefr}>
           <span>{f.cefr || 'Any level'}</span>
           <select bind:value={f.cefr} aria-label="CEFR level">
             <option value="">Any level</option>
-            {#each CEFR_LEVELS as c (c)}<option value={c}>{c}</option>{/each}
+            {#each cefrOptions as c (c.value)}<option value={c.value}>{c.value} ({c.n})</option>{/each}
           </select>
         </label>
       {/if}
@@ -238,7 +249,7 @@
                   {#if r.kind === 'rule'}<span class="kind">Grammar · {x.exercises?.active ?? 0} exercises</span>{/if}
                   <span class="state {s ?? 'none'}">{s ? STATE_NAMES[s] : 'No card'}</span>
                   {#if x.status === 'rejected'}<span class="chip status rejected">dropped</span>{/if}
-                  {#each x.tags as t (t)}<span class="tag">{t}</span>{/each}
+                  {#each x.tags as t (t)}{@const l = tagLabel(t)}<span class="tag">{#if l.parent}<i>{`${l.parent} › `}</i>{/if}{l.leaf}</span>{/each}
                 </span>
               </span>
               <i class="dot {s ?? 'none'}" aria-hidden="true"></i>
@@ -249,6 +260,16 @@
       {#if rows.length > shown}<div class="sentinel" use:more></div>{/if}
     {/if}
   </div>
+
+  {#if tagsOpen}
+    <Sheet title="Tags" onclose={() => (tagsOpen = false)}>
+      <TagTree tags={tagOptions} selected={f.tags} onchange={(t) => (f.tags = t)} />
+      <div class="sheet-actions">
+        <button class="btn" onclick={() => (f.tags = [])} disabled={!f.tags.length}>Clear</button>
+        <button class="btn primary grow" onclick={() => (tagsOpen = false)}>Done</button>
+      </div>
+    </Sheet>
+  {/if}
 
   <button class="fab" onclick={() => openAdd(deck, '/words')} aria-label="Add a card"><Icon name="plus" size={26} stroke={2.2} /></button>
 </div>
@@ -422,8 +443,9 @@
   }
   .fab {
     position: absolute;
-    right: calc(16px + var(--sar));
-    bottom: 16px;
+    /* Clear of the tab bar (24px) and in from its last tab. */
+    right: calc(20px + var(--sar));
+    bottom: 24px;
     width: 58px;
     height: 58px;
     border-radius: 29px;
@@ -570,5 +592,17 @@
     content: '';
     position: absolute;
     inset: -6px -2px;
+  }
+  .tag i {
+    font-style: normal;
+    color: var(--faint);
+  }
+  .sheet-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 16px;
+  }
+  .sheet-actions .grow {
+    flex: 1;
   }
 </style>

@@ -2,12 +2,12 @@
 // per pack, named after it, with the pack's facts active in pack order. The
 // grammar handbook also brings each rule's exercise pool, and has a read API
 // of its own (handbook()).
-import type { ExerciseInput } from '@recall/core'
+import { tagMatches, type ExerciseInput } from '@recall/core'
 import type { Db } from './db.ts'
 import { tx } from './db.ts'
 import { addExercises } from './exercises.ts'
 import { createFact, findDuplicateFact, HANDBOOK_REF, type FactRow } from './facts.ts'
-import { currentPacks, type HandbookTopic, type Pack } from './pack-data.ts'
+import { currentPacks, GRAMMAR_TAG, type HandbookTopic, type Pack } from './pack-data.ts'
 import { createDeck, defaultDeck, findDeckByName, getDeck, HttpError, resolveDeck, type DeckInfo } from './repo.ts'
 
 export interface PackInfo {
@@ -137,13 +137,20 @@ export interface HandbookMine {
   exercises: number
 }
 
+// A topic's group from its facts' tags: "Grammar/Tenses" → "Tenses"; facts
+// added before tags were paths carry it flat, next to Grammar / Grammar theory.
+function groupOf(tags: string[]): string {
+  const under = tags.find((x) => x.startsWith(`${GRAMMAR_TAG}/`))
+  return under ? under.slice(GRAMMAR_TAG.length + 1) : tags.find((x) => x !== GRAMMAR_TAG && x !== 'Grammar theory') ?? ''
+}
+
 const activeExercises = (db: Db, factId: string) =>
   (db.prepare("SELECT count(*) AS n FROM fact_exercises WHERE fact_id = ? AND status = 'active'").get(factId) as { n: number }).n
 
 // The grammar of one deck: the handbook topics it holds (found by import
 // ref; in pack order, with group / level / summary from the pack, or from
 // the facts when the pack file is gone), and the user's own rules — facts
-// tagged Grammar that don't come from the handbook — oldest first.
+// tagged Grammar or under it that don't come from the handbook — oldest first.
 export function handbook(db: Db, userId: string, deckId: string): { topics: HandbookTopicInfo[]; mine: HandbookMine[] } {
   const rows = db.prepare("SELECT * FROM facts WHERE user_id = ? AND deck_id = ? AND status = 'active' ORDER BY created_at, id").all(userId, deckId) as unknown as FactRow[]
   const fromBook = rows.filter((r) => r.import_ref?.startsWith(HANDBOOK_REF))
@@ -160,7 +167,7 @@ export function handbook(db: Db, userId: string, deckId: string): { topics: Hand
     const tags = JSON.parse((rule ?? cards[0]!).tags) as string[]
     return {
       id,
-      group: t?.group ?? tags.find((x) => x !== 'Grammar' && x !== 'Grammar theory') ?? '',
+      group: t?.group ?? groupOf(tags),
       title: t?.title ?? rule?.front ?? id,
       level: t?.level ?? '',
       summary: t?.summary ?? rule?.back ?? '',
@@ -170,7 +177,7 @@ export function handbook(db: Db, userId: string, deckId: string): { topics: Hand
     }
   })
   const mine = rows
-    .filter((r) => !r.import_ref?.startsWith(HANDBOOK_REF) && (JSON.parse(r.tags) as string[]).includes('Grammar'))
+    .filter((r) => !r.import_ref?.startsWith(HANDBOOK_REF) && (JSON.parse(r.tags) as string[]).some((x) => tagMatches(GRAMMAR_TAG, x)))
     .map((r) => ({ factId: r.id, title: r.front, rule: r.back, exercises: activeExercises(db, r.id) }))
   return { topics, mine }
 }

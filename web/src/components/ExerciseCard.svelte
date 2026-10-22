@@ -1,6 +1,7 @@
 <script lang="ts">
   import { answerDiff, correctedParts, exerciseRating, isTapType, NOTHING, spotTokens, type ExerciseAttempt, type ExerciseCheck, type FactQueueItem, type WriteGrade } from '@recall/core'
   import CardActions from './CardActions.svelte'
+  import CardTags from './CardTags.svelte'
   import Icon from './Icon.svelte'
   import Markdown from './Markdown.svelte'
 
@@ -73,8 +74,8 @@
 
 <article class="card" class:revealed>
   <div class="context">
-    <span class="deck">{item.deckName}</span>
-    <span class="meta">{item.fact.front}</span>
+    <span class="deck">{item.fact.front}</span>
+    <CardTags tags={item.fact.tags} max={2} />
     {#if !revealed}
       <span class="steps" aria-label="Item {index + 1} of {items.length}">
         {#each items as _, i (i)}<i class:done={i < index || (i === index && answered)} class:now={i === index} class:bad={results[i] && !results[i]!.correct && !results[i]!.bad}></i>{/each}
@@ -241,7 +242,7 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 4px 6px;
-    padding: 16px 48px 0 20px;
+    padding: 16px 92px 0 var(--ctx-left, 20px);
     font-size: 13px;
     line-height: 18px;
     color: var(--muted);
@@ -249,17 +250,6 @@
   .deck {
     font-weight: 600;
     letter-spacing: 0.01em;
-  }
-  .meta {
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .meta::before {
-    content: '·';
-    margin-right: 6px;
-    color: var(--faint);
   }
   .steps {
     display: inline-flex;

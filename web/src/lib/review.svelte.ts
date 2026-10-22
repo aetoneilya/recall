@@ -155,13 +155,27 @@ class ReviewSession {
   }
 
   // Uploads pending ratings, then fetches today's queue from the server.
-  async refresh(): Promise<void> {
-    // Asked again mid-flight (e.g. a setting changed): one more round after
-    // this one, so the change isn't missed.
-    if (this.refreshing) {
+  // Asked again mid-flight (e.g. a setting changed): one more round after
+  // this one, so the change isn't missed — and the caller waits for that
+  // round too, not just for the one already on its way.
+  refresh(): Promise<void> {
+    if (this.inflight) {
       this.again = true
-      return
+      return this.inflight
     }
+    this.inflight = this.rounds().finally(() => (this.inflight = null))
+    return this.inflight
+  }
+  private inflight: Promise<void> | null = null
+
+  private async rounds(): Promise<void> {
+    do {
+      this.again = false
+      await this.round()
+    } while (this.again)
+  }
+
+  private async round(): Promise<void> {
     this.refreshing = true
     const startedAt = Date.now()
     try {
@@ -187,19 +201,19 @@ class ReviewSession {
       this.error = null
       this.loaded = true
       this.persist()
+      this.lastFailure = null
     } catch (e) {
+      this.lastFailure = e instanceof Superseded ? null : e instanceof NetworkError ? 'offline' : e instanceof Error ? e.message : String(e)
       if (e instanceof Superseded) this.again = true
       else if (e instanceof NetworkError) this.error = this.loaded ? null : 'offline'
       else if (!(e instanceof AuthError)) this.error = e instanceof Error ? e.message : String(e)
     } finally {
       this.refreshing = false
     }
-    if (this.again) {
-      this.again = false
-      return this.refresh()
-    }
   }
   private again = false
+  // Why the last round failed (offline included, which the screen doesn't show).
+  private lastFailure: string | null = null
   // When each deck's settings last changed on this device.
   private editedAt: Record<string, number> = {}
 
@@ -363,8 +377,12 @@ class ReviewSession {
       const d = await api.extraNew(id, n)
       this.editedAt[id] = Date.now()
       this.decks = { ...this.decks, [id]: { ...(this.decks[id] ?? d), extraNewToday: d.extraNewToday } }
+      // The queue has to come after the allowance grew: a refresh already
+      // on its way asked before it, so this waits for one more round.
       await this.refresh()
-      return true
+      if (this.lastFailure) showToast(`Couldn't load the new cards: ${this.lastFailure}`)
+      else if (!this.current) showToast('No new cards left to add here')
+      return !this.lastFailure
     } catch (e) {
       showToast(e instanceof NetworkError ? 'Offline — more new cards need a connection' : errorText(e))
       return false

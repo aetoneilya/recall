@@ -121,8 +121,9 @@ describe('the per-deck queue and its review filter', () => {
     const { ctx, en } = setup()
     const o = reviewOptions(ctx.db, ctx.user.id, TZ, ctx.now(), en.id, { types: ['word'] })
     expect(o.counts).toEqual({ new: 2, learning: 0, review: 0 })
-    expect(o.types).toEqual([{ value: 'word', n: 2 }, { value: 'rule', n: 1 }])
-    expect(o.tags).toEqual([{ value: 'Grammar', n: 1 }, { value: 'phrasal', n: 1 }])
+    // Drill-down: only options that still match something with the draft.
+    expect(o.types).toEqual([{ value: 'word', n: 2 }])
+    expect(o.tags).toEqual([{ value: 'phrasal', n: 1 }])
     expect(o.pos).toEqual([{ value: 'noun', n: 1 }, { value: 'phrasal_verb', n: 1 }])
     expect(o.cefr).toEqual([{ value: 'A2', n: 1 }, { value: 'B1', n: 1 }])
     expect(o.directions.map((d) => d.value)).toEqual(['forward', 'reverse'])
@@ -241,7 +242,7 @@ describe('deck and fact routes', () => {
     expect(q.body.items.map((i: any) => i.fact.front)).toEqual(['What is a deadlock?'])
     expect(q.body.decks.map((d: any) => [d.name, d.counts.new])).toEqual([['English', 1], ['Programming', 1]])
     const opt = await api('GET', `/decks/${id}/review-options?filter=${encodeURIComponent(JSON.stringify({ tags: ['Java Core'] }))}`)
-    expect(opt.body).toMatchObject({ counts: { new: 1 }, types: [{ value: 'fact', n: 2 }], tags: [{ value: 'Concurrency', n: 1 }, { value: 'Java Core', n: 1 }] })
+    expect(opt.body).toMatchObject({ counts: { new: 1 }, types: [{ value: 'fact', n: 1 }], tags: [{ value: 'Java Core', n: 1 }] })
     expect((await api('GET', `/decks/${id}/review-options?filter=nope`)).status).toBe(400)
 
     // MCP: decks, a fact with deck + tags, search by tag.

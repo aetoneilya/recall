@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { AutofillClient } from '../src/autofill.ts'
 import { addExercises, listExercises, pickExercises, updateExercise } from '../src/exercises.ts'
 import { createFact, factItem } from '../src/facts.ts'
-import { importExercises, parseRules, preferReviewed, ruleBack, type RuleFile } from '../src/import-exercises.ts'
+import { importExercises, parseRules, preferReviewed, ruleBack, ruleTags, type RuleFile } from '../src/import-exercises.ts'
 import { createDeck } from '../src/repo.ts'
 import { applyReviews, buildQueue, undoReview } from '../src/study.ts'
 import { exerciseTopupTick, topupCandidates, topupFact } from '../src/topup.ts'
@@ -122,9 +122,12 @@ describe('import-exercises', () => {
     })
     const facts = ctx.db.prepare('SELECT front, tags, import_ref, created_by FROM facts ORDER BY created_at').all()
     expect(facts).toEqual([
-      { front: 'Third person -s', tags: '["Grammar","Agreement"]', import_ref: 'rules:third-person-s', created_by: 'import' },
-      { front: 'since vs for', tags: '["Grammar","Prepositions"]', import_ref: 'rules:since-for', created_by: 'import' },
+      { front: 'Third person -s', tags: '["Grammar/Agreement","Grammar/My rules"]', import_ref: 'rules:third-person-s', created_by: 'import' },
+      { front: 'since vs for', tags: '["Grammar/Prepositions","Grammar/My rules"]', import_ref: 'rules:since-for', created_by: 'import' },
     ])
+    // --tag is the root; a rule without a group only gets "My rules".
+    expect(ruleTags('Grammar', ' ')).toEqual(['Grammar/My rules'])
+    expect(ruleTags('English grammar', 'Word order')).toEqual(['English grammar/Word order', 'English grammar/My rules'])
     expect(ctx.db.prepare("SELECT import_ref FROM fact_exercises ORDER BY rowid").all().map((r: any) => r.import_ref))
       .toEqual(['third-person-s:0', 'third-person-s:1', 'third-person-s:2', 'since-for:0', 'since-for:1', 'since-for:2'])
     expect(buildQueue(ctx.db, ctx.user.id, TZ, ctx.now()).items.map((i) => (i.kind === 'fact' ? i.fact.front : ''))).toEqual(['Third person -s', 'since vs for'])

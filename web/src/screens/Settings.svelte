@@ -2,6 +2,7 @@
   import ConfirmButton from '../components/ConfirmButton.svelte'
   import Icon from '../components/Icon.svelte'
   import Sheet from '../components/Sheet.svelte'
+  import TagManager from '../components/TagManager.svelte'
   import { HttpError } from '../lib/api.ts'
   import { api, flushNow, setMe, signOutLocally, status } from '../lib/app.svelte.ts'
   import { getDecks, hasDeckLanguages } from '../lib/decks.ts'
@@ -63,6 +64,9 @@
       showToast(`Not deleted: ${errorText(e)}`)
     }
   }
+
+  // The deck whose tags are being managed (a sheet).
+  let tagsDeck = $state<DeckWithCounts | null>(null)
 
   // A deck into another: its cards move with its name as a tag; the emptied
   // deck goes. Cards the target already has stay behind (and are listed).
@@ -510,6 +514,12 @@
           </div>
         </div>
       {/if}
+      {#if d.tags?.length}
+        <button class="row" onclick={() => (tagsDeck = d)}>
+          <span class="grow">Tags <span class="sub">{d.tags.length} · rename, nest with "/", or remove</span></span>
+          <Icon name="chevron" size={16} />
+        </button>
+      {/if}
       <div class="row deck-actions">
         {#if decks.length > 1}
           <label class="btn small merge">
@@ -790,6 +800,10 @@
     <p class="caption">claude.ai doesn't use tokens: add the connector URL <span class="mono">{mcpUrl}</span> and confirm in Telegram instead.</p>
     <button class="btn primary block done" onclick={() => (created = null)}>Done</button>
   </Sheet>
+{/if}
+
+{#if tagsDeck}
+  <TagManager deckId={tagsDeck.id} deckName={tagsDeck.name} tags={tagsDeck.tags} onclose={() => ((tagsDeck = null), void getDecks(true).then((x) => (decks = x)).catch(() => {}))} />
 {/if}
 
 <style>

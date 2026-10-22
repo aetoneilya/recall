@@ -22,6 +22,7 @@ import {
   type TypeAnswer, type WordRow, type WordSort,
 } from './repo.ts'
 import { addExtraNew, applyReviews, buildQueue, decksWithCounts, factLogs, reviewOptions, stats, studyDay, undoReview, wordLogs } from './study.ts'
+import { retagDeck } from './tags.ts'
 import { createApiToken, deleteApiToken, listApiTokens } from './tokens.ts'
 import { allowedUser, isOwner, ownerUser, updateUserSettings, userDayOptions, type User } from './users.ts'
 import { answerVocabTest, createVocabTest, listVocabTests } from './vocab.ts'
@@ -134,6 +135,8 @@ const qint = (v: unknown, fallback: number) => {
   return v === undefined || v === '' || !Number.isFinite(n) ? fallback : Math.floor(n)
 }
 const qstr = (v: unknown) => (typeof v === 'string' && v !== '' ? v : undefined)
+// ?tag=a&tag=b: every one must hold.
+const qtags = (v: unknown) => (Array.isArray(v) ? v : [v]).filter((x): x is string => typeof x === 'string' && x !== '')
 
 export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter = new LoginLimiter(20, 15 * 60_000)): Router {
   const { db, cfg } = ctx
@@ -360,6 +363,22 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
     res.json(mergeDecks(db, uid(req), req.params.id as string, target.id, { tag: tag ?? true }, ctx.now()))
   })
 
+  // Bulk tag edits on every word and fact of the deck (and its review
+  // filter); onlyWith: only cards that carry that tag or one under it.
+  const TagName = z.string().min(1).max(200)
+  r.post('/decks/:id/tags/rename', (req, res) => {
+    const { from, to, onlyWith } = parse(z.object({ from: TagName, to: TagName, onlyWith: TagName.optional() }).strict(), req.body)
+    res.json(retagDeck(db, uid(req), req.params.id as string, { kind: 'rename', from, to }, { onlyWith }, ctx.now()))
+  })
+  r.post('/decks/:id/tags/delete', (req, res) => {
+    const { tag, onlyWith } = parse(z.object({ tag: TagName, onlyWith: TagName.optional() }).strict(), req.body)
+    res.json(retagDeck(db, uid(req), req.params.id as string, { kind: 'delete', tag }, { onlyWith }, ctx.now()))
+  })
+  r.post('/decks/:id/tags/add', (req, res) => {
+    const { tag, onlyWith } = parse(z.object({ tag: TagName, onlyWith: TagName.optional() }).strict(), req.body)
+    res.json(retagDeck(db, uid(req), req.params.id as string, { kind: 'add', tag }, { onlyWith }, ctx.now()))
+  })
+
   // The review filter sheet: the deck's options and today's count under ?filter= (json, not saved).
   r.get('/decks/:id/review-options', (req, res) => {
     let draft: unknown = null
@@ -409,7 +428,7 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
     res.json(searchFacts(db, uid(req), {
       deck: qstr(q.deck),
       q: qstr(q.q),
-      tag: qstr(q.tag),
+      tag: qtags(q.tag),
       status: status ? parse(factStatusSchema, status) : undefined,
       limit: qint(q.limit, 50),
       offset: qint(q.offset, 0),
@@ -496,7 +515,7 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
       status: status ? parse(statusSchema, status) : undefined,
       pos: pos ? parse(posSchema, pos) : undefined,
       cefr: cefr ? parse(cefrSchema, cefr) : undefined,
-      tag: qstr(q.tag),
+      tag: qtags(q.tag),
       sort: sort ? parse(sortSchema, sort) : undefined,
       limit: qint(q.limit, 50),
       offset: qint(q.offset, 0),

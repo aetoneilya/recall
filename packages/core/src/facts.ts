@@ -1,5 +1,6 @@
 // Facts (topic decks): validation and the dedupe key. Server and web use the
 // same functions so a fact is cleaned the same way everywhere.
+import { cleanTag } from './tags.ts'
 
 export interface FactInput {
   // Markdown.
@@ -34,7 +35,7 @@ export function cleanFact(input: FactInput): { fact: CleanFact } | { error: stri
   if (back.length > FACT_LIMITS.back) return { error: `back is longer than ${FACT_LIMITS.back} characters` }
   const tags: string[] = []
   for (const t of input.tags ?? []) {
-    const s = (t ?? '').replace(/\s+/g, ' ').trim().slice(0, FACT_LIMITS.tag)
+    const s = cleanTag(t, FACT_LIMITS.tag)
     if (s && !tags.includes(s)) tags.push(s)
   }
   if (tags.length > FACT_LIMITS.tags) return { error: `at most ${FACT_LIMITS.tags} tags` }

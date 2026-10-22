@@ -83,7 +83,8 @@
       {#if a === 'add'}
         <AddWord />
       {:else if a === 'fact' && b}
-        {#key b}<FactEditor id={b} />{/key}
+        <!-- Question and Grammar rule share #/fact/new: ?rule=1 tells them apart. -->
+        {#key `${b}:${r.query.get('rule') ?? ''}`}<FactEditor id={b} />{/key}
       {:else if a === 'word' && b}
         {#key b}<WordEditor id={b} />{/key}
       {:else if a === 'words'}

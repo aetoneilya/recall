@@ -6,7 +6,7 @@
   import DeckSwitcher from '../components/DeckSwitcher.svelte'
   import ExerciseCard from '../components/ExerciseCard.svelte'
   import ReviewFilterSheet from '../components/ReviewFilterSheet.svelte'
-  import { filterSummary } from '../lib/reviewFilter.ts'
+  import { filterChips } from '../lib/reviewFilter.ts'
   import FactCard from '../components/FactCard.svelte'
   import Icon from '../components/Icon.svelte'
   import RatingBar from '../components/RatingBar.svelte'
@@ -48,6 +48,7 @@
   // The deck under review, its filter sheet, the "+" picker.
   const currentDeck = $derived(session.decks[session.deckId])
   let filterOpen = $state(false)
+  const chips = $derived(filterChips(session.filter, [currentDeck?.targetLang ?? null, currentDeck?.nativeLang ?? null]))
   const LANG_NAMES: Record<string, string> = { en: 'English', ru: 'Russian', de: 'German', fr: 'French', es: 'Spanish' }
   const placeholder = $derived(
     item?.card.direction === 'reverse' ? `In ${LANG_NAMES[langs[0]] ?? langs[0].toUpperCase()}…` : `In ${LANG_NAMES[langs[1]] ?? langs[1].toUpperCase()}…`,
@@ -272,7 +273,8 @@
   })
 
   // A grammar rule or theory card: its handbook page.
-  const isGrammar = (f: { tags: string[] }) => f.tags.includes('Grammar') || f.tags.includes('Grammar theory')
+  // Grammar and everything under it (and the flat tags of before).
+  const isGrammar = (f: { tags: string[] }) => f.tags.some((t) => t.startsWith('Grammar/') || t === 'Grammar' || t === 'Grammar theory')
   function readTheory(f: { id: string; deckId: string }) {
     navigate(`/handbook/fact:${f.id}?deck=${f.deckId}&from=/`)
   }
@@ -461,20 +463,25 @@
     </div>
   </header>
   {#if session.queueDecks.length}
+    <!-- The deck, then what its review is narrowed to: chips to drop one by
+         one (a tap on a chip opens the filter), Clear, and Filter. -->
     <div class="deckbar">
       <div class="switch-wrap">
         <DeckSwitcher options={session.choices.map((d) => ({ id: d.id, name: d.name, n: d.left, counts: d.counts }))} selected={session.deckId} onselect={(id) => session.selectDeck(id)} />
       </div>
-      <button class="filter-btn" class:on={!!session.filter} onclick={() => (filterOpen = true)} aria-label="What to review">
-        <Icon name="filter" size={18} stroke={2} />
-      </button>
-    </div>
-    {#if session.filter}
-      <div class="fsum">
-        <span>{filterSummary(session.filter, [currentDeck?.targetLang ?? null, currentDeck?.nativeLang ?? null])}</span>
-        <button onclick={() => session.setFilter(null)}>Clear</button>
+      <div class="fchips" role="group" aria-label="What is reviewed">
+        {#each chips as c (c.key)}
+          <span class="fchip">
+            <button class="body" onclick={() => (filterOpen = true)}>{c.label}</button>
+            <button class="x" onclick={() => session.setFilter(c.without)} aria-label="Remove {c.label}"><Icon name="x" size={13} stroke={2.4} /></button>
+          </span>
+        {/each}
+        {#if chips.length > 1}<button class="fchip clear" onclick={() => session.setFilter(null)}>Clear</button>{/if}
+        <button class="filter-btn" class:on={chips.length > 0} onclick={() => (filterOpen = true)} aria-label="Filter what to review">
+          <Icon name="filter" size={16} stroke={2} />{#if !chips.length}<span>Filter</span>{/if}
+        </button>
       </div>
-    {/if}
+    </div>
   {/if}
   {#if filterOpen && session.deckId}
     <ReviewFilterSheet
@@ -498,7 +505,7 @@
           class:dragging
           class:snapping={!!snapping}
           bind:this={wrap}
-          style="transform: {transform}; transform-origin: {origin}; --snap: {snapping || 320}ms; --step-delay: {stepDelay}ms"
+          style="transform: {transform}; transform-origin: {origin}; --ctx-left: {session.canUndo ? '52px' : '20px'}; --snap: {snapping || 320}ms; --step-delay: {stepDelay}ms"
           role="button"
           tabindex="-1"
           aria-label={session.revealed ? 'Card' : typed || exTyping ? 'Card, type the answer below' : 'Show answer'}
@@ -513,6 +520,12 @@
             onend: onSwipeEnd,
           }}
         >
+          {#if session.canUndo}
+            <!-- Back: the last rating undone, the card it was on returns. -->
+            <button class="card-undo" onclick={(e) => (e.stopPropagation(), session.undo())} onmousedown={(e) => e.preventDefault()} aria-label="Undo last rating" title="Undo (Z)">
+              <Icon name="undo" size={17} stroke={2} />
+            </button>
+          {/if}
           {#if item.kind === 'fact' && exercises}
             <ExerciseCard
               {item}
@@ -564,9 +577,6 @@
              doesn't drop between them; after the check it steps out of view
              but keeps the focus, and Enter takes the suggested rating. -->
         <form class="type-row" class:gone={session.revealed} onsubmit={(e) => e.preventDefault()}>
-          <button type="button" class="undo small" onclick={() => session.undo()} onmousedown={(e) => e.preventDefault()} disabled={!session.canUndo} aria-label="Undo last rating">
-            <Icon name="undo" size={20} />
-          </button>
           <!-- svelte-ignore a11y_autofocus -->
           <input
             bind:this={input}
@@ -595,9 +605,6 @@
             {/if}
             <button class="show next" onclick={nextItem}>{!exResults[exIndex]?.correct || exResults[exIndex]?.overridden ? 'Continue' : exIndex + 1 < (exercises?.length ?? 0) ? 'Next' : 'Done'}</button>
           {:else}
-            <button class="undo" onclick={() => session.undo()} disabled={!session.canUndo} aria-label="Undo last rating">
-              <Icon name="undo" size={22} />
-            </button>
             <p class="tap-hint">{exItem?.type === 'spot' ? (tap.token === null ? 'Tap the wrong word' : 'Pick the right form') : 'Tap the right option'}</p>
           {/if}
         </div>
@@ -608,10 +615,6 @@
               <button type="button" class="soft" onclick={overrule} onmousedown={(e) => e.preventDefault()}>I was right</button>
             {/if}
             <button type="button" class="check grow" onclick={nextItem} onmousedown={(e) => e.preventDefault()}>{exIndex + 1 < (exercises?.length ?? 0) ? 'Next' : 'Done'}</button>
-          {:else}
-            <button type="button" class="undo small" onclick={() => session.undo()} onmousedown={(e) => e.preventDefault()} disabled={!session.canUndo} aria-label="Undo last rating">
-              <Icon name="undo" size={20} />
-            </button>
           {/if}
           <!-- svelte-ignore a11y_autofocus -->
           <input
@@ -639,9 +642,6 @@
         <RatingBar state={item.card.schedule} onrate={rate} lean={lean ?? (exercises ? suggested : null)} {suggested} keepFocus={typed} {intervals} />
       {:else if !typed}
         <div class="pre">
-          <button class="undo" onclick={() => session.undo()} disabled={!session.canUndo} aria-label="Undo last rating">
-            <Icon name="undo" size={22} />
-          </button>
           <button class="show" onclick={reveal}>Show answer</button>
         </div>
       {/if}
@@ -664,7 +664,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    height: 40px;
+    height: 44px;
     padding: 0 8px;
   }
   .right {
@@ -684,7 +684,7 @@
     justify-content: center;
     color: var(--accent);
     background-color: var(--accent-soft);
-    margin: -2px -9px -2px 0;
+    margin: 0 -9px 0 0;
     transition: transform var(--t-press) var(--ease-out);
   }
   .add:active {
@@ -717,56 +717,96 @@
     color: var(--c-review);
   }
   /* The deck switcher and the filter: one row under the counts. */
+  /* The deck and its filter chips: one line; the chips scroll sideways. */
   .deckbar {
     flex: none;
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin: 0 0 8px;
-    min-height: 36px;
+    gap: 4px;
+    /* 12px clear of the "+" above it, hit areas included. */
+    margin: 12px 0 8px;
+    min-height: 40px;
   }
   .switch-wrap {
+    flex: none;
+    max-width: 55%;
+  }
+  .fchips {
     flex: 1;
     min-width: 0;
-    padding-left: 4px;
-  }
-  .filter-btn {
-    flex: none;
-    width: 40px;
-    height: 40px;
     display: flex;
     align-items: center;
-    justify-content: center;
-    border-radius: 12px;
+    gap: 6px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding: 2px 8px 2px 2px;
+  }
+  .fchips::-webkit-scrollbar {
+    display: none;
+  }
+  .fchip {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    height: 32px;
+    border-radius: 16px;
+    color: var(--accent);
+    background: var(--accent-soft);
+    font-size: 14px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .fchip .body {
+    height: 100%;
+    padding: 0 4px 0 12px;
+    color: inherit;
+    font: inherit;
+  }
+  .fchip .x {
+    position: relative;
+    height: 100%;
+    padding: 0 10px 0 4px;
+    display: flex;
+    align-items: center;
+    color: inherit;
+    opacity: 0.75;
+  }
+  /* 40px tall to the thumb, 32px to the eye. */
+  .fchip .x::after,
+  .fchip .body::after {
+    content: '';
+    position: absolute;
+    inset: -4px 0;
+  }
+  .fchip .body {
+    position: relative;
+  }
+  .fchip.clear {
+    padding: 0 12px;
     color: var(--muted);
     background: var(--surface);
   }
+  .filter-btn {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 32px;
+    padding: 0 10px;
+    border-radius: 16px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--muted);
+    background: var(--surface);
+    position: relative;
+  }
+  .filter-btn::after {
+    content: '';
+    position: absolute;
+    inset: -4px 0;
+  }
   .filter-btn.on {
     color: var(--accent);
-    background: var(--accent-soft);
-  }
-  .fsum {
-    flex: none;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: -2px 8px 8px;
-    font-size: 13px;
-    color: var(--accent);
-  }
-  .fsum span {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .fsum button {
-    flex: none;
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--muted);
-    padding: 4px 2px;
   }
   .progress {
     flex: none;
@@ -1117,5 +1157,27 @@
   .show:active,
   .undo:active:not(:disabled) {
     transform: scale(0.97);
+  }
+  /* Small on the card's top-left, opposite ⋯ and ✎; a 44px target. */
+  .card-undo {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    z-index: 2;
+    width: 44px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 14px;
+    color: var(--faint);
+    animation: fade-in var(--t-fast) ease;
+    transition:
+      color var(--t-fast) ease,
+      background-color var(--t-fast) ease;
+  }
+  .card-undo:active {
+    color: var(--accent);
+    background: var(--accent-soft);
   }
 </style>

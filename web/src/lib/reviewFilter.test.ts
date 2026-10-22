@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cefrLabel, filterSummary, toggleIn } from './reviewFilter.ts'
+import { cefrLabel, filterChips, filterSummary, toggleIn } from './reviewFilter.ts'
 
 describe('review filter labels', () => {
   it('summarises a filter on one line', () => {
@@ -22,5 +22,23 @@ describe('review filter labels', () => {
     expect(toggleIn(f, 'tags', 'Java')).toEqual({ tags: ['Kafka', 'Java'] })
     expect(toggleIn(f, 'tags', 'Kafka')).toBeNull()
     expect(toggleIn({ tags: ['a'] }, 'types', 'word')).toEqual({ tags: ['a'], types: ['word'] })
+  })
+})
+
+describe('filter summary with tag paths', () => {
+  it('names a nested tag by its last part', () => {
+    expect(filterSummary({ tags: ['Grammar/Articles & nouns', 'claude'] })).toBe('Articles & nouns, claude')
+  })
+})
+
+describe('filter chips', () => {
+  it('lists each active value, removable on its own', () => {
+    const f = { types: ['word' as const], tags: ['Grammar/Articles & nouns'], pos: ['phrasal_verb' as const], cefr: ['B2' as const, 'C1' as const, 'C2' as const], directions: ['reverse' as const] }
+    const chips = filterChips(f)
+    expect(chips.map((c) => c.label)).toEqual(['Words', 'Grammar › Articles & nouns', 'Phrasal verb', 'B2+', 'RU → EN'])
+    expect(chips[1]!.without).toEqual({ types: ['word'], pos: ['phrasal_verb'], cefr: ['B2', 'C1', 'C2'], directions: ['reverse'] })
+    expect(chips[3]!.without?.cefr).toBeUndefined()
+    expect(filterChips({ tags: ['claude'] })[0]!.without).toBeNull()
+    expect(filterChips(null)).toEqual([])
   })
 })

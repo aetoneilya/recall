@@ -6,7 +6,7 @@ import {
   type Author, type CardState, type CleanFact, type Fact, type FactInput, type FactStatus,
 } from '@recall/core'
 import { newId, tx, type Db } from './db.ts'
-import { cardSummary, createDeck, getDeck, HttpError, listDecks, resolveDeck, stateValues, toCard, withClaudeTag, type CardRow, type CardSummary } from './repo.ts'
+import { cardSummary, createDeck, getDeck, HttpError, listDecks, resolveDeck, stateValues, tagArgs, tagList, tagWhere, toCard, withClaudeTag, type CardRow, type CardSummary } from './repo.ts'
 
 // A fact with the same normalised question already exists in the deck.
 export class DuplicateFactError extends HttpError {
@@ -256,7 +256,8 @@ export function factItem(db: Db, userId: string, id: string, now: Date): FactIte
 export interface FactSearch {
   deck?: string
   q?: string
-  tag?: string
+  // Every tag given (or one under it) must be on the fact.
+  tag?: string | string[]
   status?: FactStatus
   limit?: number
   offset?: number
@@ -276,9 +277,9 @@ export function searchFacts(db: Db, userId: string, s: FactSearch, now: Date): {
     where.push('f.status = ?')
     args.push(s.status)
   }
-  if (s.tag) {
-    where.push('EXISTS (SELECT 1 FROM json_each(f.tags) WHERE json_each.value = ?)')
-    args.push(s.tag)
+  for (const t of tagList(s.tag)) {
+    where.push(tagWhere('f.tags'))
+    args.push(...tagArgs(t))
   }
   if (s.q?.trim()) {
     const like = `%${s.q.trim().replace(/[\\%_]/g, (c) => '\\' + c)}%`

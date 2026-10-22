@@ -1,4 +1,5 @@
 <script lang="ts">
+  import TagSuggest from './TagSuggest.svelte'
   import { CEFR_LEVELS, PARTS_OF_SPEECH } from '@recall/core'
   import { POS_NAMES, type WordForm } from '../lib/wordForm.ts'
   import Icon from './Icon.svelte'
@@ -13,8 +14,11 @@
     onsubmit,
     onedit,
     translationInput = $bindable(),
+    tags = [],
   }: {
     form: WordForm
+    // The deck's tags, to complete the tags field from.
+    tags?: string[]
     showTerm?: boolean
     langs?: [string, string]
     onsubmit?: () => void
@@ -104,8 +108,9 @@
 
   <label class="f">
     <span class="lbl">Tags <em>book, article, topic</em></span>
-    <input bind:value={form.tags} placeholder="comma-separated" autocomplete="off" autocapitalize="off" />
+    <input bind:value={form.tags} placeholder="comma-separated; a/b nests" autocomplete="off" autocapitalize="off" />
   </label>
+  <TagSuggest bind:value={form.tags} {tags} />
 </div>
 
 <style>

@@ -39,8 +39,8 @@ describe('grammar handbook format', () => {
       'third-person-s', 'third-person-s:card:0', 'third-person-s:card:1', 'third-person-s:card:2',
       'past-simple-ed', 'past-simple-ed:card:0', 'past-simple-ed:card:1', 'past-simple-ed:card:2',
     ])
-    expect(p.facts[0]).toMatchObject({ front: 'Third person -s (invented test topic)', back: expect.stringMatching(/^\*\*he \/ she/), tags: ['Grammar', 'Present tenses'] })
-    expect(p.facts[1]!.tags).toEqual(['Grammar theory', 'Present tenses'])
+    expect(p.facts[0]).toMatchObject({ front: 'Third person -s (invented test topic)', back: expect.stringMatching(/^\*\*he \/ she/), tags: ['Grammar/Present tenses'] })
+    expect(p.facts[1]!.tags).toEqual(['Grammar/Present tenses'])
 
     const bad = (f: (d: ReturnType<typeof raw>) => void) => {
       const d = raw()
@@ -114,10 +114,10 @@ describe('adding the handbook', () => {
     expect(refs(ctx)).toEqual(p.facts.map((f) => `pack:grammar-handbook:${f.key}`))
     const facts = searchFacts(ctx.db, ctx.user.id, {}, ctx.now()).facts
     expect(facts.map((f) => [f.tags, f.createdBy, f.handbook])).toEqual([
-      [['Grammar', 'Present tenses'], 'import', { topic: 'third-person-s', role: 'rule' }],
-      ...[0, 1, 2].map(() => [['Grammar theory', 'Present tenses'], 'import', { topic: 'third-person-s', role: 'card' }]),
-      [['Grammar', 'Past tenses'], 'import', { topic: 'past-simple-ed', role: 'rule' }],
-      ...[0, 1, 2].map(() => [['Grammar theory', 'Past tenses'], 'import', { topic: 'past-simple-ed', role: 'card' }]),
+      [['Grammar/Present tenses'], 'import', { topic: 'third-person-s', role: 'rule' }],
+      ...[0, 1, 2].map(() => [['Grammar/Present tenses'], 'import', { topic: 'third-person-s', role: 'card' }]),
+      [['Grammar/Past tenses'], 'import', { topic: 'past-simple-ed', role: 'rule' }],
+      ...[0, 1, 2].map(() => [['Grammar/Past tenses'], 'import', { topic: 'past-simple-ed', role: 'card' }]),
     ])
     const pool = listExercises(ctx.db, ctx.user.id, facts[0]!.id)
     expect(pool.map((e) => e.type)).toEqual(['choose', 'choose', 'spot', 'choose', 'write', 'write'])
@@ -174,12 +174,15 @@ describe('handbook API', () => {
     const ctx = makeCtx()
     load()
     const en = deck(ctx)
-    const own = createFact(ctx.db, ctx.user.id, { deckId: en.id, fact: { front: 'My own rule', back: 'Mine.', tags: ['Grammar'] }, status: 'active', createdBy: 'user' }, ctx.now()).fact
-    createFact(ctx.db, ctx.user.id, { deckId: en.id, fact: { front: 'Not grammar', back: 'x' }, status: 'active', createdBy: 'user' }, ctx.now())
-    expect(handbook(ctx.db, ctx.user.id, en.id)).toEqual({ topics: [], mine: [{ factId: own.id, title: 'My own rule', rule: 'Mine.', exercises: 0 }] })
+    const own = createFact(ctx.db, ctx.user.id, { deckId: en.id, fact: { front: 'My own rule', back: 'Mine.', tags: ['Grammar/Agreement', 'Grammar/My rules'] }, status: 'active', createdBy: 'user' }, ctx.now()).fact
+    // Tagged before tags were paths: still mine.
+    const flat = createFact(ctx.db, ctx.user.id, { deckId: en.id, fact: { front: 'An old rule', back: 'Old.', tags: ['Grammar', 'Agreement'] }, status: 'active', createdBy: 'user', createdAt: new Date(ctx.now().getTime() + 1) }, ctx.now()).fact
+    createFact(ctx.db, ctx.user.id, { deckId: en.id, fact: { front: 'Not grammar', back: 'x', tags: ['Grammarly'] }, status: 'active', createdBy: 'user' }, ctx.now())
+    expect(handbook(ctx.db, ctx.user.id, en.id)).toEqual({ topics: [], mine: [{ factId: own.id, title: 'My own rule', rule: 'Mine.', exercises: 0 }, { factId: flat.id, title: 'An old rule', rule: 'Old.', exercises: 0 }] })
     addPack(ctx.db, ctx.user.id, 'grammar-handbook', ctx.now())
-    const facts = searchFacts(ctx.db, ctx.user.id, { tag: 'Grammar' }, ctx.now()).facts.filter((f) => f.handbook)
-    const cards = searchFacts(ctx.db, ctx.user.id, { tag: 'Grammar theory' }, ctx.now()).facts
+    const book = searchFacts(ctx.db, ctx.user.id, { tag: 'Grammar' }, ctx.now()).facts
+    const facts = book.filter((f) => f.handbook?.role === 'rule')
+    const cards = book.filter((f) => f.handbook?.role === 'card')
     const h = handbook(ctx.db, ctx.user.id, en.id)
     expect(h.topics).toEqual([
       {
@@ -188,11 +191,14 @@ describe('handbook API', () => {
       },
       { id: 'past-simple-ed', group: 'Past tenses', title: 'Past simple -ed (invented test topic)', level: 'A2', summary: expect.any(String), ruleFactId: facts[1]!.id, cardFactIds: cards.slice(3).map((c) => c.id), exercises: 5 },
     ])
-    expect(h.mine.map((m) => m.factId)).toEqual([own.id])
+    expect(h.mine.map((m) => m.factId)).toEqual([own.id, flat.id])
     // Another deck has none; without the pack file the facts still tell.
     expect(handbook(ctx.db, ctx.user.id, createDeck(ctx.db, ctx.user.id, { name: 'Other' }, ctx.now()).id).topics).toEqual([])
     setPacks([])
     expect(handbook(ctx.db, ctx.user.id, en.id).topics[1]).toMatchObject({ id: 'past-simple-ed', group: 'Past tenses', title: 'Past simple -ed (invented test topic)', level: '', summary: expect.stringMatching(/Regular verbs/) })
+    // A topic added before tags were paths reads its group from the flat tags.
+    createFact(ctx.db, ctx.user.id, { deckId: en.id, fact: { front: 'Old modal rule', back: 'm', tags: ['Grammar', 'Modals'] }, status: 'active', createdBy: 'import', importRef: 'pack:grammar-handbook:old-modals' }, ctx.now())
+    expect(handbook(ctx.db, ctx.user.id, en.id).topics.find((t) => t.id === 'old-modals')).toMatchObject({ group: 'Modals', title: 'Old modal rule' })
     expect(handbookRef('pack:grammar-handbook:x:ex:1')).toBeNull()
     expect(handbookRef('pack:irregular-verbs:be')).toBeNull()
   })

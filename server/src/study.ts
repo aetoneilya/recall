@@ -5,9 +5,9 @@
 // Words' and facts' cards are read alike through the study_cards view
 // (db.ts v6): `c.item_id` is the word or fact, `c.deck_id`/`c.user_id` its own.
 import {
-  cleanReviewFilter, dayKey, dayStart, inReviewFilter, nextDayStart, retrievability, review,
+  cleanReviewFilter, dayKey, dayStart, DIRECTIONS, facetOptions, inReviewFilter, nextDayStart, retrievability, review,
   type Card, type CardFacts, type CardState, type CardType, type Cefr, type DayOptions, type Direction, type PartOfSpeech, type QueueItem, type Rating,
-  type ReviewFilter, type ReviewInput, type ReviewLog,
+  type FacetItem, type ReviewFilter, type ReviewInput, type ReviewLog,
 } from '@recall/core'
 import { tx, type Db } from './db.ts'
 import { exercisesForQueue, MIN_POOL, recordAttempts, revertAttempts, SERVABLE } from './exercises.ts'
@@ -273,26 +273,24 @@ export interface ReviewOptions {
   directions: { value: Direction; n: number }[]
 }
 
-// The review filter sheet: the deck's options, and today's count under a
-// draft filter (not saved).
+// The review filter sheet: today's count under a draft filter (not saved)
+// and the deck's options, drill-down (core.facetOptions): an option counted
+// as the draft plus that option, active words and facts, a word once per
+// enabled direction for `directions`.
 export function reviewOptions(db: Db, userId: string, opts: DayOptions, now: Date, deckId: string, filter: ReviewFilter | null): ReviewOptions {
   const deck = getDeck(db, userId, deckId)
   if (!deck) throw new HttpError(404, 'deck not found')
-  const q = selectQueue(db, userId, opts, now, deckId, new Map([[deckId, cleanReviewFilter(filter)]]))
+  const draft = cleanReviewFilter(filter)
+  const q = selectQueue(db, userId, opts, now, deckId, new Map([[deckId, draft]]))
   const words = db.prepare("SELECT pos, cefr, tags FROM words WHERE user_id = ? AND deck_id = ? AND status = 'active'").all(userId, deckId) as { pos: string; cefr: string | null; tags: string }[]
   const facts = db.prepare(`SELECT f.tags, (SELECT count(*) FROM fact_exercises e WHERE e.fact_id = f.id AND ${SERVABLE}) AS pool
     FROM facts f WHERE f.user_id = ? AND f.deck_id = ? AND f.status = 'active'`).all(userId, deckId) as { tags: string; pool: number }[]
-  const count = <T extends string>(xs: (T | null)[]) => {
-    const m = new Map<T, number>()
-    for (const x of xs) if (x) m.set(x, (m.get(x) ?? 0) + 1)
-    return [...m].map(([value, n]) => ({ value, n })).sort((a, b) => b.n - a.n || a.value.localeCompare(b.value))
-  }
-  const types = count<CardType>([...words.map(() => 'word' as const), ...facts.map((f) => cardType({ kind: 'fact', pool: f.pool }))])
-  const tags = count<string>([...words, ...facts].flatMap((x) => JSON.parse(x.tags) as string[]))
-  const pos = count<PartOfSpeech>(words.map((w) => w.pos as PartOfSpeech))
-  const cefr = count<Cefr>(words.map((w) => w.cefr as Cefr | null))
-  const directions = words.length ? (['forward', 'reverse'] as const).filter((d) => (d === 'forward' ? deck.forwardEnabled : deck.reverseEnabled)).map((value) => ({ value, n: words.length })) : []
-  return { counts: { new: q.fresh.length, learning: q.learning.length, review: q.reviews.length }, types, tags, pos, cefr, directions }
+  const directions = DIRECTIONS.filter((d) => (d === 'forward' ? deck.forwardEnabled : deck.reverseEnabled))
+  const items: FacetItem[] = [
+    ...words.map((w) => ({ type: 'word' as const, tags: JSON.parse(w.tags) as string[], pos: w.pos as PartOfSpeech, cefr: w.cefr as Cefr | null, directions })),
+    ...facts.map((f) => ({ type: cardType({ kind: 'fact', pool: f.pool }), tags: JSON.parse(f.tags) as string[] })),
+  ]
+  return { counts: { new: q.fresh.length, learning: q.learning.length, review: q.reviews.length }, ...facetOptions(items, draft) }
 }
 
 // ---------- reviews ----------

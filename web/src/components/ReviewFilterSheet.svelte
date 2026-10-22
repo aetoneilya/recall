@@ -6,10 +6,13 @@
   import { errorText } from '../lib/toast.svelte.ts'
   import type { ReviewOptions } from '../lib/types.ts'
   import Sheet from './Sheet.svelte'
+  import TagTree from './TagTree.svelte'
 
   // "What to review" for one deck: card types, tags, and for words part of
-  // speech, level and direction; empty = everything. The count of today's
-  // cards follows the draft; Done saves it on the deck.
+  // speech, level and direction; empty = everything. It drills down: each
+  // pick narrows (AND), and the server offers only options that still have
+  // cards under the draft, plus the picked ones. Today's count follows the
+  // draft; Done saves it on the deck.
   let {
     deckId,
     deckName,
@@ -70,7 +73,7 @@
     <p class="note">{error}</p>
   {/if}
   {#if options}
-    {#if options.types.length > 1}
+    {#if options.types.length > 1 || draft?.types?.length}
       <div class="label">Cards</div>
       <div class="chips">
         {#each options.types as t (t.value)}
@@ -80,13 +83,9 @@
     {/if}
     {#if options.tags.length}
       <div class="label">Tags</div>
-      <div class="chips">
-        {#each options.tags as t (t.value)}
-          <button class="chip-btn" class:on={on('tags', t.value)} aria-pressed={on('tags', t.value)} onclick={() => (draft = toggleIn(draft, 'tags', t.value))}>{t.value} <b>{t.n}</b></button>
-        {/each}
-      </div>
+      <TagTree tags={options.tags} selected={draft?.tags ?? []} onchange={(tags) => (draft = { ...(draft ?? {}), tags })} />
     {/if}
-    {#if hasWords && options.pos.length > 1}
+    {#if hasWords && (options.pos.length > 1 || draft?.pos?.length)}
       <div class="label">Words: part of speech</div>
       <div class="chips">
         {#each options.pos as p (p.value)}
@@ -94,15 +93,15 @@
         {/each}
       </div>
     {/if}
-    {#if hasWords && options.cefr.length}
+    {#if hasWords && (options.cefr.length || draft?.cefr?.length)}
       <div class="label">Words: level</div>
       <div class="chips">
-        {#each CEFR_LEVELS.filter((c) => options!.cefr.some((x) => x.value === c)) as c (c)}
+        {#each CEFR_LEVELS.filter((c) => options!.cefr.some((x) => x.value === c) || on('cefr', c)) as c (c)}
           <button class="chip-btn" class:on={on('cefr', c)} aria-pressed={on('cefr', c)} onclick={() => (draft = toggleIn(draft, 'cefr', c))}>{c}</button>
         {/each}
       </div>
     {/if}
-    {#if hasWords && options.directions.length > 1}
+    {#if hasWords && (options.directions.length > 1 || draft?.directions?.length)}
       <div class="label">Words: direction</div>
       <div class="chips">
         {#each options.directions as d (d.value)}
@@ -110,7 +109,7 @@
         {/each}
       </div>
     {/if}
-    <p class="note">Nothing selected in a row means all of it. Cards outside the filter wait; they don't use the day's new cards.</p>
+    <p class="note">Each pick narrows the cards further; only what still has cards is offered. Cards outside the filter wait and don't use the day's new cards.</p>
   {/if}
   <div class="actions">
     <button class="btn" onclick={() => (draft = null)} disabled={!draft}>Clear</button>

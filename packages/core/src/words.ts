@@ -4,6 +4,7 @@ import {
   CEFR_LEVELS, PARTS_OF_SPEECH,
   type Cefr, type Direction, type Example, type PartOfSpeech, type VerbForms, type Word,
 } from './types.ts'
+import { cleanTag } from './tags.ts'
 
 // "began · begun", "learned / learnt · learned / learnt": variants by " / ",
 // past · participle. Word cards and the irregular-verbs pack's facts.
@@ -181,8 +182,8 @@ export function cleanWord(input: WordInput): { word: CleanWord } | { error: stri
   if (note && note.length > LIMITS.note) return { error: `note is longer than ${LIMITS.note} characters` }
   const tags: string[] = []
   for (const t of input.tags ?? []) {
-    const s = blankToNull(t)
-    if (s && !tags.includes(s)) tags.push(s.slice(0, LIMITS.tag))
+    const s = cleanTag(t, LIMITS.tag)
+    if (s && !tags.includes(s)) tags.push(s)
   }
   if (tags.length > LIMITS.tags) return { error: `at most ${LIMITS.tags} tags` }
   const cefr = input.cefr ?? null

@@ -608,7 +608,8 @@ export interface WordSearch {
   status?: WordStatus
   pos?: PartOfSpeech
   cefr?: Cefr
-  tag?: string
+  // Every tag given (or one under it) must be on the word.
+  tag?: string | string[]
   sort?: WordSort
   limit?: number
   offset?: number
@@ -671,9 +672,9 @@ export function searchWords(db: Db, userId: string, s: WordSearch, now: Date): {
     where.push(`(${cols.map((c) => `${c} LIKE ? ESCAPE '\\'`).join(' OR ')})`)
     args.push(...cols.map(() => like))
   }
-  if (s.tag) {
-    where.push('EXISTS (SELECT 1 FROM json_each(w.tags) WHERE json_each.value = ?)')
-    args.push(s.tag)
+  for (const t of tagList(s.tag)) {
+    where.push(tagWhere('w.tags'))
+    args.push(...tagArgs(t))
   }
   const clause = `WHERE ${where.join(' AND ')}`
   const limit = Math.min(Math.max(s.limit ?? 50, 1), 500)
@@ -711,6 +712,14 @@ export function differences(existing: Word, w: CleanWord): Record<string, unknow
 // status (a dropped word stays dropped) and earlier words in the batch. The
 // words are studied at once; Claude's get the "claude" tag.
 // Claude's tag first, so it survives the tag limit.
+// A tags column holding `tag` or a tag under it ("Grammar" → "Grammar/Tenses");
+// bind with tagArgs(tag).
+export const tagWhere = (col: string) =>
+  `EXISTS (SELECT 1 FROM json_each(${col}) WHERE json_each.value = ? OR json_each.value LIKE ? ESCAPE '\\')`
+export const tagArgs = (tag: string) => [tag, tag.replace(/[\\%_]/g, (c) => '\\' + c) + '/%']
+// A search's tag or tags, blanks dropped.
+export const tagList = (t: string | string[] | undefined) => (Array.isArray(t) ? t : t ? [t] : []).filter((x) => x.trim())
+
 export const withClaudeTag = (tags: string[] | undefined) => [CLAUDE_TAG, ...(tags ?? []).filter((t) => t.trim().toLowerCase() !== CLAUDE_TAG)]
 
 export function addWords(

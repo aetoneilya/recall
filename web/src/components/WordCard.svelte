@@ -2,6 +2,7 @@
   import { answerDiff, formsLine, wordFace, type AnswerCheck, type WordQueueItem } from '@recall/core'
   import { tick } from 'svelte'
   import { markTerm } from '../lib/mark.ts'
+  import CardTags from './CardTags.svelte'
   import CardActions from './CardActions.svelte'
 
   // One review card, faces from core.wordFace(). `typed` / `check`: the
@@ -66,7 +67,7 @@
 <article class="card" class:revealed>
   <div class="context">
     <span class="dir" aria-label={forward ? 'Recognise: English to Russian' : 'Recall: Russian to English'}>{dirLabel}</span>
-    {#each item.word.tags as t (t)}<span class="meta">{t}</span>{/each}
+    <CardTags tags={item.word.tags} max={2} />
     {#if isNew}<span class="new">New</span>{/if}
   </div>
   {#if revealed && onedit}
@@ -154,7 +155,7 @@
     align-items: center;
     gap: 4px 6px;
     /* Room on the right for the corner buttons, so nothing shifts on reveal. */
-    padding: 16px 92px 0 20px;
+    padding: 16px 92px 0 var(--ctx-left, 20px);
     font-size: 13px;
     line-height: 18px;
     color: var(--muted);
@@ -163,17 +164,6 @@
     font-weight: 600;
     letter-spacing: 0.01em;
     font-variant-numeric: tabular-nums;
-  }
-  .meta {
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .meta::before {
-    content: '·';
-    margin-right: 6px;
-    color: var(--faint);
   }
   .new {
     margin-left: 2px;

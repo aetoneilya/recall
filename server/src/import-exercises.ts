@@ -1,6 +1,6 @@
 // Imports grammar rules with exercise pools (a JSON file kept outside the
 // repo: the owner's private notes) into one user's topic deck.
-//   node server/src/import-exercises.ts --file <rules.json> --db <recall.db> [--user <telegram id>] [--deck <name>] [--tag "Grammar"] [--replace] [--dry-run]
+//   node server/src/import-exercises.ts --file <rules.json> --db <recall.db> [--user <telegram id>] [--deck <name>] [--tag <root> (Grammar)] [--replace] [--dry-run]
 // A file is a list of rules {id, group, title, rule (Markdown), fromNotes:
 // string[], items}. Items are tap items — {type: 'choose', text, options,
 // answer, explain} or {type: 'spot', text, wrong, options, answer, explain} —
@@ -10,7 +10,8 @@
 //
 // One fact per rule, into --deck (default: the English deck): front = title;
 // back = the rule, then "From your notes" as a list (Obsidian ==highlights==
-// become bold); tags = [--tag ("Grammar"), group];
+// become bold); tags = [<root>/<group>, <root>/My rules] with --tag as the
+// root (default "Grammar"), so the owner's rules sit next to the handbook's;
 // import_ref rules:<id>. Its items go to the pool with import_ref
 // <id>:tap:<n> (tap items) or <id>:<n> (legacy). Idempotent: a rule already
 // imported keeps its fact as it is and only gets the items it lacks; new
@@ -20,7 +21,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { isTapType, type ExerciseInput } from '@recall/core'
+import { cleanTag, isTapType, type ExerciseInput } from '@recall/core'
 import { loadConfig } from './config.ts'
 import { openDb, type Db } from './db.ts'
 import { addExercises } from './exercises.ts'
@@ -103,7 +104,7 @@ export function importExercises(db: Db, userId: string, rules: RuleFile[], { dec
         if (replace && r.items.some((it) => isTapType(it.type))) s.exercises.replaced += Number(flagLegacy.run(factId).changes)
       } else {
         factId = createFact(db, userId, {
-          deckId: deck.id, fact: { front: r.title, back: ruleBack(r), tags: [...new Set([tag, r.group].filter(Boolean))] }, status: 'active', createdBy: 'import',
+          deckId: deck.id, fact: { front: r.title, back: ruleBack(r), tags: ruleTags(tag, r.group) }, status: 'active', createdBy: 'import',
           importRef: ref, createdAt: new Date(now.getTime() + i),
         }, now).fact.id
         s.rules.created++
@@ -137,6 +138,13 @@ export function preferReviewed(file: string): string {
   return file
 }
 
+// "Grammar", "Articles & nouns" → ["Grammar/Articles & nouns", "Grammar/My rules"].
+export const MY_RULES = 'My rules'
+export function ruleTags(root: string, group: string): string[] {
+  const under = (leaf: string) => cleanTag(`${root}/${leaf}`)
+  return [...new Set([group.trim() ? under(group) : '', under(MY_RULES)].filter(Boolean))]
+}
+
 function main(argv: string[]) {
   const arg = (name: string) => {
     const i = argv.indexOf(name)
@@ -146,7 +154,7 @@ function main(argv: string[]) {
   const cfg = loadConfig(process.env, [])
   const user = arg('--user') ?? (cfg.ownerTelegramId === null ? undefined : String(cfg.ownerTelegramId))
   if (!given || !user || !/^\d+$/.test(user)) {
-    console.error('usage: node server/src/import-exercises.ts --file <rules.json> --db <recall.db> [--user <telegram id>] [--deck <name>] [--tag "Grammar"] [--replace] [--dry-run]')
+    console.error('usage: node server/src/import-exercises.ts --file <rules.json> --db <recall.db> [--user <telegram id>] [--deck <name>] [--tag <root> (Grammar)] [--replace] [--dry-run]')
     console.error('--user defaults to OWNER_TELEGRAM_ID; <name>.choice.json, then <name>.reviewed.json next to the file is preferred;')
     console.error('--replace flags out the legacy typed items of rules already imported before adding the new ones')
     process.exit(2)

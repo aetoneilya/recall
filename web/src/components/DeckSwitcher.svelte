@@ -1,16 +1,16 @@
 <script lang="ts">
   import { haptic } from '../lib/telegram.ts'
-  import Sheet from './Sheet.svelte'
 
-  // One deck at a time. Up to three decks: pills with what each has (`n`),
-  // the selected one in the accent. More: one button that opens a sheet of
-  // decks with their new · learning · due. A single deck: just its name.
+  // One deck at a time: a compact "English 23 ▾" that opens a small menu of
+  // the decks with what each has today, the current one checked. A single
+  // deck: just its name.
   type Option = { id: string; name: string; n?: number; counts?: { new: number; learning: number; review: number } }
   let { options, selected, onselect, label = 'Deck' }: { options: Option[]; selected: string; onselect: (id: string) => void; label?: string } = $props()
 
   let open = $state(false)
+  let root: HTMLElement | undefined = $state()
   const current = $derived(options.find((d) => d.id === selected) ?? options[0])
-  const today = $derived(options.reduce((n, d) => n + (d.n ?? 0), 0))
+
   function pick(id: string) {
     open = false
     if (id !== selected) {
@@ -18,109 +18,159 @@
       onselect(id)
     }
   }
+  function toggle() {
+    open = !open
+    if (open) haptic.select()
+  }
+  // A tap anywhere else, or Escape, closes the menu.
+  function outside(e: Event) {
+    if (open && root && !root.contains(e.target as Node)) open = false
+  }
+  function onKey(e: KeyboardEvent) {
+    if (open && e.key === 'Escape') {
+      e.preventDefault()
+      e.stopPropagation()
+      open = false
+    }
+  }
 </script>
 
-{#if options.length > 3}
-  <button class="deck on summary" onclick={() => (open = true)} aria-haspopup="dialog" aria-label="{label}: {current?.name}">
-    {current?.name}{#if current?.n !== undefined}<b>{current.n}</b>{/if}<span class="chev" aria-hidden="true">▾</span>
-  </button>
-  {#if open}
-    <Sheet title="Decks" onclose={() => (open = false)}>
-      <div class="group">
+<svelte:window onpointerdown={outside} onkeydown={onKey} />
+
+{#if options.length > 1}
+  <div class="dd" bind:this={root}>
+    <button class="btn-dd" class:open onclick={toggle} aria-haspopup="menu" aria-expanded={open} aria-label="{label}: {current?.name}{current?.n !== undefined ? `, ${current.n} today` : ''}">
+      <span class="name">{current?.name}</span>
+      {#if current?.n !== undefined}<b>{current.n}</b>{/if}
+      <svg class="chev" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+    </button>
+    {#if open}
+      <div class="menu" role="menu" aria-label={label}>
         {#each options as d (d.id)}
-          <button class="row pick" class:sel={d.id === selected} onclick={() => pick(d.id)}>
-            <span class="grow name">{d.name}</span>
+          <button role="menuitemradio" aria-checked={d.id === selected} class:sel={d.id === selected} onclick={() => pick(d.id)}>
+            <span class="check" aria-hidden="true">{#if d.id === selected}<svg viewBox="0 0 24 24" width="16" height="16"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>{/if}</span>
+            <span class="mname">{d.name}</span>
             {#if d.counts}
-              <span class="cnt"><i class="n">{d.counts.new}</i> · <i class="l">{d.counts.learning}</i> · <i class="r">{d.counts.review}</i></span>
+              <span class="cnt"><i class="n" class:z={!d.counts.new}>{d.counts.new}</i><i class="l" class:z={!d.counts.learning}>{d.counts.learning}</i><i class="r" class:z={!d.counts.review}>{d.counts.review}</i></span>
             {:else if d.n !== undefined}<span class="cnt">{d.n}</span>{/if}
-            <span class="check" aria-hidden="true">{d.id === selected ? '✓' : ''}</span>
           </button>
         {/each}
       </div>
-      <p class="foot">{today} {today === 1 ? 'card' : 'cards'} today{today ? ` · ≈ ${Math.max(1, Math.round((today * 15) / 60))} min` : ''}</p>
-      <div class="actions"><button class="btn block" onclick={() => (open = false)}>Close</button></div>
-    </Sheet>
-  {/if}
-{:else if options.length > 1}
-  <div class="decks" role="radiogroup" aria-label={label}>
-    {#each options as d (d.id)}
-      <button class="deck" role="radio" aria-checked={d.id === selected} class:on={d.id === selected} onclick={() => pick(d.id)}>
-        {d.name}{#if d.n !== undefined}<b>{d.n}</b>{/if}
-      </button>
-    {/each}
+    {/if}
   </div>
 {:else if options.length === 1}
   <p class="one">{options[0]!.name}</p>
 {/if}
 
 <style>
-  .decks {
-    display: flex;
-    gap: 6px;
-    min-width: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
-    -webkit-user-select: none;
-    user-select: none;
+  .dd {
+    position: relative;
+    display: inline-block;
+    max-width: 100%;
   }
-  .decks::-webkit-scrollbar {
-    display: none;
-  }
-  .deck {
-    flex: none;
+  .btn-dd {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    height: 32px;
-    padding: 0 13px;
-    border-radius: 16px;
-    font-size: 15px;
-    font-weight: 500;
-    white-space: nowrap;
-    color: var(--muted);
-    background: var(--surface);
-    font-variant-numeric: tabular-nums;
-    transition:
-      background-color var(--t-fast) ease,
-      color var(--t-fast) ease,
-      transform var(--t-press) var(--ease-out);
-  }
-  .deck b {
+    max-width: 100%;
+    min-height: 40px;
+    padding: 0 10px 0 6px;
+    border-radius: 12px;
+    font-size: 17px;
     font-weight: 650;
-    color: var(--faint);
+    color: var(--text);
+    -webkit-user-select: none;
+    user-select: none;
+    transition: background-color var(--t-fast) ease;
   }
-  .deck.on {
-    color: var(--accent-text);
-    background: var(--accent);
+  .btn-dd:active,
+  .btn-dd.open {
+    background: var(--surface);
   }
-  .deck.on b {
-    color: inherit;
-    opacity: 0.85;
-  }
-  .deck:active {
-    transform: scale(0.96);
-  }
-  .one {
-    margin: 0;
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--muted);
-    white-space: nowrap;
+  .btn-dd .name {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .summary {
-    max-width: 100%;
+  .btn-dd b {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
   }
   .chev {
-    font-size: 11px;
-    opacity: 0.7;
+    flex: none;
+    fill: none;
+    stroke: var(--muted);
+    stroke-width: 2.4;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: transform var(--t-fast) var(--ease-out);
   }
-  .pick {
-    gap: 12px;
+  .btn-dd.open .chev {
+    transform: rotate(180deg);
   }
-  .pick .name {
+  /* A small popover under the control, not a sheet. */
+  .menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 30;
+    min-width: 220px;
+    max-width: min(320px, calc(100vw - 32px));
+    padding: 4px;
+    border-radius: 14px;
+    background: var(--surface);
+    box-shadow:
+      0 0 0 0.5px var(--hairline),
+      0 10px 28px rgba(0, 0, 0, 0.18);
+    transform-origin: top left;
+    animation: pop 160ms var(--ease-out);
+  }
+  @keyframes pop {
+    from {
+      opacity: 0;
+      transform: translateY(-4px) scale(0.98);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .menu {
+      animation: fade-in 120ms ease;
+    }
+  }
+  .menu button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 44px;
+    padding: 0 12px 0 8px;
+    border-radius: 10px;
+    text-align: left;
+    font-size: 15px;
+    color: var(--text);
+  }
+  .menu button:active {
+    background: var(--surface-2);
+  }
+  .menu .sel .mname {
     font-weight: 600;
+  }
+  .check {
+    flex: none;
+    width: 18px;
+    display: flex;
+  }
+  .check svg {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 2.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .mname {
+    flex: 1;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -128,7 +178,9 @@
   }
   .cnt {
     flex: none;
-    font-size: 14px;
+    display: inline-flex;
+    gap: 8px;
+    font-size: 13px;
     color: var(--faint);
     font-variant-numeric: tabular-nums;
   }
@@ -145,28 +197,15 @@
   .cnt .r {
     color: var(--c-review);
   }
-  .check {
-    flex: none;
-    width: 18px;
-    color: var(--accent);
-    font-weight: 700;
+  .cnt .z {
+    color: var(--faint);
+    font-weight: 500;
   }
-  .foot {
-    margin: 10px 4px 0;
-    font-size: 13px;
-    color: var(--muted);
-    font-variant-numeric: tabular-nums;
-  }
-  .actions {
-    margin-top: 16px;
-  }
-  /* The pill keeps its size; the tap area is 44px tall. */
-  .deck {
-    position: relative;
-  }
-  .deck::after {
-    content: '';
-    position: absolute;
-    inset: -6px -2px;
+  .one {
+    margin: 0;
+    padding: 0 6px;
+    font-size: 17px;
+    font-weight: 650;
+    line-height: 40px;
   }
 </style>

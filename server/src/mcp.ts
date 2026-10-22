@@ -12,7 +12,7 @@ import { addFacts, deleteFact, factItem, searchFacts, setFactSuspended, updateFa
 import { tx } from './db.ts'
 import { lexiconOf } from './lexicon.ts'
 import {
-  addWords, createDeck, defaultDeck, deleteWord, HttpError, mustHaveLanguages, resolveDeck, searchWords, setWordStatus, setWordSuspended, syncFreqRanks,
+  addWords, createDeck, defaultDeck, deleteWord, HttpError, mustHaveLanguages, resolveDeck, searchWords, setWordStatus, setWordSuspended, syncFreqRanks, tagList,
   updateWord, withCards, type WordListItem, type WordRow,
 } from './repo.ts'
 import { decksWithCounts, leeches, stats, wordLogs } from './study.ts'
@@ -20,7 +20,7 @@ import { userDayOptions, type User } from './users.ts'
 
 const INSTRUCTIONS = `Mnemosyne is the user's personal vocabulary trainer (spaced repetition, FSRS). The user is a Russian speaker learning English; each language they learn is one deck ("English": English terms, Russian translations).
 
-Decks are big containers ("English", "Programming") holding cards of any type: words (only in a deck with languages), question/answer facts, and grammar rules (facts with an exercise pool). Subjects inside a deck — Java Core, Databases, Grammar — are tags, not decks. The fact tools (create_deck, search_facts, add_facts, update_fact, set_fact_status) work on any deck. A fact has a question (front) and an answer (back), both Markdown; one card each; the user reviews one deck at a time. Good facts: one idea per card; a question with one clear answer (not "tell me about X"); a short answer — a few sentences or a short list, **bold** for the key point, \`code\` for identifiers, a fenced block only for a few lines of code. Facts you add are studied at once, like words.
+Decks are big containers ("English", "Programming") holding cards of any type: words (only in a deck with languages), question/answer facts, and grammar rules (facts with an exercise pool). Subjects inside a deck — Java Core, Databases, Grammar — are tags, not decks. A tag with "/" is a path ("Grammar/Tenses", "Books/wuthering heights"): searching or filtering by a tag also finds the tags under it. The fact tools (create_deck, search_facts, add_facts, update_fact, set_fact_status) work on any deck. A fact has a question (front) and an answer (back), both Markdown; one card each; the user reviews one deck at a time. Good facts: one idea per card; a question with one clear answer (not "tell me about X"); a short answer — a few sentences or a short list, **bold** for the key point, \`code\` for identifiers, a fenced block only for a few lines of code. Facts you add are studied at once, like words.
 
 Each word has two cards: forward (English → Russian, recognition) and reverse (Russian → English, production; its prompt shows the translations and the first example with the term blanked out as "___"). A deck can turn a direction off or delay reverse cards until the forward card is stable.
 
@@ -146,14 +146,15 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
       status: status.optional().describe('active = being studied; rejected = dropped by the user, never shown.'),
       pos: pos.optional(),
       cefr: cefr.optional(),
-      tag: z.string().optional().describe('Only words with this tag.'),
+      tag: z.string().optional().describe('Only words with this tag or one under it ("Books" finds "Books/wuthering heights").'),
+      tags: z.array(z.string()).max(10).optional().describe('Only words carrying every one of these tags (each or one under it), with tag.'),
       limit: z.number().int().min(1).max(100).optional().describe('Default 20.'),
       offset: z.number().int().min(0).optional(),
     },
     annotations: { readOnlyHint: true },
   }, guard((a) => {
     lex()
-    const r = searchWords(db, uid, { deck: a.deck, q: a.query, status: a.status, pos: a.pos, cefr: a.cefr, tag: a.tag, limit: a.limit ?? 20, offset: a.offset }, ctx.now())
+    const r = searchWords(db, uid, { deck: a.deck, q: a.query, status: a.status, pos: a.pos, cefr: a.cefr, tag: [...tagList(a.tag), ...(a.tags ?? [])], limit: a.limit ?? 20, offset: a.offset }, ctx.now())
     return { total: r.total, words: r.words.map(brief) }
   }))
 
@@ -250,7 +251,8 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
     inputSchema: {
       query: z.string().optional().describe('Substring to look for.'),
       deck: z.string().optional().describe('Deck name or id; default all.'),
-      tag: z.string().optional().describe('Only facts with this tag, e.g. "Concurrency".'),
+      tag: z.string().optional().describe('Only facts with this tag or one under it, e.g. "Concurrency"; "Grammar" also finds "Grammar/Tenses".'),
+      tags: z.array(z.string()).max(10).optional().describe('Only facts carrying every one of these tags (each or one under it), with tag.'),
       status: status.optional().describe('active = being studied; rejected = dropped by the user, never shown.'),
       limit: z.number().int().min(1).max(100).optional().describe('Default 20.'),
       offset: z.number().int().min(0).optional(),
@@ -258,7 +260,7 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
     annotations: { readOnlyHint: true },
   }, guard((a) => {
     if (a.deck) deckOf(a.deck)
-    const r = searchFacts(db, uid, { deck: a.deck, q: a.query, tag: a.tag, status: a.status, limit: a.limit ?? 20, offset: a.offset }, ctx.now())
+    const r = searchFacts(db, uid, { deck: a.deck, q: a.query, tag: [...tagList(a.tag), ...(a.tags ?? [])], status: a.status, limit: a.limit ?? 20, offset: a.offset }, ctx.now())
     return { total: r.total, facts: r.facts.map(factBrief) }
   }))
 
@@ -322,7 +324,7 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
 
   server.registerTool('add_pack', {
     title: 'Add content pack',
-    description: 'Adds a content pack\'s cards to a deck (default: irregular verbs and the grammar handbook into the English deck, other packs into a deck named after the pack), each tagged with the pack\'s name (the grammar handbook: Grammar / Grammar theory + the topic\'s group); they are active at once, introduced in the pack\'s order (most useful first). The grammar handbook adds per topic a rule (title → cheat sheet) with its exercise pool, and the theory cards; `exercises` = items added to rules. Running it again adds only what the user lacks, including new exercises of rules already added. Only when the user asked for it.',
+    description: 'Adds a content pack\'s cards to a deck (default: irregular verbs and the grammar handbook into the English deck, other packs into a deck named after the pack), each tagged with the pack\'s name (the grammar handbook: "Grammar/<the topic\'s group>" on rules and theory cards alike); they are active at once, introduced in the pack\'s order (most useful first). The grammar handbook adds per topic a rule (title → cheat sheet) with its exercise pool, and the theory cards; `exercises` = items added to rules. Running it again adds only what the user lacks, including new exercises of rules already added. Only when the user asked for it.',
     inputSchema: { id: z.string().describe('Pack id from list_packs.'), deck: z.string().optional().describe('Deck name or id to add it to.') },
   }, guard(({ id, deck }) => {
     const r = addPack(db, uid, id, ctx.now(), { deckId: deck })

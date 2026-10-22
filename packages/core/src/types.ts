@@ -1,4 +1,5 @@
 import type { ExerciseAttempt, ExerciseItem } from './exercises.ts'
+import { cleanTag, tagMatches } from './tags.ts'
 
 // Shared shapes for the server, the web app and the MCP tools. Dates travel
 // as ISO strings; the server stores them the same way.
@@ -77,9 +78,10 @@ export interface VerbForms {
 export type CardType = 'word' | 'fact' | 'rule'
 export const CARD_TYPES: readonly CardType[] = ['word', 'fact', 'rule']
 
-// What a deck's review session takes; every field empty or missing = all.
-// Tags apply to every card; part of speech, CEFR and direction only to
-// words (other cards pass them).
+// What a deck's review session takes; every field empty or missing = all;
+// every value given must hold (inReviewFilter). Tags apply to every card (a
+// tag takes the tags under it too, "Grammar" → "Grammar/Tenses"); part of
+// speech, CEFR and direction only to words (other cards pass them).
 export interface ReviewFilter {
   types?: CardType[]
   tags?: string[]
@@ -122,15 +124,19 @@ export interface CardFacts {
 
 const has = <T>(xs: readonly T[] | undefined): xs is readonly T[] => !!xs && xs.length > 0
 
-// Whether a card is in a deck's review filter.
+// Whether a card is in a deck's review filter. Drill-down: every selected
+// value must hold (AND, within a facet too) — tags A and B = cards with
+// both; a tag takes the tags under it ("Grammar" = any Grammar/… tag). A
+// card has one type, part of speech, CEFR and direction, so two values of
+// one of those select nothing. Word-only fields don't exclude other cards.
 export function inReviewFilter(f: ReviewFilter | null | undefined, c: CardFacts): boolean {
   if (!f) return true
-  if (has(f.types) && !f.types.includes(c.type)) return false
-  if (has(f.tags) && !c.tags.some((t) => f.tags!.includes(t))) return false
+  if (has(f.types) && !f.types.every((t) => t === c.type)) return false
+  if (has(f.tags) && !f.tags.every((ft) => c.tags.some((t) => tagMatches(ft, t)))) return false
   if (c.type === 'word') {
-    if (has(f.pos) && (!c.pos || !f.pos.includes(c.pos))) return false
-    if (has(f.cefr) && (!c.cefr || !f.cefr.includes(c.cefr))) return false
-    if (has(f.directions) && c.direction && !f.directions.includes(c.direction)) return false
+    if (has(f.pos) && !f.pos.every((p) => p === c.pos)) return false
+    if (has(f.cefr) && !f.cefr.every((x) => x === c.cefr)) return false
+    if (has(f.directions) && c.direction && !f.directions.every((d) => d === c.direction)) return false
   }
   return true
 }
@@ -140,7 +146,8 @@ export function cleanReviewFilter(f: ReviewFilter | null | undefined): ReviewFil
   if (!f) return null
   const out: ReviewFilter = {}
   for (const k of ['types', 'tags', 'pos', 'cefr', 'directions'] as const) {
-    const v = [...new Set((f[k] ?? []) as string[])].filter(Boolean)
+    const raw = (f[k] ?? []) as string[]
+    const v = [...new Set(k === 'tags' ? raw.map((t) => cleanTag(t)) : raw)].filter(Boolean)
     if (v.length) (out as Record<string, string[]>)[k] = v
   }
   return Object.keys(out).length ? out : null

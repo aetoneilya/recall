@@ -12,7 +12,7 @@
   import { haptic } from '../lib/telegram.ts'
   import { setUnsaved } from '../lib/unsaved.ts'
   import { errorText, showToast } from '../lib/toast.svelte.ts'
-  import type { CardSummary, WordItem } from '../lib/types.ts'
+  import type { CardSummary, DeckWithCounts, WordItem } from '../lib/types.ts'
   import { dirState } from '../lib/wordFilter.ts'
   import { formFrom, formToInput, type WordForm } from '../lib/wordForm.ts'
   import { words } from '../lib/words.svelte.ts'
@@ -201,7 +201,7 @@
         {#if word.status === 'rejected'}<span class="chip status rejected">dropped</span>{/if}
       </div>
 
-      <WordFields bind:form onsubmit={() => void save()} />
+      <WordFields bind:form onsubmit={() => void save()} tags={((session.decks[word.deckId] as Partial<DeckWithCounts> | undefined)?.tags ?? []).map((t) => t.tag)} />
 
       {#if word.status === 'active' || word.cards.forward?.reps || word.cards.reverse?.reps}
         <div class="section-label">Cards</div>

@@ -226,6 +226,10 @@ export function createApi(opts: ApiOptions = {}) {
       list<QueueItem>(await get<unknown>('deck' in q ? `/api/practice?deck=${enc(q.deck)}&limit=${limit}` : `/api/practice?fact=${enc(q.fact)}`), 'items').map(normalizeItem),
     // A written sentence graded by Claude (online only).
     grade: (exerciseId: string, text: string) => post<WriteGrade>(`/api/exercises/${enc(exerciseId)}/grade`, { text }),
+    // A tag and everything under it, across a deck's words and facts.
+    renameTag: (deckId: string, from: string, to: string) =>
+      post<{ cards: number; words: number; facts: number }>(`/api/decks/${enc(deckId)}/tags/rename`, { from, to }),
+    deleteTag: (deckId: string, tag: string) => post<{ cards: number; words: number; facts: number }>(`/api/decks/${enc(deckId)}/tags/delete`, { tag }),
     handbook: (deckId: string) => get<Handbook>(`/api/handbook?deck=${enc(deckId)}`),
     startVocabTest: () => post<VocabTestStart>('/api/vocab-test'),
     answerVocabTest: (id: string, answers: { id: string; known: boolean }[]) => post<TestResult>(`/api/vocab-test/${enc(id)}/answers`, { answers }),

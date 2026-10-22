@@ -4,6 +4,7 @@
   import { onDestroy, tick, untrack } from 'svelte'
   import AddTypeSwitch from '../components/AddTypeSwitch.svelte'
   import Header from '../components/Header.svelte'
+  import TagSuggest from '../components/TagSuggest.svelte'
   import Icon from '../components/Icon.svelte'
   import Markdown from '../components/Markdown.svelte'
   import { api, editOutbox } from '../lib/app.svelte.ts'
@@ -16,7 +17,7 @@
   import { haptic } from '../lib/telegram.ts'
   import { setUnsaved } from '../lib/unsaved.ts'
   import { errorText, showToast } from '../lib/toast.svelte.ts'
-  import type { ExerciseInfo, FactItem } from '../lib/types.ts'
+  import type { DeckWithCounts, ExerciseInfo, FactItem } from '../lib/types.ts'
   import { dirState } from '../lib/wordFilter.ts'
 
   // One fact: its deck, question, answer (Markdown, with a preview) and
@@ -53,6 +54,7 @@
   }
 
   const decks = $derived(Object.values(session.decks))
+  const deckTags = (id: string) => ((session.decks[id] as Partial<DeckWithCounts> | undefined)?.tags ?? []).map((t) => t.tag)
 
   let fact = $state.raw<FactItem | null>(null)
   let logs = $state.raw<ReviewLog[]>([])
@@ -445,7 +447,8 @@
         </div>
         <label class="f">
           <span class="lbl">Tags</span>
-          <input bind:value={form.tags} placeholder="comma-separated" autocomplete="off" autocapitalize="off" />
+          <input bind:value={form.tags} placeholder="comma-separated; a/b nests" autocomplete="off" autocapitalize="off" />
+          <TagSuggest bind:value={form.tags} tags={deckTags(form.deckId)} />
         </label>
       </div>
 

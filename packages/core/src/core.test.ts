@@ -127,11 +127,15 @@ describe('review filter', () => {
     const fact = { type: 'fact' as const, tags: ['Concurrency'] }
     const rule = { type: 'rule' as const, tags: ['Grammar'] }
     expect([word, fact, rule].every((c) => inReviewFilter(null, c) && inReviewFilter({}, c))).toBe(true)
-    expect([word, fact, rule].map((c) => inReviewFilter({ types: ['word', 'rule'] }, c))).toEqual([true, false, true])
-    expect([word, fact, rule].map((c) => inReviewFilter({ tags: ['Concurrency', 'book'] }, c))).toEqual([true, true, false])
+    expect([word, fact, rule].map((c) => inReviewFilter({ types: ['rule'] }, c))).toEqual([false, false, true])
+    expect([word, fact, rule].map((c) => inReviewFilter({ types: ['word', 'rule'] }, c))).toEqual([false, false, false])
+    expect([word, fact, rule].map((c) => inReviewFilter({ tags: ['Concurrency'] }, c))).toEqual([false, true, false])
+    // Every value must hold: two types or two tags a card lacks select nothing.
+    expect([word, fact, rule].map((c) => inReviewFilter({ tags: ['Concurrency', 'book'] }, c))).toEqual([false, false, false])
     // Word-only fields leave other cards alone.
     expect([word, fact].map((c) => inReviewFilter({ pos: ['idiom'] }, c))).toEqual([false, true])
-    expect(inReviewFilter({ cefr: ['B2', 'C1'], directions: ['reverse'] }, word)).toBe(true)
+    expect(inReviewFilter({ cefr: ['B2'], directions: ['reverse'] }, word)).toBe(true)
+    expect(inReviewFilter({ cefr: ['B2', 'C1'] }, word)).toBe(false)
     expect(inReviewFilter({ directions: ['forward'] }, word)).toBe(false)
     expect(inReviewFilter({ cefr: ['C1'] }, { ...word, cefr: null })).toBe(false)
     expect(cleanReviewFilter({ types: [], tags: ['a', 'a'] })).toEqual({ tags: ['a'] })

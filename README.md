@@ -32,7 +32,7 @@ Content packs (ready-made cards, e.g. 159 irregular verbs) live in `server/data/
 node server/data/packs/build-grammar-handbook.ts <part-a.json> <part-b.json> [server/data/packs/grammar-handbook.json]
 ```
 
-Grammar rules with exercise pools (kept outside the repo: they come from private notes) are imported per user, into the English deck tagged `Grammar` (`--deck`, `--tag` to change); `rules.choice.json`, then `rules.reviewed.json` next to the file is preferred, re-running adds only new rules and items, and `--replace` swaps an imported rule's old typed exercises for the new tap ones (flagged out of the pool; the card and its history stay):
+Grammar rules with exercise pools (kept outside the repo: they come from private notes) are imported per user, into the English deck tagged `Grammar/<group>` and `Grammar/My rules` (`--deck` to change the deck, `--tag` the root); `rules.choice.json`, then `rules.reviewed.json` next to the file is preferred, re-running adds only new rules and items, and `--replace` swaps an imported rule's old typed exercises for the new tap ones (flagged out of the pool; the card and its history stay):
 
 ```bash
 node server/src/import-exercises.ts --file <dir>/rules.json --db ./server/recall.db --user <telegram-id> [--deck English] [--tag Grammar] [--replace] --dry-run
@@ -49,6 +49,15 @@ Decks are big containers (English, Programming); subjects inside are tags. To fo
 ```bash
 node server/src/merge-decks.ts --db ./server/recall.db --user <telegram-id> --into Programming --create-into "Java Core" Concurrency Databases --dry-run
 node server/src/merge-decks.ts --db ./server/recall.db --user <telegram-id> --into English Grammar "Irregular verbs" --dry-run
+```
+
+Tags with `/` are paths (`Grammar/Tenses`, `Books/wuthering heights`); filtering or searching by a tag takes the tags under it. To rename, delete or add tags across a deck (its review filter follows renames), one step or a mapping file of steps in one transaction; it prints what each step changed, `--dry-run` rolls back (see DESIGN.md *Retagging* for the mapping format):
+
+```bash
+node server/src/retag.ts --db ./server/recall.db --deck English --from "wuthering heights" --to "Books/wuthering heights" --dry-run
+node server/src/retag.ts --db ./server/recall.db --deck English --delete vocab --dry-run
+# the October 2026 move of the English deck to Grammar/…, Books/…, Leon/…: dry run, check the counts, then without --dry-run
+node server/src/retag.ts --db ./server/recall.db --map server/scripts/retag-english-2026-10.json --dry-run
 ```
 
 ## Deploy (small VPS, no Docker)

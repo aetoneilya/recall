@@ -1,5 +1,5 @@
 // The review filter's labels and one-line summary ("Phrasal verbs, idioms · B2+").
-import { CEFR_LEVELS, type CardType, type Cefr, type Direction, type PartOfSpeech, type ReviewFilter } from '@recall/core'
+import { CEFR_LEVELS, cleanReviewFilter, type CardType, type Cefr, type Direction, type PartOfSpeech, type ReviewFilter } from '@recall/core'
 import { POS_NAMES } from './wordForm.ts'
 
 export const TYPE_NAMES: Record<CardType, string> = { word: 'Words', fact: 'Q&A', rule: 'Grammar' }
@@ -31,7 +31,8 @@ export function filterSummary(f: ReviewFilter | null | undefined, langs?: [strin
   if (!f) return ''
   const parts: string[] = []
   if (f.types?.length) parts.push(f.types.map((t) => TYPE_NAMES[t]).join(', '))
-  if (f.tags?.length) parts.push(f.tags.join(', '))
+  // Paths by their last part: "Grammar/Tenses" → "Tenses".
+  if (f.tags?.length) parts.push(f.tags.map((t) => t.slice(t.lastIndexOf('/') + 1)).join(', '))
   if (f.pos?.length) parts.push(cap(f.pos.map(posPlural).join(', ')))
   if (f.cefr?.length) parts.push(cefrLabel(f.cefr))
   if (f.directions?.length === 1) parts.push(directionName(f.directions[0]!, langs))
@@ -45,4 +46,26 @@ export function toggleIn<K extends keyof ReviewFilter>(f: ReviewFilter | null, k
   const out: ReviewFilter = { ...(f ?? {}), [key]: next }
   if (!next.length) delete out[key]
   return Object.keys(out).length ? out : null
+}
+
+export interface FilterChip {
+  key: string
+  label: string
+  // The filter without this chip (null when nothing is left).
+  without: ReviewFilter | null
+}
+
+// The active filter as removable chips: one per type, tag, part of speech and
+// direction; the levels as one ("B2+").
+export function filterChips(f: ReviewFilter | null | undefined, langs?: [string | null, string | null]): FilterChip[] {
+  if (!f) return []
+  const out: FilterChip[] = []
+  const drop = <K extends keyof ReviewFilter>(k: K, v?: string) =>
+    cleanReviewFilter({ ...f, [k]: v === undefined ? [] : ((f[k] ?? []) as string[]).filter((x) => x !== v) })
+  for (const t of f.types ?? []) out.push({ key: `type:${t}`, label: TYPE_NAMES[t], without: drop('types', t) })
+  for (const t of f.tags ?? []) out.push({ key: `tag:${t}`, label: t.split('/').join(' › '), without: drop('tags', t) })
+  for (const p of f.pos ?? []) out.push({ key: `pos:${p}`, label: cap(POS_NAMES[p]), without: drop('pos', p) })
+  if (f.cefr?.length) out.push({ key: 'cefr', label: cefrLabel(f.cefr), without: drop('cefr') })
+  for (const d of f.directions ?? []) out.push({ key: `dir:${d}`, label: directionName(d, langs), without: drop('directions', d) })
+  return out
 }

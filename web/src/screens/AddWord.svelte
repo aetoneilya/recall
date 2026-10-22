@@ -12,7 +12,7 @@
   import { haptic } from '../lib/telegram.ts'
   import { setUnsaved } from '../lib/unsaved.ts'
   import { errorText, showToast } from '../lib/toast.svelte.ts'
-  import type { AutofillResult, Draft, WordItem } from '../lib/types.ts'
+  import type { AutofillResult, DeckWithCounts, Draft, WordItem } from '../lib/types.ts'
   import { emptyForm, formFrom, formToInput, guessPos, newTranslations, withContext, type WordForm } from '../lib/wordForm.ts'
   import { words } from '../lib/words.svelte.ts'
 
@@ -437,7 +437,7 @@
         </div>
       {/if}
       <div class="draft">
-        <WordFields bind:form bind:translationInput showTerm={false} onsubmit={() => void submit()} onedit={() => (edited = true)} />
+        <WordFields bind:form bind:translationInput tags={((session.decks[deckId ?? session.deckId] as Partial<DeckWithCounts> | undefined)?.tags ?? []).map((t) => t.tag)} showTerm={false} onsubmit={() => void submit()} onedit={() => (edited = true)} />
       </div>
     {:else}
       <p class="lead"><Icon name="sparkle" size={16} /> Type a word: Claude fills in translations, pronunciation and examples. Enter adds it, and the next one can follow straight away.</p>

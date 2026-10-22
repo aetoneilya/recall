@@ -157,13 +157,20 @@ function handbookTopic(x: unknown, i: number): HandbookTopic {
   }
 }
 
+// The root of the grammar tags: rules and theory cards sit under
+// "Grammar/<group>" (the card type tells them apart).
+export const GRAMMAR_TAG = 'Grammar'
+
 // The handbook's facts: per topic the rule (front = title, back = the
-// summary, tags Grammar + group), then its theory cards (Grammar theory + group).
+// summary), then its theory cards, all tagged Grammar/<group>.
 export function handbookFacts(topics: HandbookTopic[]): PackFact[] {
-  return topics.flatMap((t) => [
-    { key: t.id, front: t.title, back: t.summary, tags: ['Grammar', t.group] },
-    ...t.cards.map((c, n) => ({ key: `${t.id}:card:${n}`, front: c.front, back: c.back, tags: ['Grammar theory', t.group] })),
-  ])
+  return topics.flatMap((t) => {
+    const tags = [`${GRAMMAR_TAG}/${t.group}`]
+    return [
+      { key: t.id, front: t.title, back: t.summary, tags },
+      ...t.cards.map((c, n) => ({ key: `${t.id}:card:${n}`, front: c.front, back: c.back, tags })),
+    ]
+  })
 }
 
 // Validates a parsed pack file; throws with what is wrong.

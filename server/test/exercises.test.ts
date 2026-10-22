@@ -6,7 +6,7 @@ import type { AutofillClient } from '../src/autofill.ts'
 import { addExercises, listExercises, pickExercises, updateExercise } from '../src/exercises.ts'
 import { createFact, factItem } from '../src/facts.ts'
 import { importExercises, parseRules, preferReviewed, ruleBack, type RuleFile } from '../src/import-exercises.ts'
-import { createTopicDeck } from '../src/repo.ts'
+import { createDeck } from '../src/repo.ts'
 import { applyReviews, buildQueue, undoReview } from '../src/study.ts'
 import { exerciseTopupTick, topupCandidates, topupFact } from '../src/topup.ts'
 import { callTool, listen, makeCtx, send, TZ, type TestCtx } from './helpers.ts'
@@ -18,7 +18,7 @@ const gap = (n: number, answer = `w${n}`) => ({ type: 'gap' as const, prompt: `S
 const fix = (n: number) => ({ type: 'fix' as const, prompt: `He go there ${n} times.`, answer: `He goes there ${n} times.`, explain: null })
 
 function rule(ctx: TestCtx, items: ReturnType<typeof gap | typeof fix>[] = []) {
-  const deck = createTopicDeck(ctx.db, ctx.user.id, { name: `Grammar ${Math.random()}` }, ctx.now())
+  const deck = createDeck(ctx.db, ctx.user.id, { name: `Grammar ${Math.random()}` }, ctx.now())
   const { fact, cardId } = createFact(ctx.db, ctx.user.id, { deckId: deck.id, fact: { front: 'Third person -s', back: 'He/she/it **goes**.' }, status: 'active', createdBy: 'user' }, ctx.now())
   if (items.length) addExercises(ctx.db, ctx.user.id, fact.id, items, 'user', ctx.now())
   return { deck, fact, cardId }
@@ -116,14 +116,14 @@ describe('import-exercises', () => {
 
     const s = importExercises(ctx.db, ctx.user.id, rules(), { now: ctx.now() })
     expect(s).toEqual({
-      deck: { name: 'Grammar', created: true },
+      deck: { name: 'English', created: false },
       rules: { created: 2, existing: 0 },
       exercises: { created: 6, existing: 0, duplicates: 0, replaced: 0, invalid: [{ rule: 'since-for', index: 3, error: 'a gap prompt needs exactly one ___' }] },
     })
     const facts = ctx.db.prepare('SELECT front, tags, import_ref, created_by FROM facts ORDER BY created_at').all()
     expect(facts).toEqual([
-      { front: 'Third person -s', tags: '["Agreement"]', import_ref: 'rules:third-person-s', created_by: 'import' },
-      { front: 'since vs for', tags: '["Prepositions"]', import_ref: 'rules:since-for', created_by: 'import' },
+      { front: 'Third person -s', tags: '["Grammar","Agreement"]', import_ref: 'rules:third-person-s', created_by: 'import' },
+      { front: 'since vs for', tags: '["Grammar","Prepositions"]', import_ref: 'rules:since-for', created_by: 'import' },
     ])
     expect(ctx.db.prepare("SELECT import_ref FROM fact_exercises ORDER BY rowid").all().map((r: any) => r.import_ref))
       .toEqual(['third-person-s:0', 'third-person-s:1', 'third-person-s:2', 'since-for:0', 'since-for:1', 'since-for:2'])
@@ -225,7 +225,7 @@ describe('Claude top-up', () => {
     const ctx = makeCtx({ OWNER_TELEGRAM_ID: '1001' }, undefined, client)
     const { fact } = rule(ctx, [gap(1), gap(2), gap(3)])
     // A plain fact (no pool) is never a candidate.
-    createFact(ctx.db, ctx.user.id, { deckId: createTopicDeck(ctx.db, ctx.user.id, { name: 'Plain' }, ctx.now()).id, fact: { front: 'Q', back: 'A' }, status: 'active', createdBy: 'user' }, ctx.now())
+    createFact(ctx.db, ctx.user.id, { deckId: createDeck(ctx.db, ctx.user.id, { name: 'Plain' }, ctx.now()).id, fact: { front: 'Q', back: 'A' }, status: 'active', createdBy: 'user' }, ctx.now())
     expect(topupCandidates(ctx).map((c) => c.fact_id)).toEqual([fact.id])
 
     const r = await topupFact(ctx, ctx.user.id, fact.id)

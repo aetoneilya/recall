@@ -4,7 +4,9 @@ import type { DayOptions } from '@recall/core'
 import { createApi, NotAllowedError, type Api, type AuthError } from './api.ts'
 import { isMock } from './env.ts'
 import { setFsrs } from './fsrs.ts'
-import { openKV, type KV } from './idb.ts'
+import { AccountKV } from './accountKV.ts'
+import { EditOutbox, type PendingEdit } from './editOutbox.ts'
+import { openKV } from './idb.ts'
 import { Outbox, type OutboxOp } from './outbox.ts'
 import { initData, inTelegram, setupTelegram } from './telegram.ts'
 import { showToast } from './toast.svelte.ts'
@@ -23,13 +25,12 @@ export const status = $state({
   pendingWords: 0,
   // Bumped whenever words changed outside the screen showing them.
   wordsVersion: 0,
-  // The same for facts (approved in the inbox, edited from a card).
+  // The same for facts (edited from a review card).
   factsVersion: 0,
   syncing: false,
   // The last upload attempt failed; pending ratings are worth showing then.
   syncFailed: false,
   lastSync: 0,
-  inbox: 0,
   me: null as Me | null,
   day: { timeZone: 'Europe/Moscow', startHour: 4 } as DayOptions,
   telegram: false,
@@ -37,9 +38,10 @@ export const status = $state({
 })
 
 export let api: Api
-export let kv: KV
+export let kv: AccountKV
 export let outbox: Outbox
 export let wordOutbox: WordOutbox
+export let editOutbox: EditOutbox
 
 export async function boot(): Promise<void> {
   setupTelegram()
@@ -52,8 +54,11 @@ export async function boot(): Promise<void> {
     onUnauthorized,
     onNetwork: (ok) => (status.online = ok),
   })
-  // Mock data lives in its own database so it never mixes with real cards.
-  kv = openKV(isMock ? 'recall-mock' : 'recall')
+  // Mock data lives in its own database (one per variant: each is another
+  // account) so it never mixes with real cards.
+  const variant = isMock ? new URLSearchParams(location.search).get('mock') : null
+  kv = new AccountKV(openKV(isMock ? `recall-mock${variant ? `-${variant}` : ''}` : 'recall'))
+  await kv.init()
   outbox = new Outbox(
     {
       load: () => kv.get<OutboxOp[]>('outbox'),
@@ -67,6 +72,8 @@ export async function boot(): Promise<void> {
   wordOutbox = new WordOutbox({ load: () => kv.get<PendingWord[]>('wordOutbox'), save: (w) => kv.set('wordOutbox', w) }, api)
   wordOutbox.subscribe((n) => (status.pendingWords = n))
   await wordOutbox.init()
+  editOutbox = new EditOutbox({ load: () => kv.get<PendingEdit[]>('editOutbox'), save: (e) => kv.set('editOutbox', e) }, api)
+  await editOutbox.init()
 
   const savedDay = await kv.get<DayOptions>('day')
   if (savedDay) status.day = savedDay
@@ -94,19 +101,37 @@ export function onUnauthorized(e: AuthError): void {
 
 export async function loadMe(): Promise<void> {
   try {
-    setMe(await api.me())
+    await setMe(await api.me())
   } catch {
     // Offline or signed out; the cached study-day settings stay.
   }
 }
 
-export function setMe(me: Me): void {
+export async function setMe(me: Me): Promise<void> {
   status.me = me
+  const was = kv.confirmed
+  const r = await kv.claim(me.user.id)
+  if (r === 'switched') {
+    // Another account on this device: start over under its own caches.
+    await outbox.persisted()
+    location.reload()
+    return
+  }
   status.day = { timeZone: me.timeZone || status.day.timeZone, startHour: me.dayStartHour ?? status.day.startHour }
   void kv.set('day', { ...status.day })
   // Older servers send no FSRS parameters: the defaults.
   setFsrs(me.fsrs ?? null)
   void kv.set('fsrs', me.fsrs ? $state.snapshot(me.fsrs) : null)
+  // Uploads waited for the account to be known.
+  if (!was) void flushNow()
+}
+
+// Signed out on this device: the account's caches go (uploads still pending
+// stay for its next sign-in) and the app starts over.
+export async function signOutLocally(): Promise<void> {
+  await outbox.persisted()
+  await kv.clear([...(outbox.size ? ['outbox'] : []), ...(wordOutbox.size ? ['wordOutbox'] : []), ...(editOutbox.size ? ['editOutbox'] : [])])
+  location.reload()
 }
 
 let timer: ReturnType<typeof setTimeout> | undefined
@@ -120,7 +145,15 @@ export function scheduleFlush(delayMs = 4000): void {
 // Uploads the outbox; on failure retries with backoff (10 s → 5 min).
 export async function flushNow(): Promise<boolean> {
   clearTimeout(timer)
+  // Pending ratings belong to the cache owner: never sent under another
+  // account's session. Until the signed-in account is known, nothing goes.
+  if (!kv?.confirmed) {
+    if (!status.online || !api) return false
+    await loadMe()
+    if (!kv.confirmed) return false
+  }
   if (wordOutbox?.size) void flushWords()
+  if (editOutbox?.size) void flushEdits()
   if (!outbox || outbox.size === 0) return true
   status.syncing = true
   const r = await outbox.flush()
@@ -142,6 +175,15 @@ export function signedIn(): void {
   status.auth = 'ok'
   status.deniedId = null
   void flushNow()
+}
+
+// Uploads edits made offline; a refused one is said.
+async function flushEdits(): Promise<void> {
+  const r = await editOutbox.flush()
+  if (!r.sent && !r.failed.length) return
+  status.wordsVersion++
+  status.factsVersion++
+  if (r.failed.length) showToast(`${r.failed.length === 1 ? 'An edit' : `${r.failed.length} edits`} made offline not saved: ${r.failed[0]!.error}`, { ms: 4000 })
 }
 
 // Uploads words added offline and says what happened to them.

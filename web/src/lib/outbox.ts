@@ -52,6 +52,12 @@ export class Outbox {
     return this.ops.filter((o) => o.kind === 'review').length
   }
 
+  // Something for this card still to send: a rating, or an undo (which
+  // could be of any card).
+  pendingFor(cardId: string): boolean {
+    return this.ops.some((o) => (o.kind === 'review' ? o.input.cardId === cardId : true))
+  }
+
   get size(): number {
     return this.ops.length
   }
@@ -102,10 +108,15 @@ export class Outbox {
     return this.sending.has(id)
   }
 
+  // After a refused batch, this many reviews go one at a time, so only the
+  // bad one is dropped.
+  private single = 0
+
   private async run(): Promise<FlushResult> {
     let sent = 0
     while (this.ops.length) {
       const head = this.ops[0]
+      const batch: OutboxOp[] = []
       try {
         if (head.kind === 'undo') {
           this.sending.add(`undo:${head.id}`)
@@ -119,23 +130,30 @@ export class Outbox {
           sent++
           continue
         }
-        const batch: OutboxOp[] = []
+        const max = this.single > 0 ? 1 : BATCH
         for (const o of this.ops) {
-          if (o.kind !== 'review' || batch.length >= BATCH) break
+          if (o.kind !== 'review' || batch.length >= max) break
           batch.push(o)
         }
         for (const o of batch) if (o.kind === 'review') this.sending.add(o.input.id)
         const res = await this.transport.postReviews(batch.map((o) => (o as { input: ReviewInput }).input))
         this.remove(batch)
         sent += batch.length
+        if (this.single > 0) this.single--
         if (res?.cards?.length) this.onCards(res.cards)
       } catch (e) {
         this.sending.clear()
         if (e instanceof NetworkError) return { ok: false, reason: 'offline', sent }
         if (e instanceof AuthError) return { ok: false, reason: 'auth', sent }
         if (e instanceof HttpError && e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429) {
-          const dropped = head.kind === 'undo' ? [head] : this.ops.slice(0, this.reviewRun())
+          // A refused batch: its reviews again one by one, to find the bad one.
+          if (head.kind === 'review' && batch.length > 1) {
+            this.single = batch.length
+            continue
+          }
+          const dropped = head.kind === 'undo' ? [head] : batch
           this.remove(dropped)
+          if (this.single > 0) this.single--
           this.onDropped(dropped, e)
           continue
         }
@@ -143,12 +161,6 @@ export class Outbox {
       }
     }
     return { ok: true, sent }
-  }
-
-  private reviewRun(): number {
-    let n = 0
-    while (n < this.ops.length && n < BATCH && this.ops[n].kind === 'review') n++
-    return n
   }
 
   private remove(done: OutboxOp[]) {

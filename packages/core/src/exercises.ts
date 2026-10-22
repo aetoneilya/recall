@@ -215,8 +215,12 @@ export function correctedParts(text: string, wrong: string, replacement: string)
     out.push({ text: replacement, changed: true })
     out.push({ text: trail, changed: false })
   }
-  const tail = after.join(' ')
-  if (tail) out.push({ text: ` ${tail}`, changed: false })
+  let tail = after.join(' ')
+  // The first word deleted: the sentence starts with the next one, capitalised
+  // as the deleted one was ("The life is…" → "Life is…").
+  const first = replacement === NOTHING && !head && !(lead + trail)
+  if (first && /^\p{Lu}/u.test(core(gone[0]!))) tail = tail.replace(/\p{L}/u, (c) => c.toUpperCase())
+  if (tail) out.push({ text: first ? tail : ` ${tail}`, changed: false })
   return out.filter((p, i) => p.text || p.changed || i === 0)
 }
 

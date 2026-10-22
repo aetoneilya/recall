@@ -12,24 +12,28 @@ import type { Db } from './db.ts'
 import { lexiconOf } from './lexicon.ts'
 import { answerLoginRef, openLoginNonce, START_PREFIX } from './login.ts'
 import { defaultDeck, syncFreqRanks } from './repo.ts'
-import { buildQueue, inboxCount, reviewedOn, studyDay } from './study.ts'
+import { buildQueue, reviewedOn, studyDay } from './study.ts'
 import { ensureUser, isAllowed, listUsers, setBotStarted, setReminderSent, userDayOptions, type User } from './users.ts'
 import { weeklyTick } from './weekly.ts'
 
 export interface DueCounts {
   due: number
-  inbox: number
+  // Per deck under its review filter, decks with something today only.
+  decks?: { name: string; due: number }[]
 }
 
 export function dueCounts(db: Db, cfg: Config, user: User, now: Date): DueCounts {
-  const { counts } = buildQueue(db, user.id, userDayOptions(cfg, user), now, { limit: 1 })
-  return { due: counts.new + counts.learning + counts.review, inbox: inboxCount(db, user.id) }
+  const { decks } = buildQueue(db, user.id, userDayOptions(cfg, user), now, { limit: 1 })
+  const per = decks.map((d) => ({ name: d.name, due: d.counts.new + d.counts.learning + d.counts.review }))
+  return { due: per.reduce((n, d) => n + d.due, 0), decks: per.filter((d) => d.due > 0) }
 }
 
+// "12 cards due"; with several decks due, "English 24 · Programming 5 due".
 export function reminderText(c: DueCounts, kind: 'morning' | 'evening' | 'now' = 'morning'): string {
-  const cards = `${c.due} ${c.due === 1 ? 'card' : 'cards'} due`
-  const base = c.inbox ? `${cards} · ${c.inbox} ${c.inbox === 1 ? 'word' : 'words'} in inbox` : cards
-  return kind === 'evening' ? `Nothing reviewed yet today — ${base}` : base
+  const cards = c.decks && c.decks.length > 1
+    ? `${c.decks.map((d) => `${d.name} ${d.due}`).join(' · ')} due`
+    : `${c.due} ${c.due === 1 ? 'card' : 'cards'} due`
+  return kind === 'evening' ? `Nothing reviewed yet today — ${cards}` : cards
 }
 
 export const LOGIN_TEXT = {
@@ -43,7 +47,7 @@ export const LOGIN_TEXT = {
 // Callback data of the login buttons: action + the nonce's opaque ref.
 const LOGIN_CALLBACK = /^login:(ok|no):([A-Za-z0-9_-]{43})$/
 
-export const HELP_TEXT = `Send me an English word or phrase and I'll add it to your inbox with translations, IPA and an example — then ✅ to start learning it, ↔ for another meaning, ✏️ to edit.
+export const HELP_TEXT = `Send me an English word or phrase and I'll add it to your deck with translations, IPA and an example — ↔ for another meaning, ✏️ to edit, ✖ if you don't want it.
 
 • word — sentence, or a sentence with the *word* marked: the sentence becomes the example.
 • Several lines, one word each (up to 20): all of them at once.
@@ -66,7 +70,6 @@ export interface StatsSummary {
   streak: number
   longest: number
   due: number
-  inbox: number
 }
 
 export function statsSummary(ctx: AppContext, user: User, now: Date): StatsSummary {
@@ -82,7 +85,6 @@ export function statsSummary(ctx: AppContext, user: User, now: Date): StatsSumma
     streak: d.activity.streak.current,
     longest: d.activity.streak.longest,
     due: due.due,
-    inbox: due.inbox,
   }
 }
 
@@ -93,7 +95,7 @@ export function statsText(s: StatsSummary): string {
     s.estimate !== null ? `📊 Vocabulary ≈ ${n(s.estimate)} words${s.cefr ? ` (${s.cefr})` : ''}` : '📊 Your progress',
     `Known words: ${n(s.known)} · mastered ${n(s.mastered)}`,
     `Streak: ${days(s.streak)}${s.longest > s.streak ? ` (best ${days(s.longest)})` : ''}`,
-    `Due today: ${n(s.due)}${s.inbox ? ` · inbox ${n(s.inbox)}` : ''}`,
+    `Due today: ${n(s.due)}`,
   ].join('\n')
 }
 

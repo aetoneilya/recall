@@ -3,11 +3,14 @@ import type { ExerciseAttempt, ExerciseItem } from './exercises.ts'
 // Shared shapes for the server, the web app and the MCP tools. Dates travel
 // as ISO strings; the server stores them the same way.
 
-// inbox: proposed (usually by Claude), not studied until approved.
-// active: its cards get reviewed. rejected: kept for history, never shown,
-// so a re-proposed duplicate can be detected.
-export type WordStatus = 'inbox' | 'active' | 'rejected'
-export const WORD_STATUSES: readonly WordStatus[] = ['inbox', 'active', 'rejected']
+// active: its cards get reviewed (everything added starts here).
+// rejected ("dropped" in the app): kept, never shown, so the same word or
+// question proposed again is recognised as a duplicate.
+export type WordStatus = 'active' | 'rejected'
+export const WORD_STATUSES: readonly WordStatus[] = ['active', 'rejected']
+
+// The tag on every card Claude adds.
+export const CLAUDE_TAG = 'claude'
 
 export type Author = 'user' | 'claude' | 'import'
 
@@ -68,32 +71,82 @@ export interface VerbForms {
   participle: string[]
 }
 
-// language: words, one deck per language per user, e.g. "English" (en → ru).
-// topic: Q&A facts on one subject, e.g. "Concurrency"; no languages.
-export type DeckKind = 'language' | 'topic'
-export const DECK_KINDS: readonly DeckKind[] = ['language', 'topic']
+// The kinds of card a deck holds: a word (two cards, needs the deck's
+// languages), a question/answer fact, a grammar rule (a fact reviewed
+// through its exercise pool, ≥ 3 active items).
+export type CardType = 'word' | 'fact' | 'rule'
+export const CARD_TYPES: readonly CardType[] = ['word', 'fact', 'rule']
 
+// What a deck's review session takes; every field empty or missing = all.
+// Tags apply to every card; part of speech, CEFR and direction only to
+// words (other cards pass them).
+export interface ReviewFilter {
+  types?: CardType[]
+  tags?: string[]
+  pos?: PartOfSpeech[]
+  cefr?: Cefr[]
+  directions?: Direction[]
+}
+
+// A big container ("English", "Programming") of cards of any type; topics
+// within it are tags. Languages are optional: only a deck with them takes
+// words (one deck per target language per user).
 export interface Deck {
   id: string
-  kind: DeckKind
   name: string
-  // ISO 639-1: the language being learnt and the user's own; null for topic decks.
+  // ISO 639-1: the language being learnt and the user's own; both or neither.
   targetLang: string | null
   nativeLang: string | null
   newPerDay: number
-  // Whether the deck's cards are in the review session. Off: kept, not queued.
-  inReview: boolean
-  // A disabled direction's cards stay (with their history) but are not studied
-  // or counted. Language decks only; a topic deck's facts are always forward.
+  // Word cards only: a disabled direction's cards stay (with their history)
+  // but are not studied or counted.
   forwardEnabled: boolean
   reverseEnabled: boolean
   // When set, a word's reverse card is introduced only once its forward card's
   // stability reaches this many days. null = both directions from the start.
   reverseAfterDays: number | null
+  // The review session's filter; null = everything.
+  reviewFilter: ReviewFilter | null
   createdAt: string
 }
 
-// A question and its answer in a topic deck; both sides are Markdown.
+// What a card is, for the review filter.
+export interface CardFacts {
+  type: CardType
+  tags: string[]
+  // Words only.
+  pos?: PartOfSpeech | null
+  cefr?: Cefr | null
+  direction?: Direction
+}
+
+const has = <T>(xs: readonly T[] | undefined): xs is readonly T[] => !!xs && xs.length > 0
+
+// Whether a card is in a deck's review filter.
+export function inReviewFilter(f: ReviewFilter | null | undefined, c: CardFacts): boolean {
+  if (!f) return true
+  if (has(f.types) && !f.types.includes(c.type)) return false
+  if (has(f.tags) && !c.tags.some((t) => f.tags!.includes(t))) return false
+  if (c.type === 'word') {
+    if (has(f.pos) && (!c.pos || !f.pos.includes(c.pos))) return false
+    if (has(f.cefr) && (!c.cefr || !f.cefr.includes(c.cefr))) return false
+    if (has(f.directions) && c.direction && !f.directions.includes(c.direction)) return false
+  }
+  return true
+}
+
+// An empty filter, normalised away.
+export function cleanReviewFilter(f: ReviewFilter | null | undefined): ReviewFilter | null {
+  if (!f) return null
+  const out: ReviewFilter = {}
+  for (const k of ['types', 'tags', 'pos', 'cefr', 'directions'] as const) {
+    const v = [...new Set((f[k] ?? []) as string[])].filter(Boolean)
+    if (v.length) (out as Record<string, string[]>)[k] = v
+  }
+  return Object.keys(out).length ? out : null
+}
+
+// A question and its answer; both sides are Markdown.
 // One card per fact (direction 'forward').
 export type FactStatus = WordStatus
 export const FACT_STATUSES: readonly FactStatus[] = WORD_STATUSES

@@ -3,8 +3,8 @@
   import Icon from '../components/Icon.svelte'
   import Sheet from '../components/Sheet.svelte'
   import { HttpError } from '../lib/api.ts'
-  import { api, flushNow, setMe, status } from '../lib/app.svelte.ts'
-  import { getDecks } from '../lib/decks.ts'
+  import { api, flushNow, setMe, signOutLocally, status } from '../lib/app.svelte.ts'
+  import { getDecks, hasDeckLanguages } from '../lib/decks.ts'
   import { session } from '../lib/review.svelte.ts'
   import { allZones, deviceZone, patchMeOptimistic, type MeFieldPatch, relTime, searchZones, shortDate, zoneLabel, zoneOffset } from '../lib/settings.ts'
   import { applyTheme, loadTheme, type ThemeChoice } from '../lib/theme.ts'
@@ -27,10 +27,9 @@
   const mcpUrl = `${origin}/mcp`
 
   const me = $derived(status.me)
-  const languageDecks = $derived(decks.filter((d) => d.kind !== 'topic'))
-  const topicDecks = $derived(decks.filter((d) => d.kind === 'topic'))
+  const hasLangs = (d: DeckWithCounts) => hasDeckLanguages(d)
 
-  // Renaming a topic in place: tap its name, type, Enter (or leave the field).
+  // Renaming a deck in place: tap its name, type, Enter (or leave the field).
   let renaming = $state<string | null>(null)
   let newName = $state('')
   function startRename(d: DeckWithCounts) {
@@ -45,14 +44,16 @@
     await patchDeck(d, { name })
   }
 
-  // A topic and, after the second tap, every card in it with its history.
-  async function removeTopic(d: DeckWithCounts) {
+  // A deck and, after the second tap, every card in it with its history.
+  async function removeDeck(d: DeckWithCounts) {
     const before = decks
     decks = decks.filter((x) => x.id !== d.id)
     try {
       const r = await api.deleteDeck(d.id, true)
-      showToast(r.facts ? `Deleted “${d.name}” and ${r.facts} ${r.facts === 1 ? 'card' : 'cards'}` : `Deleted “${d.name}”`)
+      const n = r.words + r.facts
+      showToast(n ? `Deleted “${d.name}” and ${n} ${n === 1 ? 'card' : 'cards'}` : `Deleted “${d.name}”`)
       status.factsVersion++
+      status.wordsVersion++
       void getDecks(true).catch(() => {})
       void session.refresh()
     } catch (e) {
@@ -61,17 +62,39 @@
     }
   }
 
-  // Content packs: ready-made topics, added with one tap.
+  // A deck into another: its cards move with its name as a tag; the emptied
+  // deck goes. Cards the target already has stay behind (and are listed).
+  async function merge(d: DeckWithCounts, intoId: string, el: HTMLSelectElement) {
+    el.value = ''
+    const into = decks.find((x) => x.id === intoId)
+    if (!into) return
+    try {
+      const r = await api.mergeDeck(d.id, into.id)
+      const n = r.moved.words + r.moved.facts
+      const left = r.skipped.length ? ` · ${r.skipped.length} already there, left in “${d.name}”` : ''
+      showToast(`Moved ${n} ${n === 1 ? 'card' : 'cards'} into “${into.name}”, tagged “${d.name}”${left}`)
+      status.factsVersion++
+      status.wordsVersion++
+      decks = await getDecks(true)
+      void session.refresh()
+    } catch (e) {
+      showToast(`Not merged: ${errorText(e)}`)
+    }
+  }
+
+  // Content packs, added with one tap into the deck picked for each.
   let packs = $state<PackInfo[]>([])
+  let packDeck = $state<Record<string, string>>({})
   let addingPack = $state<string | null>(null)
   void api.packs().then((p) => (packs = p)).catch(() => {})
   async function addPack(p: PackInfo) {
     if (addingPack) return
     addingPack = p.id
     try {
-      const r = await api.addPack(p.id)
+      const r = await api.addPack(p.id, packDeck[p.id] || p.deckId)
       packs = r.packs
-      showToast(`Added ${r.added} ${r.added === 1 ? 'card' : 'cards'} to “${p.name}”`)
+      const deck = r.packs.find((x) => x.id === p.id)?.deckName ?? p.deckName
+      showToast(`Added ${r.added} ${r.added === 1 ? 'card' : 'cards'} to “${deck}”`)
       status.factsVersion++
       void getDecks(true).then((x) => (decks = x)).catch(() => {})
       void session.refresh()
@@ -82,23 +105,30 @@
     }
   }
 
-  let topicName = $state('')
-  let addingTopic = $state(false)
-  async function addTopic() {
-    const name = topicName.trim()
-    if (!name || addingTopic) return
-    addingTopic = true
+  // A new deck: a name, and languages only for one that takes words.
+  let deckName = $state('')
+  let withLangs = $state(false)
+  let targetLang = $state('')
+  let nativeLang = $state('ru')
+  let addingDeck = $state(false)
+  const langOk = (s: string) => /^[a-z]{2,3}$/.test(s.trim().toLowerCase())
+  async function addDeck() {
+    const name = deckName.trim()
+    if (!name || addingDeck || (withLangs && !(langOk(targetLang) && langOk(nativeLang)))) return
+    addingDeck = true
     try {
-      const d = await api.createTopicDeck(name)
+      const d = await api.createDeck({ name, ...(withLangs ? { targetLang: targetLang.trim().toLowerCase(), nativeLang: nativeLang.trim().toLowerCase() } : {}) })
       decks = [...decks, d]
-      topicName = ''
+      deckName = ''
+      withLangs = false
+      targetLang = ''
       session.applyDeck(d)
       void getDecks(true).then((x) => (decks = x)).catch(() => {})
       void session.refresh()
     } catch (e) {
       showToast(`Not added: ${errorText(e)}`)
     } finally {
-      addingTopic = false
+      addingDeck = false
     }
   }
 
@@ -175,12 +205,16 @@
   }
 
   async function logout() {
+    // What is pending goes up under this account first.
+    await flushNow()
     try {
       await api.logout()
     } catch {
       // Signing out locally is what matters.
     }
     status.auth = 'login'
+    // This account's cards don't stay on the device for the next one.
+    await signOutLocally()
   }
 
   async function syncNow() {
@@ -415,98 +449,120 @@
     </div>
   </div>
 
-  {#each languageDecks as d (d.id)}
+  {#each decks as d (d.id)}
     {@const t = code(d.targetLang ?? '')}
     {@const n = code(d.nativeLang ?? '')}
-    <div class="section-label">{languageDecks.length > 1 ? d.name : 'Study'}</div>
+    {@const shown = d.counts.total - d.counts.dropped}
+    <div class="section-label">{d.name}</div>
     <div class="group">
-      <label class="row">
-        <span class="grow">{t} → {n} <span class="muted">recognise</span><span class="sub">See the word, recall what it means</span></span>
-        <input type="checkbox" class="switch" checked={d.forwardEnabled} onchange={(e) => setDirection(d, 'forwardEnabled', e.currentTarget.checked, e.currentTarget)} />
-      </label>
-      <label class="row">
-        <span class="grow">{n} → {t} <span class="muted">recall</span><span class="sub">See the meaning, produce the word</span></span>
-        <input type="checkbox" class="switch" checked={d.reverseEnabled} onchange={(e) => setDirection(d, 'reverseEnabled', e.currentTarget.checked, e.currentTarget)} />
-      </label>
-      {#if d.forwardEnabled && d.reverseEnabled}
+      <div class="row">
+        {#if renaming === d.id}
+          <form class="grow rename" onsubmit={(e) => { e.preventDefault(); void rename(d) }}>
+            <!-- svelte-ignore a11y_autofocus -->
+            <input bind:value={newName} autofocus onblur={() => void rename(d)} onkeydown={(e) => e.key === 'Escape' && (renaming = null)} aria-label="Deck name" autocomplete="off" />
+          </form>
+        {:else}
+          <button class="grow name" onclick={() => startRename(d)} aria-label="Rename {d.name}">
+            Name <span class="muted">{d.name}</span><Icon name="edit" size={14} />
+            <span class="sub">{shown} {shown === 1 ? 'card' : 'cards'}{hasLangs(d) ? ` · words, ${t} → ${n}` : ''}</span>
+          </button>
+        {/if}
+      </div>
+      <div class="row">
+        <span class="grow">New cards per day <span class="sub">{d.counts.newTotal ? `${d.counts.newTotal} not started yet` : 'Every card started'}</span></span>
+        <div class="stepper">
+          <button onclick={() => setNew(d, -1)} disabled={d.newPerDay <= 0} aria-label="Fewer new {d.name} cards"><Icon name="minus" size={18} stroke={2} /></button>
+          <span>{d.newPerDay}</span>
+          <button onclick={() => setNew(d, 1)} aria-label="More new {d.name} cards"><Icon name="plus" size={18} stroke={2} /></button>
+        </div>
+      </div>
+      {#if hasLangs(d)}
+        <label class="row">
+          <span class="grow">{t} → {n} <span class="muted">recognise</span><span class="sub">See the word, recall what it means</span></span>
+          <input type="checkbox" class="switch" checked={d.forwardEnabled} onchange={(e) => setDirection(d, 'forwardEnabled', e.currentTarget.checked, e.currentTarget)} />
+        </label>
+        <label class="row">
+          <span class="grow">{n} → {t} <span class="muted">recall</span><span class="sub">See the meaning, produce the word</span></span>
+          <input type="checkbox" class="switch" checked={d.reverseEnabled} onchange={(e) => setDirection(d, 'reverseEnabled', e.currentTarget.checked, e.currentTarget)} />
+        </label>
+        {#if d.forwardEnabled && d.reverseEnabled}
+          <div class="row col">
+            <span>Introduce {n} → {t} after {t} → {n} is stable for <span class="sub">New words start with recognition only; recall joins once it holds</span></span>
+            <div class="seg five" role="radiogroup" aria-label="Introduce {n} → {t} after">
+              {#each GATES as g (g.label)}
+                <button role="radio" aria-checked={d.reverseAfterDays === g.value} class:on={d.reverseAfterDays === g.value} onclick={() => patchDeck(d, { reverseAfterDays: g.value })}>{g.label}</button>
+              {/each}
+            </div>
+          </div>
+        {/if}
         <div class="row col">
-          <span>Introduce {n} → {t} after {t} → {n} is stable for <span class="sub">New words start with recognition only; recall joins once it holds</span></span>
-          <div class="seg five" role="radiogroup" aria-label="Introduce {n} → {t} after">
-            {#each GATES as g (g.label)}
-              <button role="radio" aria-checked={d.reverseAfterDays === g.value} class:on={d.reverseAfterDays === g.value} onclick={() => patchDeck(d, { reverseAfterDays: g.value })}>{g.label}</button>
+          <span>Type the answer <span class="sub">Instead of just revealing it; typos count as Hard</span></span>
+          <div class="seg" role="radiogroup" aria-label="Type the answer">
+            {#each TYPE_ANSWERS as o (o.value)}
+              <button role="radio" aria-checked={d.typeAnswer === o.value} class:on={d.typeAnswer === o.value} onclick={() => patchDeck(d, { typeAnswer: o.value })}>{o.label.replace('RU', n).replace('EN', t)}</button>
             {/each}
           </div>
         </div>
       {/if}
-      <div class="row">
-        <span class="grow">New cards per day <span class="sub">{d.counts.newTotal ? `${d.counts.newTotal} not started yet` : 'Every card started'}</span></span>
-        <div class="stepper">
-          <button onclick={() => setNew(d, -1)} disabled={d.newPerDay <= 0} aria-label="Fewer new cards"><Icon name="minus" size={18} stroke={2} /></button>
-          <span>{d.newPerDay}</span>
-          <button onclick={() => setNew(d, 1)} aria-label="More new cards"><Icon name="plus" size={18} stroke={2} /></button>
-        </div>
-      </div>
-      <div class="row col">
-        <span>Type the answer <span class="sub">Instead of just revealing it; typos count as Hard</span></span>
-        <div class="seg" role="radiogroup" aria-label="Type the answer">
-          {#each TYPE_ANSWERS as o (o.value)}
-            <button role="radio" aria-checked={d.typeAnswer === o.value} class:on={d.typeAnswer === o.value} onclick={() => patchDeck(d, { typeAnswer: o.value })}>{o.label.replace('RU', n).replace('EN', t)}</button>
-          {/each}
-        </div>
+      <div class="row deck-actions">
+        {#if decks.length > 1}
+          <label class="btn small merge">
+            <span>Merge into…</span>
+            <select onchange={(e) => void merge(d, e.currentTarget.value, e.currentTarget)} aria-label="Merge {d.name} into">
+              <option value="">Merge into…</option>
+              {#each decks.filter((x) => x.id !== d.id) as x (x.id)}<option value={x.id}>{x.name}</option>{/each}
+            </select>
+          </label>
+        {/if}
+        <ConfirmButton class="btn danger small" onconfirm={() => void removeDeck(d)} confirmLabel={d.counts.total ? `Delete ${d.counts.total} ${d.counts.total === 1 ? 'card' : 'cards'} and their history` : 'Tap again to delete'}>
+          <Icon name="trash" size={15} /> Delete
+        </ConfirmButton>
       </div>
     </div>
-    <p class="caption">A direction you turn off keeps its history and comes back as it was.</p>
+    {#if hasLangs(d)}<p class="caption">A direction you turn off keeps its history and comes back as it was.</p>{/if}
   {:else}
     <div class="section-label">Study</div>
     <div class="group"><div class="row muted">Loading…</div></div>
   {/each}
 
   {#if decks.length}
-    <div class="section-label">Topics</div>
+    <div class="section-label">New deck</div>
     <div class="group">
-      {#each topicDecks as d (d.id)}
-        <div class="row col topic">
-          <div class="topic-head">
-            {#if renaming === d.id}
-              <form class="grow rename" onsubmit={(e) => { e.preventDefault(); void rename(d) }}>
-                <!-- svelte-ignore a11y_autofocus -->
-                <input bind:value={newName} autofocus onblur={() => void rename(d)} onkeydown={(e) => e.key === 'Escape' && (renaming = null)} aria-label="Topic name" autocomplete="off" />
-              </form>
-            {:else}
-              <button class="grow name" onclick={() => startRename(d)} aria-label="Rename {d.name}">
-                {d.name}<Icon name="edit" size={14} />
-                <span class="sub">{d.counts.total} {d.counts.total === 1 ? 'card' : 'cards'}{d.counts.newTotal ? ` · ${d.counts.newTotal} not started` : ''}</span>
-              </button>
-            {/if}
-            <input type="checkbox" class="switch" checked={d.inReview} onchange={(e) => patchDeck(d, { inReview: e.currentTarget.checked })} aria-label="Review {d.name}" />
-          </div>
-          <div class="topic-new">
-            <span class="grow muted">New per day</span>
-            <div class="stepper">
-              <button onclick={() => setNew(d, -1)} disabled={d.newPerDay <= 0} aria-label="Fewer new {d.name} cards"><Icon name="minus" size={18} stroke={2} /></button>
-              <span>{d.newPerDay}</span>
-              <button onclick={() => setNew(d, 1)} aria-label="More new {d.name} cards"><Icon name="plus" size={18} stroke={2} /></button>
-            </div>
-          </div>
-          <div class="topic-del">
-            <ConfirmButton class="btn danger small" onconfirm={() => void removeTopic(d)} confirmLabel={d.counts.total ? `Delete ${d.counts.total} ${d.counts.total === 1 ? 'card' : 'cards'} and their history` : 'Tap again to delete'}>
-              <Icon name="trash" size={15} /> Delete topic
-            </ConfirmButton>
-          </div>
+      <form class="row col new-deck" onsubmit={(e) => { e.preventDefault(); void addDeck() }}>
+        <div class="new-row">
+          <input bind:value={deckName} placeholder="Name, e.g. Programming" autocomplete="off" aria-label="New deck name" />
+          <button class="btn" type="submit" disabled={!deckName.trim() || addingDeck || (withLangs && !(langOk(targetLang) && langOk(nativeLang)))}>Add</button>
         </div>
-      {/each}
-      <form class="row new-topic" onsubmit={(e) => { e.preventDefault(); void addTopic() }}>
-        <input bind:value={topicName} placeholder="New topic, e.g. Databases" autocomplete="off" aria-label="New topic deck" />
-        <button class="btn" type="submit" disabled={!topicName.trim() || addingTopic}>Add</button>
+        <label class="new-row langs">
+          <input type="checkbox" class="switch" bind:checked={withLangs} />
+          <span class="grow">Takes words <span class="sub">A language to learn: words with translations, both directions</span></span>
+        </label>
+        {#if withLangs}
+          <div class="new-row">
+            <input bind:value={targetLang} placeholder="Learning, e.g. de" maxlength="3" autocomplete="off" autocapitalize="off" aria-label="Language to learn" />
+            <input bind:value={nativeLang} placeholder="Yours, e.g. ru" maxlength="3" autocomplete="off" autocapitalize="off" aria-label="Your language" />
+          </div>
+        {/if}
       </form>
     </div>
-    <p class="caption">Question-and-answer cards, reviewed with your words. Turn a topic off here or with its chip on the review screen; its cards wait as they are.</p>
+    <p class="caption">A deck holds cards of any type; subjects inside it are tags. Merging moves a deck's cards into another, tagged with its name.</p>
     {#if packs.length}
       <div class="section-label">Packs</div>
       <div class="group">
         {#each packs as p (p.id)}
           <div class="row pack">
-            <span class="grow">{p.name} <span class="muted">· {p.count} cards</span>{#if p.description}<span class="sub">{p.description}</span>{/if}</span>
+            <span class="grow">{p.name} <span class="muted">· {p.count} cards</span>{#if p.description}<span class="sub">{p.description}</span>{/if}
+              {#if p.added && !p.missing}
+                <span class="sub">In “{p.deckName}”</span>
+              {:else}
+                <label class="sub into">Into
+                  <select bind:value={() => packDeck[p.id] ?? p.deckId ?? '', (v) => (packDeck[p.id] = v)} aria-label="Deck for {p.name}">
+                    {#if !p.deckId}<option value="">New deck “{p.deckName}”</option>{/if}
+                    {#each decks as x (x.id)}<option value={x.id}>{x.name}</option>{/each}
+                  </select>
+                </label>
+              {/if}
+            </span>
             {#if p.added && !p.missing}
               <span class="added"><Icon name="check" size={16} stroke={2.2} /> Added</span>
             {:else}
@@ -778,18 +834,30 @@
     font-size: 15px;
     flex: none;
   }
-  .row.col.topic {
-    gap: 6px;
+  .deck-actions {
+    justify-content: flex-end;
+    gap: 8px;
   }
-  .topic-head,
-  .topic-new {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    width: 100%;
+  .deck-actions :global(.btn.small) {
+    min-height: 34px;
+    padding: 0 12px;
+    font-size: 14px;
+    font-weight: 500;
   }
-  .topic-new {
-    font-size: 15px;
+  .merge {
+    position: relative;
+  }
+  .merge select {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+  }
+  .into select {
+    margin-left: 4px;
+    padding: 2px 6px;
+    font-size: 13px;
+    width: auto;
+    max-width: 60%;
   }
   .pack .btn.small {
     flex: none;
@@ -806,16 +874,6 @@
     font-weight: 500;
     color: var(--good);
   }
-  .topic-del {
-    display: flex;
-    justify-content: flex-end;
-  }
-  .topic-del :global(.btn.small) {
-    min-height: 34px;
-    padding: 0 12px;
-    font-size: 14px;
-    font-weight: 500;
-  }
   .name {
     display: block;
     text-align: left;
@@ -831,15 +889,21 @@
   .rename input {
     padding: 8px 10px;
   }
-  .new-topic {
-    gap: 8px;
+  .new-deck {
+    gap: 10px;
   }
-  .new-topic input {
+  .new-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+  }
+  .new-row input:not(.switch) {
     flex: 1;
     min-width: 0;
     padding: 9px 12px;
   }
-  .new-topic .btn {
+  .new-row .btn {
     flex: none;
   }
   .stepper {

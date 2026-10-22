@@ -10,10 +10,9 @@ const msk = (hhmm: string, day = '2026-10-21') => new Date(`${day}T${hhmm}:00+03
 
 describe('reminders', () => {
   it('formats the message', () => {
-    expect(reminderText({ due: 12, inbox: 3 })).toBe('12 cards due · 3 words in inbox')
-    expect(reminderText({ due: 2, inbox: 1 })).toBe('2 cards due · 1 word in inbox')
-    expect(reminderText({ due: 1, inbox: 0 })).toBe('1 card due')
-    expect(reminderText({ due: 5, inbox: 0 }, 'evening')).toBe('Nothing reviewed yet today — 5 cards due')
+    expect(reminderText({ due: 12 })).toBe('12 cards due')
+    expect(reminderText({ due: 1 })).toBe('1 card due')
+    expect(reminderText({ due: 5 }, 'evening')).toBe('Nothing reviewed yet today — 5 cards due')
   })
 
   it('reads local time in the configured zone', () => {
@@ -46,8 +45,9 @@ describe('reminders', () => {
     const ctx = makeCtx()
     deck(ctx, 2)
     for (const f of ['a', 'b', 'c']) addWord(ctx, f)
-    addWord(ctx, 'proposal', { status: 'inbox' })
-    expect(dueCounts(ctx.db, ctx.cfg, ctx.user, ctx.now())).toEqual({ due: 2, inbox: 1 })
+    // Dropped words are never due.
+    addWord(ctx, 'dropped', { status: 'rejected' })
+    expect(dueCounts(ctx.db, ctx.cfg, ctx.user, ctx.now())).toEqual({ due: 2, decks: [{ name: 'English', due: 2 }] })
   })
 })
 

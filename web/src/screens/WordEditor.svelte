@@ -4,7 +4,9 @@
   import Header from '../components/Header.svelte'
   import Icon from '../components/Icon.svelte'
   import WordFields from '../components/WordFields.svelte'
-  import { api, status } from '../lib/app.svelte.ts'
+  import { NetworkError } from '../lib/api.ts'
+  import { api, editOutbox } from '../lib/app.svelte.ts'
+  import { dropCard } from '../lib/drop.ts'
   import { session } from '../lib/review.svelte.ts'
   import { back } from '../lib/router.svelte.ts'
   import { haptic } from '../lib/telegram.ts'
@@ -16,8 +18,8 @@
   import { words } from '../lib/words.svelte.ts'
 
   // A word with all its fields and both cards. Edits save with one tap (and
-  // on the way out, so Back never loses them); delete is undoable.
-  let { id, inbox = false }: { id: string; inbox?: boolean } = $props()
+  // on the way out, so Back never loses them); drop and delete are undoable.
+  let { id }: { id: string } = $props()
 
   let word = $state.raw<WordItem | null>(null)
   let logs = $state.raw<ReviewLog[]>([])
@@ -41,6 +43,9 @@
   async function load() {
     try {
       const d = await api.word(id)
+      // Edits made offline and not sent yet show over the server's copy.
+      const pending = editOutbox.get('word', id)
+      if (pending) d.word = { ...d.word, ...(pending as Partial<WordItem>) }
       // Don't clobber edits made while it loaded.
       if (!form || !dirty) adopt(d.word)
       else word = d.word
@@ -59,33 +64,42 @@
     return 'error' in r ? (r.error === 'at least one translation is required' ? 'Add at least one translation.' : r.error) : ''
   })
 
-  async function save(opts: { quiet?: boolean; approve?: boolean } = {}): Promise<boolean> {
+  async function save(opts: { quiet?: boolean } = {}): Promise<boolean> {
     if (!form || !word || saving || problem) return false
     const input = formToInput(form)
-    const changed = dirty
-    if (!changed && !opts.approve) return true
+    if (!dirty) return true
     saving = true
     try {
-      let w = word
-      if (changed) w = await api.updateWord(id, input)
-      if (opts.approve) {
-        w = await api.approve(id)
-        status.inbox = Math.max(0, status.inbox - 1)
-      }
+      const w = await api.updateWord(id, input)
       if (!gone) adopt(w)
       else saved = JSON.stringify(input)
       words.upsert(w)
       // The review card it was opened from shows the fix at once.
       session.patchWord(w)
       session.markStale()
-      if (!opts.quiet) showToast(opts.approve ? `Approved “${w.term}”` : 'Saved')
+      if (!opts.quiet) showToast('Saved')
       return true
     } catch (e) {
+      if (e instanceof NetworkError) return keepOffline(input)
       showToast(`Not saved: ${errorText(e)}`)
       return false
     } finally {
       saving = false
     }
+  }
+
+  // Offline: the edit waits on the device (sent with the ratings) and shows
+  // everywhere at once.
+  function keepOffline(input: ReturnType<typeof formToInput>): boolean {
+    if (!word) return false
+    editOutbox.add('word', id, { ...input })
+    const w = { ...word, ...input, ipa: input.ipa ?? null, note: input.note ?? null, cefr: input.cefr ?? null, tags: input.tags ?? [] } as WordItem
+    if (!gone) adopt(w)
+    else saved = JSON.stringify(input)
+    words.upsert(w)
+    session.patchWord(w)
+    showToast("Saved on this device — it syncs when you're online")
+    return true
   }
 
   // Edits not saved yet: Telegram asks before closing, updates wait.
@@ -98,35 +112,14 @@
     if (dirty && !problem && word) void save({ quiet: false })
   })
 
-  async function approve() {
-    if (await save({ approve: true })) back()
-  }
-
-  async function reject() {
-    if (!word) return
+  // Dropped: never shown again, kept so it isn't added again.
+  async function drop(on: boolean) {
+    if (!word || !form) return
+    if (dirty && !(await save({ quiet: true }))) return
     const w = word
-    try {
-      const r = await api.reject(w.id)
-      words.upsert(r)
-      status.inbox = Math.max(0, status.inbox - 1)
-      showToast(`Rejected “${w.term}”`, {
-        action: {
-          label: 'Undo',
-          run: () =>
-            void api.updateWord(w.id, { status: 'inbox' }).then(
-              (x) => {
-                words.upsert(x)
-                status.inbox++
-              },
-              (e) => showToast(errorText(e)),
-            ),
-        },
-      })
-      saved = JSON.stringify(formToInput(form!))
-      back()
-    } catch (e) {
-      showToast(errorText(e))
-    }
+    if (!(await dropCard('word', w.id, w.term, on))) return
+    if (on) back()
+    else word = { ...w, status: 'active' }
   }
 
   function remove() {
@@ -183,7 +176,7 @@
   const days = (n: number) => (n < 1 ? `${Math.round(n * 24)} h` : `${n < 10 ? n.toFixed(1) : Math.round(n)} d`)
   const logsFor = (cardId: string | undefined) => logs.filter((l) => l.cardId === cardId).slice(0, 12).reverse()
 
-  const title = $derived(inbox ? 'Proposal' : word?.term ?? 'Word')
+  const title = $derived(word?.term ?? 'Word')
 </script>
 
 <div class="editor">
@@ -202,11 +195,10 @@
       {/if}
     {:else}
       <div class="meta">
-        {#if word.createdBy === 'claude'}<span class="by">by Claude</span>{/if}
         {#if word.forms}<span class="forms" lang="en">{formsLine(word.forms)}</span>{/if}
         {#if word.freqRank}<span>#{word.freqRank.toLocaleString()} most common</span>{/if}
         <span>added {new Date(word.createdAt).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })}</span>
-        {#if word.status !== 'active'}<span class="chip status {word.status}">{word.status}</span>{/if}
+        {#if word.status === 'rejected'}<span class="chip status rejected">dropped</span>{/if}
       </div>
 
       <WordFields bind:form onsubmit={() => void save()} />
@@ -238,9 +230,15 @@
         </div>
       {/if}
 
-      {#if !inbox}
-        <button class="btn danger block delete" onclick={remove}><Icon name="trash" size={18} /> Delete word</button>
-      {/if}
+      <div class="danger-zone">
+        {#if word.status === 'rejected'}
+          <button class="btn" onclick={() => drop(false)}><Icon name="undo" size={18} /> Restore</button>
+        {:else}
+          <button class="btn" onclick={() => drop(true)}><Icon name="x" size={18} /> Drop</button>
+        {/if}
+        <button class="btn danger" onclick={remove}><Icon name="trash" size={18} /> Delete</button>
+      </div>
+      <p class="zone-note">{word.status === 'rejected' ? 'Dropped: never shown, and not suggested again.' : 'Drop: never shown again, and not suggested again. Delete removes it with its history.'}</p>
     {/if}
   </div>
 
@@ -248,12 +246,7 @@
     <div class="bar">
       {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
       <div class="bar-row">
-        {#if inbox && word.status === 'inbox'}
-          <button class="btn danger" onclick={reject}>Reject</button>
-          <button class="btn primary grow" onclick={approve} disabled={!!problem || saving}>{dirty ? 'Save & approve' : 'Approve'}</button>
-        {:else}
-          <button class="btn primary grow" onclick={() => save()} disabled={!dirty || !!problem || saving}>{saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}</button>
-        {/if}
+        <button class="btn primary grow" onclick={() => save()} disabled={!dirty || !!problem || saving}>{saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}</button>
       </div>
     </div>
   {/if}
@@ -284,16 +277,9 @@
     font-size: 13px;
     color: var(--muted);
   }
-  .by {
-    color: var(--accent);
-    font-weight: 600;
-  }
   .forms {
     color: var(--text);
     font-weight: 500;
-  }
-  .status.inbox {
-    color: var(--accent);
   }
   .status.rejected {
     color: var(--again);
@@ -365,8 +351,18 @@
     font-size: 14px;
     flex: none;
   }
-  .delete {
+  .danger-zone {
+    display: flex;
+    gap: 10px;
     margin-top: 28px;
+  }
+  .danger-zone .btn {
+    flex: 1;
+  }
+  .zone-note {
+    margin: 8px 4px 0;
+    font-size: 13px;
+    color: var(--faint);
   }
   .bar {
     flex: none;

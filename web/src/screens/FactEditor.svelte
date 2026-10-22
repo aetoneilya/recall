@@ -1,12 +1,13 @@
 <script lang="ts">
   import { cleanExercise, cleanFact, formatInterval, type ExerciseType, type ReviewLog } from '@recall/core'
   import ConfirmButton from '../components/ConfirmButton.svelte'
-  import { onDestroy, tick } from 'svelte'
+  import { onDestroy, tick, untrack } from 'svelte'
   import Header from '../components/Header.svelte'
   import Icon from '../components/Icon.svelte'
   import Markdown from '../components/Markdown.svelte'
-  import { api, status } from '../lib/app.svelte.ts'
-  import { HttpError } from '../lib/api.ts'
+  import { api, editOutbox } from '../lib/app.svelte.ts'
+  import { HttpError, NetworkError } from '../lib/api.ts'
+  import { dropCard } from '../lib/drop.ts'
   import { duplicateFact } from '../lib/factFilter.ts'
   import { facts } from '../lib/facts.svelte.ts'
   import { session } from '../lib/review.svelte.ts'
@@ -17,13 +18,15 @@
   import type { ExerciseInfo, FactItem } from '../lib/types.ts'
   import { dirState } from '../lib/wordFilter.ts'
 
-  // One fact: its topic, question, answer (Markdown, with a preview) and
-  // tags; its card's state and history; suspend, delete (undoable), and in
-  // the inbox approve / reject. `id = 'new'` writes new cards one after
-  // another into the chosen topic. Edits save with one tap and on the way
-  // out, like the word editor.
-  let { id, inbox = false }: { id: string; inbox?: boolean } = $props()
+  // One fact: its deck, question, answer (Markdown, with a preview) and
+  // tags; its card's state and history; its exercise pool (a grammar rule
+  // has three or more); suspend, drop and delete (undoable). `id = 'new'`
+  // writes new cards one after another into the chosen deck; with ?rule=1 it
+  // starts a grammar rule and opens it after the add, to fill the pool.
+  // Edits save with one tap and on the way out, like the word editor.
+  let { id }: { id: string } = $props()
   const isNew = $derived(id === 'new')
+  const asRule = router.route.query.get('rule') === '1'
 
   interface Form {
     deckId: string
@@ -44,11 +47,11 @@
     try {
       localStorage.setItem(LAST_TOPIC, deckId)
     } catch {
-      // No storage: the next add starts from the first topic.
+      // No storage: the next add starts from the deck under review.
     }
   }
 
-  const topics = $derived(Object.values(session.decks).filter((d) => d.kind === 'topic'))
+  const decks = $derived(Object.values(session.decks))
 
   let fact = $state.raw<FactItem | null>(null)
   let logs = $state.raw<ReviewLog[]>([])
@@ -73,7 +76,7 @@
 
   ;(() => {
     if (isNew) {
-      const f: Form = { deckId: router.route.query.get('deck') || readLast(), front: '', back: '', tags: '' }
+      const f: Form = { deckId: router.route.query.get('deck') || readLast() || session.deckId, front: '', back: '', tags: asRule ? 'Grammar' : '' }
       form = f
       saved = key(f)
       return
@@ -83,11 +86,11 @@
     const cached = facts.get(id) ?? (queued ? ({ ...queued, card: null } as FactItem) : undefined)
     if (cached) adopt(cached)
   })()
-  // New card: a known topic, else the first one.
+  // New card: a known deck, else the one under review, else the first.
   $effect(() => {
-    if (!isNew || !form || !topics.length) return
-    if (!topics.some((d) => d.id === form!.deckId)) {
-      form.deckId = topics[0]!.id
+    if (!isNew || !form || !decks.length) return
+    if (!decks.some((d) => d.id === form!.deckId)) {
+      form.deckId = session.decks[session.deckId] ? session.deckId : decks[0]!.id
       saved = key(form)
     }
   })
@@ -158,6 +161,9 @@
     if (isNew) return
     try {
       const d = await api.fact(id)
+      // Edits made offline and not sent yet show over the server's copy.
+      const pending = editOutbox.get('fact', id)
+      if (pending) d.fact = { ...d.fact, ...(pending as Partial<FactItem>) }
       if (!form || !dirty) adopt(d.fact)
       else fact = d.fact
       logs = d.logs
@@ -176,7 +182,7 @@
     const r = cleanFact(toInput(form))
     return 'error' in r ? (r.error === 'front is empty' ? 'Write the question.' : r.error === 'back is empty' ? 'Write the answer.' : r.error) : ''
   })
-  // The same question already in the chosen topic, caught as you type.
+  // The same question already in the chosen deck, caught as you type.
   const dup = $derived.by(() => {
     if (!form) return null
     const local = duplicateFact(facts.all, form.deckId, form.front, fact?.id)
@@ -189,7 +195,7 @@
     void form?.deckId
     serverDup = null
   })
-  const deckName = (deckId: string) => topics.find((d) => d.id === deckId)?.name ?? fact?.deckName ?? 'this topic'
+  const deckName = (deckId: string) => decks.find((d) => d.id === deckId)?.name ?? fact?.deckName ?? 'this deck'
 
   function after(f: FactItem) {
     facts.upsert(f)
@@ -203,26 +209,21 @@
     return !!ex
   }
 
-  async function save(opts: { quiet?: boolean; approve?: boolean } = {}): Promise<boolean> {
+  async function save(opts: { quiet?: boolean } = {}): Promise<boolean> {
     if (!form || !fact || saving || problem || dup) return false
-    const changed = dirty
-    if (!changed && !opts.approve) return true
+    if (!dirty) return true
     const snapshot = key(form)
     const patch = { ...toInput(form), ...(form.deckId !== fact.deckId ? { deckId: form.deckId } : {}) }
     saving = true
     try {
-      let f = fact
-      if (changed) f = await api.updateFact(id, patch)
-      if (opts.approve) {
-        f = await api.approveFact(id)
-        status.inbox = Math.max(0, status.inbox - 1)
-      }
+      const f = await api.updateFact(id, patch)
       if (!gone) adopt(f)
       else saved = snapshot
       after(f)
-      if (!opts.quiet) showToast(opts.approve ? 'Approved' : 'Saved')
+      if (!opts.quiet) showToast('Saved')
       return true
     } catch (e) {
+      if (e instanceof NetworkError) return keepOffline(patch, snapshot)
       if (!conflict(e)) showToast(`Not saved: ${errorText(e)}`)
       return false
     } finally {
@@ -230,8 +231,22 @@
     }
   }
 
+  // Offline: the edit waits on the device (sent with the ratings) and shows
+  // everywhere at once.
+  function keepOffline(patch: { front: string; back: string; tags: string[]; deckId?: string }, snapshot: string): boolean {
+    if (!fact) return false
+    editOutbox.add('fact', id, patch)
+    const f: FactItem = { ...fact, ...patch, ...(patch.deckId ? { deckName: deckName(patch.deckId) } : {}) }
+    if (!gone) adopt(f)
+    else saved = snapshot
+    after(f)
+    showToast("Saved on this device — it syncs when you're online")
+    return true
+  }
+
   // New cards: add, then clear the question and answer for the next one
-  // (topic and tags stay), cursor back in the question.
+  // (deck and tags stay), cursor back in the question. A new grammar rule
+  // opens in its editor instead, at the exercise pool.
   async function add() {
     if (!form || saving || problem || dup || !form.front.trim()) return
     const input = { deckId: form.deckId, ...toInput(form) }
@@ -240,6 +255,11 @@
       const f = await api.createFact(input)
       after(f)
       remember(f.deckId)
+      if (asRule) {
+        saved = key(form)
+        navigate(`/fact/${f.id}?from=${fromPath}&rule=1`, { replace: true })
+        return
+      }
       form.front = ''
       form.back = ''
       saved = key(form)
@@ -275,35 +295,14 @@
     if (!isNew && dirty && !problem && !dup && fact) void save()
   })
 
-  async function reject() {
-    if (!fact) return
+  // Dropped: never shown again, kept so it isn't added again.
+  async function drop(on: boolean) {
+    if (!fact || !form) return
+    if (dirty && !(await save({ quiet: true }))) return
     const f = fact
-    try {
-      const r = await api.rejectFact(f.id)
-      after(r)
-      status.inbox = Math.max(0, status.inbox - 1)
-      showToast('Rejected', {
-        action: {
-          label: 'Undo',
-          run: () =>
-            void api.updateFact(f.id, { status: 'inbox' }).then(
-              (x) => {
-                after(x)
-                status.inbox++
-              },
-              (e) => showToast(errorText(e)),
-            ),
-        },
-      })
-      saved = form ? key(form) : saved
-      back()
-    } catch (e) {
-      showToast(errorText(e))
-    }
-  }
-
-  async function approve() {
-    if (await save({ approve: true })) back()
+    if (!(await dropCard('fact', f.id, f.front, on))) return
+    if (on) back()
+    else fact = { ...f, status: 'active' }
   }
 
   function remove() {
@@ -370,17 +369,22 @@
   })
   const recent = $derived(logs.slice(0, 16).reverse())
   const cstate = $derived(dirState(fact?.card))
-  const title = $derived(isNew ? 'New card' : inbox ? 'Proposal' : 'Card')
+  const title = $derived(isNew ? (asRule ? 'New grammar rule' : 'New card') : 'Card')
+  // Opened right after adding a rule: the pool is what's left to fill.
+  let exPrompt: HTMLInputElement | undefined = $state()
+  $effect(() => {
+    if (asRule && !isNew && exPrompt) untrack(() => exPrompt!.scrollIntoView({ block: 'center' }))
+  })
   const fromPath = encodeURIComponent(router.route.query.get('from') ?? '/words')
 </script>
 
 <div class="editor">
   <div class="screen scroll">
     <Header {title} />
-    {#if isNew && !topics.length}
+    {#if isNew && !decks.length}
       <div class="empty">
         <Icon name="words" size={40} stroke={1.4} />
-        <p><strong>No topics yet</strong>Cards live in topics such as “Databases”. Create one in Settings first.</p>
+        <p><strong>No decks yet</strong>Cards live in decks such as “Programming”. Create one in Settings first.</p>
         <button class="btn primary" onclick={() => navigate('/settings', { replace: true })}>Open Settings</button>
       </div>
     {:else if !form || (!isNew && !fact)}
@@ -397,23 +401,23 @@
     {:else}
       {#if fact}
         <div class="meta">
-          {#if fact.createdBy === 'claude'}<span class="by">by Claude</span>{:else if fact.createdBy === 'import'}<span>imported</span>{/if}
+          {#if fact.createdBy === 'import'}<span>imported</span>{/if}
           <span>added {new Date(fact.createdAt).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })}</span>
-          {#if fact.status !== 'active'}<span class="chip status {fact.status}">{fact.status}</span>{/if}
+          {#if fact.status === 'rejected'}<span class="chip status rejected">dropped</span>{/if}
         </div>
       {/if}
       <div class="fields">
         <label class="f">
-          <span class="lbl">Topic{#if fact && form.deckId !== fact.deckId}&nbsp;<em>moves there on save</em>{/if}</span>
+          <span class="lbl">Deck{#if fact && form.deckId !== fact.deckId}&nbsp;<em>moves there on save</em>{/if}</span>
           <select bind:value={form.deckId}>
-            {#each topics as d (d.id)}<option value={d.id}>{d.name}</option>{/each}
-            {#if fact && !topics.some((d) => d.id === fact?.deckId)}<option value={fact.deckId}>{fact.deckName}</option>{/if}
+            {#each decks as d (d.id)}<option value={d.id}>{d.name}</option>{/each}
+            {#if fact && !decks.some((d) => d.id === fact?.deckId)}<option value={fact.deckId}>{fact.deckName}</option>{/if}
           </select>
         </label>
         <label class="f">
-          <span class="lbl">Question</span>
+          <span class="lbl">{asRule ? 'Rule' : 'Question'}</span>
           <!-- svelte-ignore a11y_autofocus -->
-          <textarea bind:this={frontInput} bind:value={form.front} use:autogrow={form.front} rows="1" placeholder="What is …?" autofocus={isNew}></textarea>
+          <textarea bind:this={frontInput} bind:value={form.front} maxlength="2000" use:autogrow={form.front} rows="1" placeholder={asRule ? 'Present Perfect vs Past Simple' : 'What is …?'} autofocus={isNew}></textarea>
         </label>
         {#if dup}
           <div class="dup" role="alert">
@@ -434,7 +438,7 @@
               {#if form.back.trim()}<Markdown source={form.back} />{:else}<p class="faint">Nothing to preview yet.</p>{/if}
             </div>
           {:else}
-            <textarea class="answer" bind:value={form.back} use:autogrow={form.back} rows="5" spellcheck="false" placeholder="**Key point** first; - lists, `code`, ``` blocks"></textarea>
+            <textarea class="answer" bind:value={form.back} maxlength="20000" use:autogrow={form.back} rows="5" spellcheck="false" placeholder={asRule ? 'The rule in a few lines, with an example' : '**Key point** first; - lists, `code`, ``` blocks'}></textarea>
           {/if}
         </div>
         <label class="f">
@@ -463,7 +467,10 @@
           </div>
         </div>
       {/if}
-      {#if fact && !inbox}
+      {#if isNew && asRule}
+        <p class="hint rule-hint">Next: three or more exercises — then the rule is reviewed by tapping through them.</p>
+      {/if}
+      {#if fact}
         <div class="section-label">Exercises{#if pool.length}&nbsp;<span class="faint-n">{poolActive} active{pool.length > poolActive ? ` · ${pool.length - poolActive} flagged` : ''}</span>{/if}</div>
         {#if pool.length}
           <div class="group pool">
@@ -501,31 +508,36 @@
               <option value="choose">Choose</option>
               <option value="spot">Spot</option>
             </select>
-            <input bind:value={draft.prompt} placeholder={draft.type === 'choose' ? 'The backup runs ___ 3 a.m.' : 'His shoes gets wet.'} aria-label="Sentence" autocomplete="off" />
+            <input bind:this={exPrompt} bind:value={draft.prompt} maxlength="500" placeholder={draft.type === 'choose' ? 'The backup runs ___ 3 a.m.' : 'His shoes gets wet.'} aria-label="Sentence" autocomplete="off" />
           </div>
           {#if draft.type === 'spot'}
             <input bind:value={draft.wrong} placeholder="The wrong word(s), as in the sentence" aria-label="Wrong word" autocomplete="off" autocapitalize="off" />
           {/if}
           <input bind:value={draft.options} placeholder={draft.type === 'choose' ? 'Options: at; in; on (— = nothing)' : 'Replacements: get; getting (— = delete)'} aria-label="Options" autocomplete="off" autocapitalize="off" />
-          <input bind:value={draft.answer} placeholder="The right option" aria-label="Answer" autocomplete="off" autocapitalize="off" />
-          <input bind:value={draft.explain} placeholder="Why (one line, optional)" aria-label="Why" autocomplete="off" />
+          <input bind:value={draft.answer} maxlength="300" placeholder="The right option" aria-label="Answer" autocomplete="off" autocapitalize="off" />
+          <input bind:value={draft.explain} maxlength="500" placeholder="Why (one line, optional)" aria-label="Why" autocomplete="off" />
           {#if draftError}<p class="problem">{draftError}</p>{/if}
           <button class="btn" type="submit" disabled={!draft.prompt.trim() || !draft.answer.trim()}><Icon name="plus" size={16} stroke={2.2} /> Add exercise</button>
-          {#if !pool.length}<p class="hint">With three or more, this card is reviewed through three of them at a time, by tapping, instead of question and answer.</p>{/if}
+          {#if poolActive < 3}<p class="hint" class:wanted={asRule}>{asRule ? `A grammar rule wants at least three exercises (${poolActive} so far): it is` : 'With three or more, this card is'} reviewed through three of them at a time, by tapping, instead of question and answer.</p>{/if}
         </form>
-        <button class="btn danger block delete" onclick={remove}><Icon name="trash" size={18} /> Delete card</button>
+        <div class="danger-zone">
+          {#if fact.status === 'rejected'}
+            <button class="btn" onclick={() => drop(false)}><Icon name="undo" size={18} /> Restore</button>
+          {:else}
+            <button class="btn" onclick={() => drop(true)}><Icon name="x" size={18} /> Drop</button>
+          {/if}
+          <button class="btn danger" onclick={remove}><Icon name="trash" size={18} /> Delete</button>
+        </div>
+        <p class="zone-note">{fact.status === 'rejected' ? 'Dropped: never shown, and not suggested again.' : 'Drop: never shown again, and not suggested again. Delete removes it with its history.'}</p>
       {/if}
     {/if}
   </div>
-  {#if form && (fact || (isNew && topics.length))}
+  {#if form && (fact || (isNew && decks.length))}
     <div class="bar">
       {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
       <div class="bar-row">
         {#if isNew}
           <button class="btn primary grow" onclick={add} disabled={!form.front.trim() || !!problem || !!dup || saving}>{saving ? 'Adding…' : `Add to ${deckName(form.deckId)}`}</button>
-        {:else if inbox && fact?.status === 'inbox'}
-          <button class="btn danger" onclick={reject}>Reject</button>
-          <button class="btn primary grow" onclick={approve} disabled={!!problem || !!dup || saving}>{dirty ? 'Save & approve' : 'Approve'}</button>
         {:else}
           <button class="btn primary grow" onclick={() => save()} disabled={!dirty || !!problem || !!dup || saving}>{saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}</button>
         {/if}
@@ -559,13 +571,6 @@
     margin: -4px 4px 14px;
     font-size: 13px;
     color: var(--muted);
-  }
-  .by {
-    color: var(--accent);
-    font-weight: 600;
-  }
-  .status.inbox {
-    color: var(--accent);
   }
   .status.rejected {
     color: var(--again);
@@ -816,8 +821,24 @@
     font-size: 14px;
     flex: none;
   }
-  .delete {
+  .hint.wanted {
+    color: var(--accent);
+  }
+  .rule-hint {
+    margin-top: 16px;
+  }
+  .danger-zone {
+    display: flex;
+    gap: 10px;
     margin-top: 28px;
+  }
+  .danger-zone .btn {
+    flex: 1;
+  }
+  .zone-note {
+    margin: 8px 4px 0;
+    font-size: 13px;
+    color: var(--faint);
   }
   .bar {
     flex: none;

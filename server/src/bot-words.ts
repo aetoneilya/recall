@@ -1,11 +1,11 @@
 // Adding words by messaging the bot. What a message means:
 //   a word or short phrase (≤ 6 words, no sentence punctuation) → ✨ autofill,
-//     saved to the inbox at once, shown as a card with ✅ Add · ✏️ Edit · ✖ (· ↔ Other meaning);
+//     added to the deck at once (studied from today), shown as a card with ✏️ Edit · ✖ (· ↔ Other meaning);
 //   "word — sentence", or a sentence with the *word* (or "word", «word»)
 //     marked → the same, the sentence picks the sense and becomes the first example;
 //   "word — перевод" (no target-language sentence) → the right side is a hint;
 //   several such lines (≤ 20) → each autofilled in turn, one progress message,
-//     then a list with ✅ Add all, ✏️ Review in app and ✖ per word;
+//     then a list with ✏️ Open in app and ✖ per word;
 //   anything else (prose, a paragraph) or a photo / image file → Claude picks
 //     up to 12 words likely new to this learner, shown as toggles + ➕ Add selected.
 // Buttons carry `<kind>:<action>:<draft id>[:<index>]`; the draft (drafts.ts)
@@ -138,8 +138,7 @@ export function cardText(w: CardWord): string {
 }
 
 export function stateLabel(w: WordListItem): string {
-  if (w.status === 'inbox') return 'in inbox'
-  if (w.status === 'rejected') return 'rejected'
+  if (w.status === 'rejected') return 'dropped'
   const cards = [w.cards.forward, w.cards.reverse].filter((c) => c !== null && c.enabled)
   const live = cards.filter((c) => !c!.suspended)
   if (cards.length && !live.length) return 'suspended'
@@ -154,7 +153,7 @@ export const WORD_TEXT = {
   duplicate: (w: WordListItem) => `Already in your deck: <b>${esc(w.term)}</b> — ${esc(gloss(w, 2))} · ${stateLabel(w)}`,
   translationsAdded: (term: string, added: string[]) => `➕ Added to <b>${esc(term)}</b>: ${esc(added.join(', '))}`,
   expired: 'This message has expired — send the word again',
-  gone: 'This word is no longer in your inbox',
+  gone: 'This word is no longer in your deck',
   noOther: 'No other meaning to switch to',
   link: "I can't open links — paste the text or send a screenshot.",
   notLatin: 'Send the word in English, e.g. “to frown”.',
@@ -223,12 +222,20 @@ export async function addOne(ctx: AppContext, user: User, deck: Deck, it: Item):
   }
   if (r.duplicate) return dupOf(r.duplicate.id)
   try {
-    const w = createWord(ctx.db, user.id, { deckId: deck.id, word: r.draft, status: 'inbox', createdBy: 'user' }, ctx.now(), lexiconOf(ctx))
+    const w = createWord(ctx.db, user.id, { deckId: deck.id, word: r.draft, status: 'active', createdBy: 'user' }, ctx.now(), lexiconOf(ctx))
     return { kind: 'created', word: item(ctx, user.id, w.id)!, senses, context: it.context }
   } catch (e) {
     if (e instanceof DuplicateWordError) return dupOf(e.existing.id)
     return { kind: 'failed', term: it.term, reason: failureReason(e), error: e }
   }
+}
+
+// ✖ on a word just added: deleted while unstudied, dropped (kept, never
+// shown) once it has been reviewed.
+function remove(ctx: AppContext, userId: string, wordId: string) {
+  const reviewed = ctx.db.prepare('SELECT 1 FROM cards WHERE word_id = ? AND reps > 0').get(wordId)
+  if (reviewed) setWordStatus(ctx.db, userId, wordId, 'rejected', ctx.now())
+  else deleteWord(ctx.db, userId, wordId)
 }
 
 // ---------- keyboards ----------
@@ -237,7 +244,7 @@ const editUrl = (ctx: AppContext, wordId: string) => `${ctx.cfg.appOrigin}/#/wor
 const newUrl = (ctx: AppContext, term: string) => `${ctx.cfg.appOrigin}/#/words/new?term=${encodeURIComponent(term)}`
 
 function wordKeyboard(ctx: AppContext, draftId: string, p: WordPayload): InlineKeyboard {
-  const k = new InlineKeyboard().text('✅ Add', `w:ok:${draftId}`).webApp('✏️ Edit', editUrl(ctx, p.wordId)).text('✖', `w:no:${draftId}`)
+  const k = new InlineKeyboard().webApp('✏️ Edit', editUrl(ctx, p.wordId)).text('✖', `w:no:${draftId}`)
   if (p.senses.length > 1) k.row().text('↔ Other meaning', `w:alt:${draftId}`)
   return k
 }
@@ -251,16 +258,12 @@ interface BatchPayload {
   failed: { term: string; reason: string }[]
   // Lines beyond MAX_BATCH that were left out.
   skipped: number
-  approved: boolean
 }
 
 export function batchText(p: BatchPayload): string {
   const out: string[] = []
-  const live = p.created.filter((_, i) => !p.removed.includes(i))
-  if (p.approved) {
-    out.push(`✅ Added ${live.length} ${live.length === 1 ? 'word' : 'words'}: ${esc(live.map((c) => c.term).join(', '))}`)
-  } else if (p.created.length) {
-    out.push(`📥 ${p.created.length} ${p.created.length === 1 ? 'word' : 'words'} in your inbox:`)
+  if (p.created.length) {
+    out.push(`✅ Added ${p.created.length} ${p.created.length === 1 ? 'word' : 'words'}:`)
     p.created.forEach((c, i) => {
       const line = `${i + 1}. <b>${esc(c.term)}</b> — ${esc(c.translation)}`
       out.push(p.removed.includes(i) ? `<s>${line}</s>` : line)
@@ -274,8 +277,8 @@ export function batchText(p: BatchPayload): string {
 
 function batchKeyboard(ctx: AppContext, draftId: string, p: BatchPayload): InlineKeyboard | undefined {
   const live = p.created.map((c, i) => ({ c, i })).filter(({ i }) => !p.removed.includes(i))
-  if (p.approved || !live.length) return p.failed.length ? new InlineKeyboard().webApp('✏️ Add in the app', newUrl(ctx, p.failed[0]!.term)) : undefined
-  const k = new InlineKeyboard().text(live.length === 1 ? '✅ Add' : '✅ Add all', `b:all:${draftId}`).webApp('✏️ Review in app', `${ctx.cfg.appOrigin}/#/inbox`)
+  if (!live.length) return p.failed.length ? new InlineKeyboard().webApp('✏️ Add in the app', newUrl(ctx, p.failed[0]!.term)) : undefined
+  const k = new InlineKeyboard().webApp('✏️ Open in app', `${ctx.cfg.appOrigin}/#/words`)
   live.forEach(({ c, i }, n) => {
     if (n % 3 === 0) k.row()
     k.text(`✖ ${short(c.term)}`, `b:rm:${draftId}:${i}`)
@@ -320,7 +323,7 @@ async function replyOutcome(ctx: AppContext, api: Api, chatId: number, user: Use
     messageId ? editText(api, chatId, messageId, text, keyboard) : api.sendMessage(chatId, text, { ...HTML, ...(keyboard ? { reply_markup: keyboard } : {}) })
   if (o.kind === 'created') {
     const d = createDraft<WordPayload>(ctx.db, user.id, 'word', { wordId: o.word.id, senses: o.senses, index: 0, context: o.context }, ctx.now())
-    await send(cardText(o.word), wordKeyboard(ctx, d.id, d.payload))
+    await send(`✅ ${cardText(o.word)}`, wordKeyboard(ctx, d.id, d.payload))
   } else if (o.kind === 'duplicate') {
     let text = WORD_TEXT.duplicate(o.existing)
     let k: InlineKeyboard | undefined
@@ -335,10 +338,10 @@ async function replyOutcome(ctx: AppContext, api: Api, chatId: number, user: Use
   }
 }
 
-// Autofills the items one by one into the inbox, editing `messageId` with the
+// Autofills the items one by one into the deck, editing `messageId` with the
 // progress, and leaves the list with its buttons there.
 async function runBatch(ctx: AppContext, api: Api, chatId: number, messageId: number, user: User, deck: Deck, items: Item[], skipped: number) {
-  const p: BatchPayload = { created: [], removed: [], duplicates: [], failed: [], skipped, approved: false }
+  const p: BatchPayload = { created: [], removed: [], duplicates: [], failed: [], skipped }
   let stop: string | null = null
   for (const [n, it] of items.entries()) {
     if (stop) {
@@ -479,16 +482,13 @@ export function installWordHandlers(bot: Bot, ctx: AppContext, opts: WordBotOpti
       return
     }
     if (action === 'ok') {
+      // ✅ of a message sent before the inbox went away: the word is studied already.
       const w = word.status === 'active' ? word : setWordStatus(db, user.id, word.id, 'active', ctx.now())
       deleteDraft(db, user.id, d.id)
       await c.answerCallbackQuery()
       await c.editMessageText(WORD_TEXT.added(w), { ...HTML, reply_markup: new InlineKeyboard().webApp('✏️ Edit', editUrl(ctx, w.id)) })
     } else if (action === 'no') {
-      if (word.status !== 'inbox') {
-        await c.answerCallbackQuery({ text: WORD_TEXT.gone })
-        return
-      }
-      deleteWord(db, user.id, word.id)
+      remove(ctx, user.id, word.id)
       deleteDraft(db, user.id, d.id)
       await c.answerCallbackQuery()
       await c.editMessageText(WORD_TEXT.removed(word.term), HTML)
@@ -506,7 +506,7 @@ export function installWordHandlers(bot: Bot, ctx: AppContext, opts: WordBotOpti
         p.index = index
         saveDraft(db, user.id, d.id, p)
         await c.answerCallbackQuery()
-        await c.editMessageText(cardText(s), { ...HTML, reply_markup: wordKeyboard(ctx, d.id, p) })
+        await c.editMessageText(`✅ ${cardText(s)}`, { ...HTML, reply_markup: wordKeyboard(ctx, d.id, p) })
         return
       }
       await c.answerCallbackQuery({ text: WORD_TEXT.noOther })
@@ -542,19 +542,12 @@ export function installWordHandlers(bot: Bot, ctx: AppContext, opts: WordBotOpti
     if (action === 'rm') {
       const i = Number(index)
       const it = p.created[i]
-      if (!it || p.removed.includes(i) || p.approved) return void (await c.answerCallbackQuery())
-      const w = getWord(db, user.id, it.wordId)
-      if (w?.status === 'inbox') deleteWord(db, user.id, w.id)
+      if (!it || p.removed.includes(i)) return void (await c.answerCallbackQuery())
+      if (getWord(db, user.id, it.wordId)) remove(ctx, user.id, it.wordId)
       p.removed.push(i)
     } else {
-      if (p.approved) return void (await c.answerCallbackQuery())
-      for (const [i, it] of p.created.entries()) {
-        if (p.removed.includes(i)) continue
-        const w = getWord(db, user.id, it.wordId)
-        if (!w) p.removed.push(i)
-        else if (w.status === 'inbox') setWordStatus(db, user.id, w.id, 'active', ctx.now())
-      }
-      p.approved = true
+      // ✅ Add all of a list sent before the inbox went away: nothing left to do.
+      return void (await c.answerCallbackQuery())
     }
     saveDraft(db, user.id, d.id, p)
     await c.answerCallbackQuery()

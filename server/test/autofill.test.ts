@@ -95,7 +95,7 @@ describe('words REST API', () => {
   it('creates the English deck on first use and manages decks', async () => {
     const decks = (await api('GET', '/decks')).body.decks
     expect(decks).toMatchObject([{ name: 'English', targetLang: 'en', nativeLang: 'ru', forwardEnabled: true, reverseEnabled: true, reverseAfterDays: null,
-      counts: { total: 0, active: 0, inbox: 0, learning: 0, known: 0, due: 0, new: 0 } }])
+      counts: { total: 0, active: 0, dropped: 0, learning: 0, known: 0, due: 0, new: 0 } }])
     expect((await api('POST', '/decks', { targetLang: 'en', nativeLang: 'ru' })).status).toBe(409)
     const de = await api('POST', '/decks', { targetLang: 'de', nativeLang: 'ru' })
     expect(de).toMatchObject({ status: 201, body: { deck: { name: 'German', targetLang: 'de' } } })
@@ -137,17 +137,19 @@ describe('words REST API', () => {
     expect((await api('GET', `/words/${w.id}`)).status).toBe(404)
   })
 
-  it('serves the inbox, approvals, the queue, the dashboard and autofill', async () => {
+  it('drops and restores words, serves the queue, the dashboard and autofill', async () => {
     const a = ctx.db.prepare("SELECT id FROM decks WHERE target_lang = 'en'").get() as { id: string }
-    addWord(ctx, 'bid', { status: 'inbox', deckId: a.id, at: new Date('2026-10-21T08:00:00Z') })
-    const other = addWord(ctx, 'tenant', { status: 'inbox', deckId: a.id })
-    const inbox = await api('GET', '/inbox')
-    expect(inbox.body.words.map((x: { term: string }) => x.term)).toEqual(['bid', 'tenant'])
-    expect((await api('POST', `/words/${other.id}/reject`)).body.word.status).toBe('rejected')
-    expect((await api('POST', '/inbox/approve-all', {})).body).toEqual({ approved: 1 })
+    addWord(ctx, 'bid', { deckId: a.id, at: new Date('2026-10-21T08:00:00Z') })
+    const other = addWord(ctx, 'tenant', { deckId: a.id })
+    expect((await api('POST', `/words/${other.id}/drop`)).body.word.status).toBe('rejected')
+    expect((await api('GET', '/words?status=rejected')).body.words.map((x: { term: string }) => x.term)).toEqual(['tenant'])
+    expect((await api('POST', `/words/${other.id}/restore`)).body.word.status).toBe('active')
+    expect((await api('POST', `/words/${other.id}/drop`)).body.word.status).toBe('rejected')
+    expect((await api('GET', '/inbox')).status).toBe(404)
     const q = await api('GET', '/queue')
     expect(q.body.items[0]).toMatchObject({ word: { term: 'bid' }, card: { direction: 'forward' }, deckName: 'English' })
-    expect(q.body.inbox).toBe(0)
+    expect(q.body.items.some((i: any) => i.word?.term === 'tenant')).toBe(false)
+    expect(q.body.inbox).toBeUndefined()
 
     const dash = await api('GET', '/dashboard')
     expect(dash.status).toBe(200)

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { answerDiff, correctedParts, exerciseRating, isTapType, NOTHING, spotTokens, type ExerciseAttempt, type ExerciseCheck, type FactQueueItem } from '@recall/core'
+  import CardActions from './CardActions.svelte'
   import Icon from './Icon.svelte'
   import Markdown from './Markdown.svelte'
 
@@ -22,6 +23,7 @@
     ontoken,
     onbad,
     onedit,
+    ondrop,
   }: {
     item: FactQueueItem
     index: number
@@ -34,6 +36,7 @@
     ontoken?: (index: number) => void
     onbad?: () => void
     onedit?: () => void
+    ondrop?: () => void
   } = $props()
 
   const items = $derived(item.exercises ?? [])
@@ -75,17 +78,7 @@
     {/if}
   </div>
   {#if onedit && (revealed || answered)}
-    <button
-      class="edit"
-      onclick={(e) => {
-        e.stopPropagation()
-        onedit()
-      }}
-      onmousedown={(e) => e.preventDefault()}
-      aria-label="Open the rule"
-    >
-      <Icon name="edit" size={18} />
-    </button>
+    <CardActions {onedit} {ondrop} label="Open the rule" />
   {/if}
   <div class="body">
     {#if !revealed && ex && isTap}
@@ -261,23 +254,6 @@
   .steps b {
     margin-left: 4px;
     font-weight: 600;
-  }
-  .edit {
-    position: absolute;
-    top: 3px;
-    right: 3px;
-    width: 44px;
-    height: 44px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 14px;
-    color: var(--faint);
-    animation: fade-in var(--t-fast) ease;
-  }
-  .edit:active {
-    color: var(--accent);
-    background: var(--accent-soft);
   }
   .body {
     flex: 1;

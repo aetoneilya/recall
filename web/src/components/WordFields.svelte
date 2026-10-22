@@ -49,7 +49,7 @@
   {#if showTerm}
     <label class="f">
       <span class="lbl">Word or phrase</span>
-      <input bind:value={form.term} lang={target} autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+      <input bind:value={form.term} maxlength="200" lang={target} autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
     </label>
   {/if}
 
@@ -78,7 +78,7 @@
     <span class="lbl">Pronunciation <em>IPA, General American</em></span>
     <span class="ipa-wrap">
       <span class="slash">/</span>
-      <input class="ipa" bind:value={form.ipa} placeholder="optional" lang={target} autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+      <input class="ipa" bind:value={form.ipa} maxlength="200" placeholder="optional" lang={target} autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
       <span class="slash">/</span>
     </span>
   </label>
@@ -87,8 +87,8 @@
     <span class="lbl">Examples</span>
     {#each form.examples as ex, i (i)}
       <div class="example">
-        <textarea bind:value={ex.text} use:autogrow={ex.text} rows="1" lang={target} placeholder="Sentence with the word"></textarea>
-        <textarea class="tr" bind:value={ex.translation} use:autogrow={ex.translation} rows="1" lang={native} placeholder="Translation (optional)"></textarea>
+        <textarea bind:value={ex.text} maxlength="500" use:autogrow={ex.text} rows="1" lang={target} placeholder="Sentence with the word"></textarea>
+        <textarea class="tr" bind:value={ex.translation} maxlength="500" use:autogrow={ex.translation} rows="1" lang={native} placeholder="Translation (optional)"></textarea>
         <button type="button" class="rm" onclick={() => removeExample(i)} aria-label="Remove example {i + 1}"><Icon name="x" size={16} stroke={2} /></button>
       </div>
     {/each}
@@ -99,7 +99,7 @@
 
   <label class="f">
     <span class="lbl">Note <em>usage, register, collocations</em></span>
-    <textarea bind:value={form.note} use:autogrow={form.note} rows="1" lang={native} placeholder="Optional"></textarea>
+    <textarea bind:value={form.note} maxlength="2000" use:autogrow={form.note} rows="1" lang={native} placeholder="Optional"></textarea>
   </label>
 
   <label class="f">

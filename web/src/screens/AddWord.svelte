@@ -37,6 +37,9 @@
     }
   }
 
+  // The deck it goes to: ?deck= (from the Cards tab's +), else the server's
+  // default (the English deck).
+  const deckId = router.route.query.get('deck') || undefined
   // A bot link can bring the word along: #/words/new?term=…
   let term = $state((() => router.route.query.get('term')?.trim() ?? '')())
   let context = $state('')
@@ -114,7 +117,7 @@
     if (!r) {
       phase = 'loading'
       try {
-        r = await api.autofill(t.trim(), c.trim() || undefined)
+        r = await api.autofill(t.trim(), c.trim() || undefined, deckId)
         cache.set(k, r)
       } catch (e) {
         if (my !== seq || key(term, context) !== k) return
@@ -217,7 +220,7 @@
 
   async function add() {
     if (phase === 'loading') return
-    const input = formToInput({ ...form, term })
+    const input = { ...formToInput({ ...form, term }), ...(deckId ? { deckId } : {}) }
     const c = cleanWord(input)
     if ('error' in c) {
       problem = c.error === 'at least one translation is required' ? 'Add at least one translation.' : c.error === 'term is empty' ? 'Type the word first.' : c.error
@@ -372,6 +375,7 @@
       <input
         bind:this={termEl}
         bind:value={term}
+        maxlength="200"
         onkeydown={onTermKey}
         class="term"
         placeholder="English word or phrase"

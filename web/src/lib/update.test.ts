@@ -5,11 +5,11 @@ const ctx = (c: Partial<Context> = {}): Context => ({ parts: [], card: false, re
 
 describe('shouldApply', () => {
   it('applies when a list tab opens', () => {
-    for (const parts of [['words'], ['inbox'], ['progress'], ['settings']]) expect(shouldApply('route', ctx({ parts }))).toBe(true)
+    for (const parts of [['words'], ['progress'], ['settings']]) expect(shouldApply('route', ctx({ parts }))).toBe(true)
   })
 
   it('never interrupts a form, an editor or the test', () => {
-    for (const parts of [['add'], ['word', 'wd_1'], ['inbox', 'wd_1'], ['test']]) {
+    for (const parts of [['add'], ['word', 'wd_1'], ['fact', 'ft_1'], ['test']]) {
       expect(shouldApply('route', ctx({ parts }))).toBe(false)
       expect(shouldApply('resume', ctx({ parts }))).toBe(false)
     }

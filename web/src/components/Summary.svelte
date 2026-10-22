@@ -1,6 +1,7 @@
 <script lang="ts">
   import { status } from '../lib/app.svelte.ts'
   import { navigate } from '../lib/router.svelte.ts'
+  import { hasDeckLanguages } from '../lib/decks.ts'
   import { session } from '../lib/review.svelte.ts'
   import { openTelegramLink } from '../lib/telegram.ts'
   import { checkpoint } from '../lib/update.ts'
@@ -21,8 +22,10 @@
 
   // A deck with nothing in it yet (a new account): the next step is adding
   // words, not waiting for reviews.
-  const firstRun = $derived(session.loaded && session.wordCount === 0 && !status.inbox && !s.reviewed)
+  const firstRun = $derived(session.loaded && session.wordCount === 0 && !s.reviewed)
   const bot = $derived(status.me?.botUsername ?? null)
+  const deckId = $derived(session.deckId)
+  const takesWords = $derived(!session.decks[deckId] || hasDeckLanguages(session.decks[deckId]))
 
   // "What's next" once the queue is empty: tomorrow's reviews, so the end of
   // a session says when to come back.
@@ -112,16 +115,9 @@
         </p>
       {/if}
       <div class="next-steps group">
-        {#if status.inbox}
-          <button class="row" onclick={() => navigate('/inbox', { replace: true })}>
-            <Icon name="inbox" size={20} />
-            <span>Vet {status.inbox} new {status.inbox === 1 ? 'word' : 'words'} in the inbox</span>
-            <Icon name="chevron" size={18} />
-          </button>
-        {/if}
-        <button class="row" onclick={() => navigate('/add?from=/')}>
+        <button class="row" onclick={() => navigate(takesWords ? `/add?from=/&deck=${deckId}` : `/fact/new?from=/&deck=${deckId}`)}>
           <Icon name="plus" size={20} stroke={2} />
-          <span>Add words</span>
+          <span>{takesWords ? 'Add words' : 'Add cards'}</span>
           <Icon name="chevron" size={18} />
         </button>
       </div>

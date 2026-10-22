@@ -74,13 +74,10 @@ describe('migration to v6', () => {
 
     // The app reads it as before.
     expect(listDecks(db, 'us_a')).toMatchObject([
-      { id: 'dk_a', kind: 'language', inReview: true, newPerDay: 20, reverseAfterDays: 7, typeAnswer: 'reverse' },
-      { id: 'dk_a2', kind: 'language', targetLang: 'de' },
+      { id: 'dk_a', newPerDay: 20, reverseAfterDays: 7, typeAnswer: 'reverse' },
+      { id: 'dk_a2', targetLang: 'de' },
     ])
     expect(searchWords(db, 'us_b', {}, NOW).words).toMatchObject([{ id: 'wd_2', status: 'inbox', cards: { reverse: { enabled: false } } }])
-    expect(buildQueue(db, 'us_a', TZ, NOW).items.map((i) => i.card.id)).toEqual(['cd_1f'])
-    expect(applyReviews(db, 'us_a', [{ id: 'r2', cardId: 'cd_1f', rating: 3, reviewedAt: '2026-10-21T09:00:00.000Z' }])).toMatchObject({ applied: 1 })
-    expect(wordLogs(db, 'us_a', 'wd_1').map((l) => l.id)).toEqual(['r2', 'log_1'])
 
     // The new constraints hold.
     expect(() => db.exec("INSERT INTO decks(id, user_id, kind, name, created_at) VALUES ('dk_x', 'us_a', 'language', 'Broken', '2026-10-21')")).toThrow(/CHECK/)
@@ -101,6 +98,12 @@ describe('migration to v6', () => {
     expect(db.prepare("SELECT kind, item_id, deck_id, user_id FROM study_cards WHERE id = 'cd_f'").get()).toEqual({ kind: 'fact', item_id: 'ft_1', deck_id: 'dk_t', user_id: 'us_a' })
     db.exec("DELETE FROM facts WHERE id = 'ft_1'")
     expect(db.prepare("SELECT 1 FROM cards WHERE id = 'cd_f'").get()).toBeUndefined()
+
+    // The app (on the current schema) studies the migrated rows.
+    migrate(db, ENV)
+    expect(buildQueue(db, 'us_a', TZ, NOW).items.map((i) => i.card.id)).toEqual(['cd_1f'])
+    expect(applyReviews(db, 'us_a', [{ id: 'r2', cardId: 'cd_1f', rating: 3, reviewedAt: '2026-10-21T09:00:00.000Z' }])).toMatchObject({ applied: 1 })
+    expect(wordLogs(db, 'us_a', 'wd_1').map((l) => l.id)).toEqual(['r2', 'log_1'])
   })
 
   it('opens a v5 file in place, with a backup first', () => {
@@ -115,7 +118,7 @@ describe('migration to v6', () => {
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
     db.close()
     const backups = fs.readdirSync(path.join(dir, 'backups'))
-    expect(backups).toEqual([`pre-v6-${NOW.toISOString().replace(/[:.]/g, '-')}.db`])
+    expect(backups).toEqual(['pre-v6', 'pre-v9'].map((v) => `${v}-${NOW.toISOString().replace(/[:.]/g, '-')}.db`))
     const snap = new DatabaseSync(path.join(dir, 'backups', backups[0]!), { readOnly: true })
     expect(schemaVersion(snap)).toBe(5)
     expect((snap.prepare('SELECT count(*) AS n FROM cards').get() as { n: number }).n).toBe(4)
@@ -170,5 +173,43 @@ describe('migration to v8', () => {
     expect(() => add('ex_q', 'quiz', null)).toThrow(/CHECK/)
     db.exec("DELETE FROM fact_exercises WHERE id = 'ex_1'")
     expect(dump(db, 'exercise_attempts')).toEqual([])
+  })
+})
+
+describe('migration to v9', () => {
+  it('drops kind and in_review from decks, keeping every deck, word, fact and card', () => {
+    const db = new DatabaseSync(':memory:')
+    v5(db)
+    migrate(db, ENV, 8)
+    db.exec(`
+      INSERT INTO decks(id, user_id, kind, name, in_review, new_per_day, created_at) VALUES ('dk_t', 'us_a', 'topic', 'Concurrency', 0, 5, '2026-10-21');
+      INSERT INTO facts(id, user_id, deck_id, front, back, tags, status, created_by, dedupe_key, created_at, updated_at)
+        VALUES ('ft_1', 'us_a', 'dk_t', 'Q', 'A', '["revolut"]', 'active', 'import', 'q', '2026-10-21', '2026-10-21');
+      INSERT INTO facts(id, user_id, deck_id, front, back, tags, status, created_by, dedupe_key, created_at, updated_at)
+        VALUES ('ft_2', 'us_a', 'dk_t', 'Proposed', 'A', '[]', 'inbox', 'claude', 'proposed', '2026-10-21', '2026-10-21');
+      INSERT INTO cards(id, fact_id, direction, due, stability, difficulty, elapsed_days, scheduled_days, learning_steps, reps, lapses, state)
+        VALUES ('cd_f', 'ft_1', 'forward', '2026-10-21', 0, 0, 0, 0, 0, 0, 0, 0);
+    `)
+    const decks = dump(db, 'decks')
+    const others = Object.fromEntries(['words', 'facts', 'cards', 'review_logs'].map((t) => [t, dump(db, t)]))
+    migrate(db, ENV, 9)
+    expect(schemaVersion(db)).toBe(9)
+    db.exec('PRAGMA foreign_keys = ON')
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    const after = dump(db, 'decks')
+    expect(sorted(without(after, ['review_filter']))).toEqual(sorted(without(decks, ['kind', 'in_review'])))
+    expect(after.every((d: Record<string, unknown>) => d.review_filter === null && !('kind' in d) && !('in_review' in d))).toBe(true)
+    // The inbox is gone: what waited there is active; nothing else changes.
+    const unboxed = (rows: Record<string, unknown>[]) => rows.map((r) => (r.status === 'inbox' ? { ...r, status: 'active' } : r))
+    expect(others.words.some((w: Record<string, unknown>) => w.status === 'inbox')).toBe(true)
+    for (const t of Object.keys(others)) expect(dump(db, t)).toEqual(unboxed(others[t]))
+    expect(db.prepare("SELECT count(*) AS n FROM words WHERE status = 'inbox'").get()).toEqual({ n: 0 })
+    expect(db.prepare("SELECT status FROM facts WHERE id = 'ft_2'").get()).toEqual({ status: 'active' })
+    // Languages: both or neither; still one deck per language; names unique.
+    expect(() => db.exec("INSERT INTO decks(id, user_id, name, target_lang, created_at) VALUES ('dk_x', 'us_a', 'Half', 'de', 'now')")).toThrow(/CHECK/)
+    expect(() => db.exec("INSERT INTO decks(id, user_id, name, target_lang, native_lang, created_at) VALUES ('dk_x', 'us_a', 'English 2', 'en', 'ru', 'now')")).toThrow(/UNIQUE/)
+    db.exec("INSERT INTO decks(id, user_id, name, created_at) VALUES ('dk_p', 'us_a', 'Programming', 'now'), ('dk_q', 'us_a', 'Reading', 'now')")
+    expect(() => db.exec("INSERT INTO decks(id, user_id, name, created_at) VALUES ('dk_r', 'us_a', 'programming', 'now')")).toThrow(/UNIQUE/)
+    expect(listDecks(db, 'us_a').map((d) => [d.name, d.targetLang])).toEqual([['English', 'en'], ['Deutsch', 'de'], ['Concurrency', null], ['Programming', null], ['Reading', null]])
   })
 })

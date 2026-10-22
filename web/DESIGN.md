@@ -96,7 +96,7 @@ Each text colour holds ≥4.8:1 on its own fill. New / learning / review counts 
 - **Vocab answer** (400, 23px, 1.32, balanced): the translation.
 - **Pronunciation** (400, 17px / 16px under a reversed answer, muted, +0.01em): pulled from an `IPA:` line in `extra` and set under the English word.
 - **Screen title** (700, 30px, −0.025em): iOS large-title role on top-level screens; 22px on pushed screens.
-- **Question** (600, 19px, 1.38): the front of a Q&A card; also note titles in lists and the inbox.
+- **Question** (600, 19px, 1.38): the front of a Q&A card; also question rows in the Cards tab.
 - **Body** (400, 17px, 1.5, `text-wrap: pretty`): answers, cloze prose (1.55).
 - **Secondary** (400, 15px): extra, list subtitles, tables.
 - **Label** (500, 13px): counts, section labels (sentence case, no uppercase eyebrows), card context.
@@ -111,7 +111,7 @@ The name is **Mnemosyne**. The icon is the app's own object: a white index card 
 
 ## Layout
 
-Phone-first single column. 16px side gutters plus safe-area insets (12px on the review screen so the card is as wide as possible). Spacing steps 4 · 8 · 12 · 16 · 24 · 32. Review screen: counts row (40px), deck chips (30px, only with several decks) + 3px progress, the card fills the rest, then the action row (66px buttons) directly above the tab bar, which sits on the home-indicator inset. Inbox: filter chips, a stacked deck of cards with two peeking 9px below, round reject / edit / approve buttons, then Approve all. Editors keep their primary action in a bottom bar.
+Phone-first single column. 16px side gutters plus safe-area insets (12px on the review screen so the card is as wide as possible). Spacing steps 4 · 8 · 12 · 16 · 24 · 32. Review screen: counts row (40px), deck switcher + filter button (30px), an optional filter summary line, 3px progress, the card fills the rest, then the action row (66px buttons) directly above the tab bar, which sits on the home-indicator inset. Editors keep their primary action in a bottom bar.
 
 Code blocks and tables bleed 10px into the card padding and scroll sideways on their own; the card scrolls vertically.
 
@@ -119,7 +119,7 @@ Code blocks and tables bleed 10px into the card padding and scroll sideways on t
 
 Flat tonal layering everywhere except the study card.
 
-- **Card** (`--shadow`: `0 1px 2px` + `0 8px 28px -6px`, warm-tinted in light, deeper in dark): the study card, inbox top card, Show answer, inbox round buttons.
+- **Card** (`--shadow`: `0 1px 2px` + `0 8px 28px -6px`, warm-tinted in light, deeper in dark): the study card and Show answer.
 - **Lift** (`--shadow-lift`): the toast.
 
 ## Shapes
@@ -130,16 +130,18 @@ Card 20px, panels and grouped lists 14px, buttons and inputs 12px, rating button
 
 - **Rating bar:** four equal 66px buttons, tinted fill + same-hue label and interval, tabular numerals. Press: scale 0.95 with a deeper fill. While a swipe is in progress, the button it would commit lights up (scale 1.04, deeper fill). The bar and the swipe pill share one set of interval labels (FSRS fuzz depends on the moment, so they're computed once per card).
 - **Show answer:** full-width 66px card-coloured button with the card's shadow, a 66px undo square beside it.
-- **Edit on the card:** once the answer shows, a faint 18px pencil in a 44px target at the card's top-right corner (the context row keeps 48px clear for it, so nothing shifts on reveal); pressed, accent on accent-soft. It opens the word's editor; Back returns to the same revealed card with the fix applied.
-- **Session summary:** the check, the tally, a clock line ("Tomorrow: N reviews", or learning cards back in N min), then a grouped list of next steps (Vet N new words in the inbox · Add words) and the Undo / Check for more buttons. A collection with no words yet gets "Add your first words" instead: an accent-soft disc with the sparkle, one primary "Add a word" button and a row for the Telegram bot.
+- **Card corner:** once the answer shows, two faint 44px targets at the card's top-right — ⋯ (20px dots) and the 18px pencil (the context row keeps 92px clear, so nothing shifts on reveal); pressed, accent on accent-soft. The pencil opens the editor; Back returns to the same revealed card with the fix applied. ⋯ opens a small card-coloured menu under it (14px radius, soft shadow) with one row: an again-coloured × and "Drop" over "Never show this card again" in muted 12.5px. Dropping is rare, so it stays out of the way.
+- **Session summary:** the check, the tally, a clock line ("Tomorrow: N reviews", or learning cards back in N min), then a grouped list of next steps (Add words, or Add cards in a deck without languages) and the Undo / Check for more buttons. A collection with no words yet gets "Add your first words" instead: an accent-soft disc with the sparkle, one primary "Add a word" button and a row for the Telegram bot.
 - **Cloze marks:** front blank is an accent-soft pill with a 1px accent ring showing the hint or "…" (inline, so punctuation stays attached; the card scrolls to it). Back answer is accent text on accent-soft.
 - **Wikilinks:** `[[x|alias]]` on a fact renders as the alias in muted italic, not as a link.
 - **Context row:** direction (word) or deck name (fact), 600 · tags · New pill, 13px muted.
 - **Fact card:** the question in the Question style, left-aligned, 12% down; the answer is body text under the divider. Code blocks: SF Mono 13px on paper shade, 10px radius, scrolling sideways; inline code 0.84em on paper shade.
-- **Library switch (Words tab):** an iOS segmented control "Words · Topics" (32px segments on paper shade, the selected one card-coloured with a soft shadow) between the large title and the search field; only once a topic deck exists. The tab bar stays at five tabs.
-- **Topic list rows:** the question (600, two lines, inline Markdown), then the card state in its colour · tags, the state dot on the right; sections per topic with the topic name as a 600 section label.
+- **Cards tab:** large title "Cards" with the count, the deck switcher, the search field, then type chips (30px, All · Words · Q&A · Grammar with counts in faint 600; the selected one accent on accent-soft; only types the deck has), then the filter picks. Word rows as before; a question row: the question (600, two lines, inline Markdown), then the card state in its colour · tags, the state dot on the right; a grammar rule adds "Grammar · N exercises" in accent before the state. A dropped card has a "dropped" chip in the again colour. The tab bar has four tabs: Review · Cards · Progress · Settings.
 - **Fact editor:** an Edit · Preview mini segment (28px) beside the Answer label; the preview is the card's Markdown on a card-coloured panel. A duplicate question shows as a hard-tinted strip under the field with Open.
-- **Deck chips (Review):** a scrolling row under the counts, 30px pills, name + count in 650. In the session: accent text on accent-soft; out of it: faint text in a hairline ring. Tap toggles at once (select haptic). Hidden with a single deck.
+- **Deck switcher (Review, Cards):** a row of 30px pills, name + count in 650; the selected deck accent text on accent-soft, the others faint text in a hairline ring; tap switches at once (select haptic). A single deck shows just its name. On Review a filter button (sliders icon) sits at the row's end; a set filter shows as one muted summary line under it with Clear.
+- **What to review (sheet):** the deck and today's count for the draft, then labelled rows of 36px chips (Cards, Tags, and for words Part of speech, Level, Direction) with counts; selected chips accent-filled. Nothing selected in a row means all of it. Clear · Cancel · Done.
+- **Add picker:** a sheet with three rows — Word (only in a deck with languages), Question, Grammar rule — each a title and one line on what it is, with a chevron.
+- **Editors' foot:** Drop (or Restore) and Delete side by side, then one faint line saying what each does.
 - **Grouped list rows:** 52px min, inset hairlines, pressed state is the shade fill (not opacity).
 - **Buttons:** primary = accent fill; secondary = paper shade; danger = again-coloured text. Press = scale 0.97.
 - **Segmented control, stepper, switch:** iOS shapes; selected segment is the card colour with a soft shadow.
@@ -155,7 +157,6 @@ Curves: `--ease-out` cubic-bezier(0.23, 1, 0.32, 1) for entrances and presses; `
 - **Reveal** (hundreds a day): the answer rises 5px and fades in over 180ms; the divider draws out from the centre; on a cloze only the deletion lights up in place.
 - **Next card:** rises 10px from 97.5% scale over 240ms.
 - **Swipe (after reveal):** right = Good, left = Hard, down = Again, up = Easy. The axis locks after 12px (dominant direction wins). The card follows the finger 1:1 (sideways with a slight rotation), a wash of the rating's colour grows from the edge it leaves by, and a pill in that colour shows the rating and its interval with a bar filling to the commit threshold (28% of the width / 18% of the height, max 110px). Crossing it ticks the haptic and pops the pill; the matching rating button lights up. Released short of it, the card settles back over 320ms on the drawer curve; committed, it flies out the way it was going over 240ms. When the card's content scrolls, vertical drags scroll it; a vertical swipe only starts at an edge moving outward (down from the top, up from the bottom), so scrolling into an edge never rates. A small legend (← Hard · → Good · ↓ Again · ↑ Easy) sits at the card's foot for the first five swipes.
-- **Inbox stack:** the next proposal steps up from its peeking position; the round button for the swipe direction grows and tints.
 - **Screens:** pushed screens slide in 28px from the right, popped ones from the left, 320ms drawer curve. Tab switches are instant.
 - **Session end:** the check draws itself once (420ms), the app's one celebratory moment.
 - **Reduced motion:** `--rise`, `--shrink` and `--push` go to zero, so every entrance becomes a plain fade; the check appears without drawing.

@@ -119,7 +119,7 @@ describe('dashboard', () => {
     const house = addWord(ctx, 'house')
     const cry = addWord(ctx, 'to cry', { pos: 'verb' })
     const frown = addWord(ctx, 'to frown', { pos: 'verb' })
-    addWord(ctx, 'zzz', { status: 'inbox' })
+    addWord(ctx, 'zzz', { status: 'rejected' })
     const [hf, hr] = cardsOf(ctx, house.id)
     reviewed(ctx, hf!.id, '2026-10-01T09:00:00.000Z', 100)
     reviewed(ctx, hr!.id, '2026-10-02T09:00:00.000Z', 30, { before: 2, rating: 1 })
@@ -128,7 +128,7 @@ describe('dashboard', () => {
 
     const d = dashboard(ctx.db, ctx.user.id, deck, ctx.lexicon, TZ, ctx.now())
     expect(d.counts).toEqual({
-      words: { total: 4, active: 3, inbox: 1, rejected: 0 },
+      words: { total: 4, active: 3, rejected: 1 },
       directions: {
         forward: { enabled: true, new: 1, learning: 0, known: 1, fading: 1, suspended: 0 },
         reverse: { enabled: true, new: 1, learning: 0, known: 2, fading: 0, suspended: 0 },

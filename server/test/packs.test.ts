@@ -6,7 +6,7 @@ import { createFact, searchFacts } from '../src/facts.ts'
 import { formsLine } from '@recall/core'
 import { currentPacks, irregularVerbFact, packLoader, parsePack, setPacks, usePackDir, verbForms } from '../src/pack-data.ts'
 import { addPack, listPacks } from '../src/packs.ts'
-import { createTopicDeck, searchWords, updateDeck } from '../src/repo.ts'
+import { createDeck, searchWords, updateDeck } from '../src/repo.ts'
 import { buildQueue } from '../src/study.ts'
 import { addWord, callTool, deck, listen, makeCtx, send, TZ, type TestCtx } from './helpers.ts'
 import fs from 'node:fs'
@@ -101,14 +101,16 @@ describe('adding a pack', () => {
     deck(ctx, 0)
     const small = parsePack(pack([verb('be', ['was', 'were'], ['been']), verb('have', ['had'], ['had']), verb('do', ['did'], ['done']), verb('say', ['said'], ['said'])]))
     setPacks([small])
-    expect(listPacks(ctx.db, ctx.user.id)).toEqual([{ id: 'irregular-verbs', name: 'Irregular verbs', description: 'd', count: 4, added: false, missing: 4 }])
+    const en = deck(ctx, 0)
+    expect(listPacks(ctx.db, ctx.user.id)).toEqual([{ id: 'irregular-verbs', name: 'Irregular verbs', description: 'd', count: 4, added: false, missing: 4, deckId: en.id, deckName: 'English' }])
 
     const r = addPack(ctx.db, ctx.user.id, 'irregular-verbs', ctx.now())
-    expect(r).toMatchObject({ deck: { kind: 'topic', name: 'Irregular verbs', newPerDay: 5, inReview: true }, added: 4, alreadyAdded: 0, duplicates: 0 })
+    expect(r).toMatchObject({ deck: { id: en.id, name: 'English' }, added: 4, alreadyAdded: 0, duplicates: 0 })
+    updateDeck(ctx.db, ctx.user.id, en.id, { newPerDay: 10 })
     const facts = searchFacts(ctx.db, ctx.user.id, {}, ctx.now()).facts
     expect(facts.map((f) => [f.front.split('\n')[0], f.status, f.createdBy, f.tags])).toEqual([
-      ['**to be**', 'active', 'import', []], ['**to have**', 'active', 'import', []],
-      ['**to do**', 'active', 'import', []], ['**to say**', 'active', 'import', []],
+      ['**to be**', 'active', 'import', ['Irregular verbs']], ['**to have**', 'active', 'import', ['Irregular verbs']],
+      ['**to do**', 'active', 'import', ['Irregular verbs']], ['**to say**', 'active', 'import', ['Irregular verbs']],
     ])
     expect(ctx.db.prepare('SELECT import_ref FROM facts ORDER BY created_at').all()).toEqual(['be', 'have', 'do', 'say'].map((v) => ({ import_ref: `pack:irregular-verbs:${v}` })))
     // New cards come most frequent first, whatever the ids say.
@@ -129,13 +131,20 @@ describe('adding a pack', () => {
     expect(() => addPack(ctx.db, ctx.user.id, 'nope', ctx.now())).toThrow(/no pack/)
   })
 
-  it('fills an existing topic deck of that name, skipping questions it has', () => {
+  it('goes into a chosen deck, skipping questions it has; other packs default to a deck of their name', () => {
     const ctx = makeCtx()
     setPacks([parsePack(pack([verb('be', ['was', 'were'], ['been']), verb('go', ['went'], ['gone'])]))])
-    const t = createTopicDeck(ctx.db, ctx.user.id, { name: 'irregular verbs' }, ctx.now())
+    const t = createDeck(ctx.db, ctx.user.id, { name: 'irregular verbs' }, ctx.now())
     createFact(ctx.db, ctx.user.id, { deckId: t.id, fact: { front: '**to go**\ngo ru', back: 'went, gone' }, status: 'active', createdBy: 'user' }, ctx.now())
-    const r = addPack(ctx.db, ctx.user.id, 'irregular-verbs', ctx.now())
+    const r = addPack(ctx.db, ctx.user.id, 'irregular-verbs', ctx.now(), { deckId: t.id })
     expect(r).toMatchObject({ deck: { id: t.id }, added: 1, duplicates: 1 })
+    expect(searchFacts(ctx.db, ctx.user.id, { tag: 'Irregular verbs' }, ctx.now()).facts.map((f) => f.front)).toEqual(['**to be**\nbe ru'])
+    // A later run without a deck goes where the pack's cards already are.
+    expect(addPack(ctx.db, ctx.user.id, 'irregular-verbs', ctx.now())).toMatchObject({ deck: { id: t.id }, added: 0 })
+    setPacks([parsePack({ id: 'sql', name: 'SQL basics', kind: 'topic', format: 'facts', items: [{ key: 'join', front: 'What is a JOIN?', back: 'Rows from two tables.' }] })])
+    expect(listPacks(ctx.db, ctx.user.id)[0]).toMatchObject({ deckName: 'SQL basics' })
+    expect(listPacks(ctx.db, ctx.user.id)[0]).not.toHaveProperty('deckId')
+    expect(addPack(ctx.db, ctx.user.id, 'sql', ctx.now())).toMatchObject({ deck: { name: 'SQL basics', targetLang: null }, added: 1 })
   })
 })
 
@@ -155,13 +164,13 @@ describe('pack routes and tools', () => {
     const list = (await (await fetch(`${url}/api/packs`)).json()) as any
     expect(list.packs).toEqual([expect.objectContaining({ id: 'irregular-verbs', name: 'Irregular verbs', count: 159, added: false, missing: 159 })])
     const added = (await (await send(`${url}/api/packs/irregular-verbs`, 'POST', {})).json()) as any
-    expect(added).toMatchObject({ added: 159, deck: { name: 'Irregular verbs' }, packs: [{ added: true, missing: 0 }] })
+    expect(added).toMatchObject({ added: 159, deck: { name: 'English' }, packs: [{ added: true, missing: 0, deckName: 'English' }] })
     expect((await send(`${url}/api/packs/nope`, 'POST', {})).status).toBe(404)
     expect(await callTool(url, 'static-mcp-token', 'list_packs')).toEqual([expect.objectContaining({ id: 'irregular-verbs', added: true, deckId: added.deck.id })])
     expect(await callTool(url, 'static-mcp-token', 'add_pack', { id: 'irregular-verbs' })).toMatchObject({ added: 0, alreadyAdded: 159 })
     // First thing in the session: the most frequent verb.
     const q = (await (await fetch(`${url}/api/queue`)).json()) as any
     expect(q.items[0]).toMatchObject({ kind: 'fact', fact: { front: '**to be**\nбыть, находиться' } })
-    expect(q.items.filter((i: any) => i.kind === 'fact').length).toBe(5)
+    expect(q.items.filter((i: any) => i.kind === 'fact').length).toBe(15)
   })
 })

@@ -217,6 +217,43 @@ describe('Outbox', () => {
     expect(dropped).toHaveBeenCalledOnce()
   })
 
+  it('drops only the review the server refuses, keeping the rest of the batch and what came in meanwhile', async () => {
+    const srv = fakeServer()
+    const sent: string[][] = []
+    let late: (() => void) | null = null
+    const transport: OutboxTransport = {
+      postReviews: async (inputs) => {
+        sent.push(inputs.map((i) => i.id))
+        late?.()
+        late = null
+        if (inputs.some((i) => i.id === 'bad')) throw new HttpError(400, 'given too long')
+        return srv.transport.postReviews(inputs)
+      },
+      undoReview: srv.transport.undoReview,
+    }
+    const ob = new Outbox(memStore(), transport)
+    const dropped = vi.fn()
+    ob.onDropped = dropped
+    await ob.init()
+    for (const id of ['a', 'bad', 'c']) ob.add(input(id))
+    // Rated while the first request is in flight.
+    late = () => ob.add(input('d'))
+    expect(await ob.flush()).toMatchObject({ ok: true })
+    expect(sent[0]).toEqual(['a', 'bad', 'c'])
+    expect([...srv.applied.keys()].sort()).toEqual(['a', 'c', 'd'])
+    expect(dropped).toHaveBeenCalledOnce()
+    expect(dropped.mock.calls[0]![0]).toMatchObject([{ input: { id: 'bad' } }])
+    expect(ob.pending).toBe(0)
+  })
+
+  it('tells whether a card still has something to send', async () => {
+    const ob = new Outbox(memStore(), fakeServer().transport)
+    await ob.init()
+    ob.add(input('a'))
+    expect(ob.pendingFor('cd_a')).toBe(true)
+    expect(ob.pendingFor('cd_b')).toBe(false)
+  })
+
   it('notifies subscribers of the pending count', async () => {
     const ob = new Outbox(memStore(), fakeServer().transport)
     const seen: number[] = []

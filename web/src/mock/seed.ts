@@ -1,5 +1,7 @@
-// Seed data for mock mode: an English deck with IPA, examples and notes,
-// Claude's inbox proposals, autofill drafts and a vocabulary-test sample.
+// Seed data for mock mode: an English deck with IPA, examples and notes
+// (some added by Claude, one dropped), grammar rules and irregular verbs; a
+// Programming deck of Q&A cards under several tags; autofill drafts and a
+// vocabulary-test sample.
 import type { Cefr, Example, PartOfSpeech } from '@recall/core'
 import type { Draft } from '../lib/types.ts'
 
@@ -18,8 +20,9 @@ export interface SeedWord {
   tags?: string[]
   cefr: Cefr | null
   freqRank: number | null
-  // [forward, reverse], or a word that has no studied cards yet.
-  plan: [Plan, Plan] | 'inbox' | 'rejected'
+  // [forward, reverse]; 'claude': added by Claude, not studied yet;
+  // 'rejected': dropped.
+  plan: [Plan, Plan] | 'claude' | 'rejected'
 }
 
 const ex = (text: string, translation: string): Example => ({ text, translation })
@@ -64,11 +67,11 @@ export const words: SeedWord[] = [
   { term: 'to stifle', pos: 'verb', translations: ['подавлять', 'душить'], ipa: 'ˈstaɪfəl', examples: [ex('She stifled a yawn.', 'Она подавила зевок.')], cefr: 'C1', freqRank: 15300, plan: ['new', 'new'] },
   { term: "to hold one's tongue", pos: 'idiom', translations: ['держать язык за зубами', 'промолчать'], ipa: 'hoʊld wʌnz tʌŋ', examples: [ex('I wanted to argue but held my tongue.', 'Мне хотелось поспорить, но я промолчал.')], cefr: 'B2', freqRank: null, plan: ['later', 'due'] },
 
-  // Claude's proposals.
-  { term: 'to seethe', pos: 'verb', translations: ['кипеть (от злости)', 'бурлить'], ipa: 'sið', examples: [ex('He was seething with rage after the meeting.', 'После совещания он кипел от ярости.')], note: 'seethe with anger/rage; о злости, которую сдерживают', tags: ['The Guardian: “The art of losing your temper”', 'the guardian'], cefr: 'C1', freqRank: 18900, plan: 'inbox' },
-  { term: 'to fathom', pos: 'verb', translations: ['понимать', 'постигать'], ipa: 'ˈfæðəm', examples: [ex("I can't fathom why she left so suddenly.", 'Не могу понять, почему она так внезапно ушла.')], note: 'обычно в отрицании: can’t fathom', tags: [WH], cefr: 'C1', freqRank: 16100, plan: 'inbox' },
-  { term: 'brazen', pos: 'adjective', translations: ['наглый', 'бесстыдный'], ipa: 'ˈbreɪzən', examples: [ex('It was a brazen attempt to rewrite history.', 'Это была наглая попытка переписать историю.')], tags: [ECO], cefr: 'C2', freqRank: 17600, plan: 'inbox' },
-  { term: 'a blessing in disguise', pos: 'idiom', translations: ['не было бы счастья, да несчастье помогло'], ipa: 'ə ˈblɛsɪŋ ɪn dɪsˈɡaɪz', examples: [ex('Losing that job was a blessing in disguise.', 'Потеря той работы оказалась к лучшему.')], cefr: 'B2', freqRank: null, plan: 'inbox' },
+  // Added by Claude (tagged "claude"), and one the user dropped.
+  { term: 'to seethe', pos: 'verb', translations: ['кипеть (от злости)', 'бурлить'], ipa: 'sið', examples: [ex('He was seething with rage after the meeting.', 'После совещания он кипел от ярости.')], note: 'seethe with anger/rage; о злости, которую сдерживают', tags: ['The Guardian: “The art of losing your temper”', 'the guardian'], cefr: 'C1', freqRank: 18900, plan: 'claude' },
+  { term: 'to fathom', pos: 'verb', translations: ['понимать', 'постигать'], ipa: 'ˈfæðəm', examples: [ex("I can't fathom why she left so suddenly.", 'Не могу понять, почему она так внезапно ушла.')], note: 'обычно в отрицании: can’t fathom', tags: [WH], cefr: 'C1', freqRank: 16100, plan: 'claude' },
+  { term: 'brazen', pos: 'adjective', translations: ['наглый', 'бесстыдный'], ipa: 'ˈbreɪzən', examples: [ex('It was a brazen attempt to rewrite history.', 'Это была наглая попытка переписать историю.')], tags: [ECO], cefr: 'C2', freqRank: 17600, plan: 'claude' },
+  { term: 'a blessing in disguise', pos: 'idiom', translations: ['не было бы счастья, да несчастье помогло'], ipa: 'ə ˈblɛsɪŋ ɪn dɪsˈɡaɪz', examples: [ex('Losing that job was a blessing in disguise.', 'Потеря той работы оказалась к лучшему.')], cefr: 'B2', freqRank: null, plan: 'claude' },
   { term: 'to gallivant', pos: 'verb', translations: ['шататься', 'развлекаться'], ipa: 'ˈɡæləˌvænt', examples: [], cefr: 'C2', freqRank: 27400, plan: 'rejected' },
 ]
 
@@ -168,27 +171,23 @@ export const scale = {
 // per 1000-rank band, so the app-only estimate looks like a real collection (~2,100).
 export const baselineSrs: number[] = [520, 410, 300, 230, 170, 130, 95, 70, 52, 38, 27, 19, 13, 9, 6, 4, 3, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
-// Topic decks of Q&A facts (Markdown). `inReview: false` shows an off chip.
+// Q&A facts (Markdown) of the Programming deck, one tag per subject.
 export interface SeedFact {
   front: string
   back: string
   tags?: string[]
-  // 'inbox': Claude's proposal, not studied yet.
-  plan: Plan | 'inbox'
+  // 'claude': added by Claude (tagged "claude"), not studied yet.
+  plan: Plan | 'claude'
 }
 
 export interface SeedTopic {
   name: string
-  newPerDay: number
-  inReview: boolean
   facts: SeedFact[]
 }
 
 export const topics: SeedTopic[] = [
   {
     name: 'Concurrency',
-    newPerDay: 3,
-    inReview: true,
     facts: [
       {
         front: 'What is a race condition?',
@@ -212,13 +211,13 @@ export const topics: SeedTopic[] = [
         front: 'What does `ConcurrentHashMap.computeIfAbsent` guarantee?',
         back: 'The mapping function runs **at most once per key**, atomically: other threads asking for the same key wait.\n\nKeep the function short and never touch the same map inside it — that can deadlock.',
         tags: ['notes'],
-        plan: 'inbox',
+        plan: 'claude',
       },
       {
         front: 'What is a `CountDownLatch` for?',
         back: 'One-shot gate: threads `await()` until the count reaches zero via `countDown()`. Can\'t be reset — use `CyclicBarrier` for repeated rounds.',
         tags: ['notes'],
-        plan: 'inbox',
+        plan: 'claude',
       },
       {
         front: 'How does livelock differ from deadlock?',
@@ -230,8 +229,6 @@ export const topics: SeedTopic[] = [
   },
   {
     name: 'Java Core',
-    newPerDay: 2,
-    inReview: true,
     facts: [
       {
         front: 'What is the contract between `equals` and `hashCode`?',
@@ -255,8 +252,6 @@ export const topics: SeedTopic[] = [
   },
   {
     name: 'Databases',
-    newPerDay: 3,
-    inReview: false,
     facts: [
       {
         front: 'How does a phantom read differ from a non-repeatable read?',
@@ -294,7 +289,7 @@ export const irregularVerbs: SeedVerb[] = [
   { verb: 'strive', past: ['strove', 'strived'], participle: ['striven', 'strived'], translation: 'стремиться', example: { text: 'We strive to answer every email.', translation: 'Мы стараемся отвечать на каждое письмо.' }, note: null },
 ]
 
-// A "Grammar" topic: invented rules, each with a small exercise pool, so the
+// Grammar rules (tagged Grammar in English): invented rules, each with a small exercise pool, so the
 // exercise review is demoable (the owner's real rules stay private).
 export interface SeedRule {
   title: string

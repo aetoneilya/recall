@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
-import { CEFR_LEVELS, PARTS_OF_SPEECH, wordFace, type Cefr, type PartOfSpeech, type WordStatus } from '@recall/core'
+import { CEFR_LEVELS, PARTS_OF_SPEECH, wordFace, type Cefr, type PartOfSpeech } from '@recall/core'
 import type { Request, Response } from 'express'
 import { z } from 'zod'
 import type { AppContext } from './context.ts'
@@ -12,7 +12,7 @@ import { addFacts, deleteFact, factItem, searchFacts, setFactSuspended, updateFa
 import { tx } from './db.ts'
 import { lexiconOf } from './lexicon.ts'
 import {
-  addWords, createTopicDeck, defaultDeck, deleteWord, HttpError, mustBeKind, resolveDeck, searchWords, setWordStatus, setWordSuspended, syncFreqRanks,
+  addWords, createDeck, defaultDeck, deleteWord, HttpError, mustHaveLanguages, resolveDeck, searchWords, setWordStatus, setWordSuspended, syncFreqRanks,
   updateWord, withCards, type WordListItem, type WordRow,
 } from './repo.ts'
 import { decksWithCounts, leeches, stats, wordLogs } from './study.ts'
@@ -20,11 +20,11 @@ import { userDayOptions, type User } from './users.ts'
 
 const INSTRUCTIONS = `Mnemosyne is the user's personal vocabulary trainer (spaced repetition, FSRS). The user is a Russian speaker learning English; each language they learn is one deck ("English": English terms, Russian translations).
 
-Topic decks (kind "topic" in list_decks) hold question/answer flashcards ("facts") on a subject — Java Core, Databases, Distributed Systems… — instead of words; the word tools don't apply to them, the fact tools (create_topic, search_facts, add_facts, update_fact, set_fact_status) do. A fact has a question (front) and an answer (back), both Markdown; one card each, reviewed in the same session as words. Good facts: one idea per card; a question with one clear answer (not "tell me about X"); a short answer — a few sentences or a short list, **bold** for the key point, \`code\` for identifiers, a fenced block only for a few lines of code. Facts you add go to the inbox like words.
+Decks are big containers ("English", "Programming") holding cards of any type: words (only in a deck with languages), question/answer facts, and grammar rules (facts with an exercise pool). Subjects inside a deck — Java Core, Databases, Grammar — are tags, not decks. The fact tools (create_deck, search_facts, add_facts, update_fact, set_fact_status) work on any deck. A fact has a question (front) and an answer (back), both Markdown; one card each; the user reviews one deck at a time. Good facts: one idea per card; a question with one clear answer (not "tell me about X"); a short answer — a few sentences or a short list, **bold** for the key point, \`code\` for identifiers, a fenced block only for a few lines of code. Facts you add are studied at once, like words.
 
 Each word has two cards: forward (English → Russian, recognition) and reverse (Russian → English, production; its prompt shows the translations and the first example with the term blanked out as "___"). A deck can turn a direction off or delay reverse cards until the forward card is stable.
 
-You can look up words, propose new ones, fix existing ones, and read progress (review_stats, get_leeches, vocabulary_profile) to suggest what to learn next. Words you add go to the user's inbox and are not studied until the user approves them in the app (autoApprove only when the user explicitly asks). A word is unique per deck by its normalised term (lowercase, "to " dropped) plus part of speech: adding an existing one returns its id and what your proposal would add instead of creating a copy — use update_word to merge in a new translation or example.
+You can look up words, propose new ones, fix existing ones, and read progress (review_stats, get_leeches, vocabulary_profile) to suggest what to learn next. Everything you add (words and facts) is studied at once and tagged "claude"; the user drops what they don't want (status rejected), and a dropped card is never shown again — the duplicate check sees it, so don't propose it again. Add what the user asked for, not more. A word is unique per deck by its normalised term (lowercase, "to " dropped) plus part of speech: adding an existing one returns its id and what your proposal would add instead of creating a copy — use update_word to merge in a new translation or example.
 
 Good words: term in base form ("to frown", "a chicken-and-egg situation", "to give up"), the right part of speech, 1–4 natural Russian translations with the most common first, General American IPA without slashes, 1–2 short natural example sentences that contain the term (inflected forms are fine) with Russian translations, a CEFR guess, and a short usage note in Russian when it helps (register, collocations, false friends).`
 
@@ -45,7 +45,7 @@ function guard<A>(fn: (args: A) => unknown): (args: A) => Promise<CallToolResult
 const tuple = <T extends string>(xs: readonly T[]) => xs as unknown as [T, ...T[]]
 const pos = z.enum(tuple<PartOfSpeech>(PARTS_OF_SPEECH))
 const cefr = z.enum(tuple<Cefr>(CEFR_LEVELS))
-const status = z.enum(['inbox', 'active', 'rejected'])
+const status = z.enum(['active', 'rejected'])
 const direction = z.enum(['forward', 'reverse'])
 
 const fields = {
@@ -65,7 +65,7 @@ const fields = {
 const FACT_RULES = 'Front: one question with one clear answer, standalone (no "as above"). Back: the answer in Markdown — a few sentences or a short "-" / "1." list; **bold** the key point, `code` for identifiers, ``` fenced blocks only for short code. One idea per card: split a big topic into several facts rather than one long answer.'
 
 const factFields = {
-  front: z.string().min(1).max(2000).describe('The question, Markdown. Unique per topic deck (case, spacing and the final "?" ignored).'),
+  front: z.string().min(1).max(2000).describe('The question, Markdown. Unique per deck (case, spacing and the final "?" ignored).'),
   back: z.string().min(1).max(20000).describe('The answer, Markdown.'),
   tags: z.array(z.string()).max(30).optional().describe('Short tags, e.g. the note or source it came from.'),
 }
@@ -130,7 +130,7 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
 
   server.registerTool('list_decks', {
     title: 'List decks',
-    description: 'Lists the user\'s decks with settings and counts. kind "language": vocabulary, one deck per language being learnt (the word tools work on these); kind "topic": question/answer flashcards on a subject (e.g. Java Core, Databases), no languages. inReview: whether the deck\'s cards are in the daily review session. Counts — items (words, or facts in a topic deck): total, active (being studied), inbox (proposals awaiting approval), known (a card in review with recall probability ≥ 90% now). Cards today: learning, due (learning + review), new (available today after the daily limit newPerDay). Language decks only: forwardEnabled / reverseEnabled: which directions are studied; reverseAfterDays: reverse cards start only once the forward card is that stable (null = immediately).',
+    description: 'Lists the user\'s decks with settings and counts. A deck holds cards of any type; targetLang / nativeLang (both or neither) say whether it takes words (the word tools work only on such decks; one per language). tags: the tags used in the deck with counts (subjects such as "Concurrency" are tags). reviewFilter: what the user\'s review session of the deck takes (null = everything). Counts — words and facts: total, active (being studied), dropped (rejected by the user, never shown), known (a card in review with recall probability ≥ 90% now). Cards today: learning, due (learning + review), new (available today after the daily limit newPerDay). Word cards only: forwardEnabled / reverseEnabled: which directions are studied; reverseAfterDays: reverse cards start only once the forward card is that stable (null = immediately).',
     annotations: { readOnlyHint: true },
   }, guard(() => {
     defaultDeck(db, uid, ctx.now())
@@ -143,16 +143,17 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
     inputSchema: {
       query: z.string().optional().describe('Substring to look for.'),
       deck: z.string().optional().describe('Deck name, id or language code ("en"); default all decks.'),
-      status: status.optional().describe('inbox = proposed, awaiting approval; active = being studied; rejected = declined by the user.'),
+      status: status.optional().describe('active = being studied; rejected = dropped by the user, never shown.'),
       pos: pos.optional(),
       cefr: cefr.optional(),
+      tag: z.string().optional().describe('Only words with this tag.'),
       limit: z.number().int().min(1).max(100).optional().describe('Default 20.'),
       offset: z.number().int().min(0).optional(),
     },
     annotations: { readOnlyHint: true },
   }, guard((a) => {
     lex()
-    const r = searchWords(db, uid, { deck: a.deck, q: a.query, status: a.status, pos: a.pos, cefr: a.cefr, limit: a.limit ?? 20, offset: a.offset }, ctx.now())
+    const r = searchWords(db, uid, { deck: a.deck, q: a.query, status: a.status, pos: a.pos, cefr: a.cefr, tag: a.tag, limit: a.limit ?? 20, offset: a.offset }, ctx.now())
     return { total: r.total, words: r.words.map(brief) }
   }))
 
@@ -173,13 +174,12 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
 
   server.registerTool('add_words', {
     title: 'Add words',
-    description: 'Proposes up to 100 words for a deck (default: the user\'s English deck). They land in the user\'s inbox and are not studied until the user approves them in the app; autoApprove: true makes them active at once — use it only when the user asked. Every word gets a forward and a reverse card. A word whose normalised term + part of speech already exists in the deck (any status, including rejected) is not added: it is reported under duplicates with the existing id, its status and `differs` — what your proposal has that the existing word lacks (newTranslations, newExamples, a different ipa / note / cefr / term spelling); merge those with update_word if they are worth it. Invalid words are reported under errors. Freshly created words report their frequency rank (1 = most common lemma; null = not in the 30k list or multi-word with a rare part).',
+    description: 'Adds up to 100 words to a deck (default: the user\'s English deck). They are studied at once (within the deck\'s daily limit of new cards) and get the tag "claude". Every word gets a forward and a reverse card. A word whose normalised term + part of speech already exists in the deck (any status, including rejected = dropped by the user) is not added: it is reported under duplicates with the existing id, its status and `differs` — what your proposal has that the existing word lacks (newTranslations, newExamples, a different ipa / note / cefr / term spelling); merge those with update_word if they are worth it. Invalid words are reported under errors. Freshly created words report their frequency rank (1 = most common lemma; null = not in the 30k list or multi-word with a rare part).',
     inputSchema: {
       deck: z.string().optional().describe('Deck name, id or language code; default the English deck.'),
       words: z.array(z.object(fields)).min(1).max(100),
-      autoApprove: z.boolean().optional().describe('Default false: words go to the inbox.'),
     },
-  }, guard((a) => addWords(db, uid, { deck: a.deck, words: a.words, autoApprove: a.autoApprove, createdBy: 'claude' }, ctx.now(), lex())))
+  }, guard((a) => addWords(db, uid, { deck: a.deck, words: a.words, createdBy: 'claude' }, ctx.now(), lex())))
 
   server.registerTool('update_word', {
     title: 'Update word',
@@ -203,10 +203,10 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
 
   server.registerTool('set_word_status', {
     title: 'Set word status',
-    description: 'Applies one action to several words: approve (inbox → active, starts studying), reject (→ rejected: never studied, kept so the same proposal is recognised as a duplicate), suspend / unsuspend (both cards stop or resume being scheduled, history kept), delete (removes the word, its cards and their review history permanently — prefer suspend or reject unless the user asked to delete).',
+    description: 'Applies one action to several words: drop (→ rejected: never shown again, kept so the same word is recognised as a duplicate), restore (a dropped word → active again), suspend / unsuspend (both cards stop or resume being scheduled, history kept), delete (removes the word, its cards and their review history permanently — prefer drop or suspend unless the user asked to delete).',
     inputSchema: {
       ids: z.array(z.string()).min(1).max(200).describe('Word ids.'),
-      action: z.enum(['approve', 'reject', 'delete', 'suspend', 'unsuspend']),
+      action: z.enum(['drop', 'restore', 'delete', 'suspend', 'unsuspend']),
     },
   }, guard(({ ids, action }) => {
     const now = ctx.now()
@@ -215,8 +215,7 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
       for (const id of ids) {
         try {
           if (action === 'delete') deleteWord(db, uid, id)
-          else if (action === 'approve') setWordStatus(db, uid, id, 'active', now)
-          else if (action === 'reject') setWordStatus(db, uid, id, 'rejected' as WordStatus, now)
+          else if (action === 'drop' || action === 'restore') setWordStatus(db, uid, id, action === 'drop' ? 'rejected' : 'active', now)
           else setWordSuspended(db, uid, id, action === 'suspend')
           results.push({ id, ok: true })
         } catch (e) {
@@ -227,49 +226,62 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
     return { action, results }
   }))
 
+  const createDeckTool = guard(({ name, targetLang, nativeLang }: { name: string; targetLang?: string; nativeLang?: string }) =>
+    createDeck(db, uid, { name, targetLang: targetLang ?? null, nativeLang: nativeLang ?? null }, ctx.now()))
+  const createDeckSchema = {
+    name: z.string().min(1).max(100).describe('Deck name, e.g. "Programming". Subjects inside a deck are tags, not decks.'),
+    targetLang: z.string().optional().describe('Only for a deck that takes words: the language being learnt (ISO 639-1); give nativeLang too.'),
+    nativeLang: z.string().optional(),
+  }
+  server.registerTool('create_deck', {
+    title: 'Create deck',
+    description: 'Creates an empty deck: a big container for cards of any type (5 new cards a day without languages). Prefer adding cards to an existing deck with a tag for the subject; create a deck only when the user wants a separate one. Names are unique among the user\'s decks — call list_decks first.',
+    inputSchema: createDeckSchema,
+  }, createDeckTool)
   server.registerTool('create_topic', {
-    title: 'Create topic deck',
-    description: 'Creates an empty topic deck (question/answer facts on one subject, e.g. "Concurrency"), in the daily review by default with 5 new cards a day. Names are unique among all the user\'s decks; an existing name is an error — call list_decks first.',
-    inputSchema: { name: z.string().min(1).max(100).describe('Short subject name, e.g. "Java Core".') },
-  }, guard(({ name }) => createTopicDeck(db, uid, { name }, ctx.now())))
+    title: 'Create deck (old name)',
+    description: 'Same as create_deck; kept for older prompts.',
+    inputSchema: createDeckSchema,
+  }, createDeckTool)
 
   server.registerTool('search_facts', {
     title: 'Search facts',
-    description: 'Finds facts of topic decks by substring over question, answer and tags (case-insensitive for Latin letters only), deck or status, oldest first. Each result has its card state (new / learning / review / relearning), due date, stability in days, lapses and recall probability. Use it before add_facts to avoid near-duplicates the exact question check would miss.',
+    description: 'Finds facts by substring over question, answer and tags (case-insensitive for Latin letters only), deck, tag or status, oldest first. Each result has its card state (new / learning / review / relearning), due date, stability in days, lapses and recall probability. Use it before add_facts to avoid near-duplicates the exact question check would miss.',
     inputSchema: {
       query: z.string().optional().describe('Substring to look for.'),
-      deck: z.string().optional().describe('Topic deck name or id; default all.'),
-      status: status.optional().describe('inbox = proposed, awaiting approval; active = being studied; rejected = declined by the user.'),
+      deck: z.string().optional().describe('Deck name or id; default all.'),
+      tag: z.string().optional().describe('Only facts with this tag, e.g. "Concurrency".'),
+      status: status.optional().describe('active = being studied; rejected = dropped by the user, never shown.'),
       limit: z.number().int().min(1).max(100).optional().describe('Default 20.'),
       offset: z.number().int().min(0).optional(),
     },
     annotations: { readOnlyHint: true },
   }, guard((a) => {
-    if (a.deck) mustBeKind(deckOf(a.deck), 'topic')
-    const r = searchFacts(db, uid, { deck: a.deck, q: a.query, status: a.status, limit: a.limit ?? 20, offset: a.offset }, ctx.now())
+    if (a.deck) deckOf(a.deck)
+    const r = searchFacts(db, uid, { deck: a.deck, q: a.query, tag: a.tag, status: a.status, limit: a.limit ?? 20, offset: a.offset }, ctx.now())
     return { total: r.total, facts: r.facts.map(factBrief) }
   }))
 
   server.registerTool('add_facts', {
     title: 'Add facts',
-    description: `Proposes up to 100 question/answer flashcards for a topic deck, e.g. generated from the user's notes. They land in the user's inbox and are not studied until approved in the app; autoApprove: true makes them active at once — only when the user asked. A fact whose question already exists in the deck (any status, including rejected) is not added: it is reported under duplicates with the existing id, its status and what differs (back, newTags) — use update_fact to merge. Invalid facts are reported under errors. ${FACT_RULES}`,
+    description: `Proposes up to 100 question/answer flashcards for a deck, e.g. generated from the user's notes; give the subject as a tag (tags, e.g. ["Kafka"]) rather than a new deck. They are studied at once (within the deck's daily limit of new cards) and get the tag "claude". A fact whose question already exists in the deck (any status, including rejected = dropped by the user) is not added: it is reported under duplicates with the existing id, its status and what differs (back, newTags) — use update_fact to merge. Invalid facts are reported under errors. ${FACT_RULES}`,
     inputSchema: {
-      deck: z.string().min(1).describe('Topic deck name or id.'),
+      deck: z.string().min(1).describe('Deck name or id, e.g. "Programming".'),
+      tags: z.array(z.string()).max(10).optional().describe('Tags for every fact, e.g. the subject: ["Kafka"]. Each fact can add its own.'),
       facts: z.array(z.object(factFields)).min(1).max(100),
-      autoApprove: z.boolean().optional().describe('Default false: facts go to the inbox.'),
-      createDeck: z.boolean().optional().describe('Create the topic deck if no deck has this name. Default false: an unknown deck is an error.'),
+      createDeck: z.boolean().optional().describe('Create the deck if no deck has this name. Default false: an unknown deck is an error.'),
     },
-  }, guard((a) => addFacts(db, uid, { deck: a.deck, facts: a.facts, autoApprove: a.autoApprove, createDeck: a.createDeck, createdBy: 'claude' }, ctx.now())))
+  }, guard((a) => addFacts(db, uid, { deck: a.deck, tags: a.tags, facts: a.facts, createDeck: a.createDeck, createdBy: 'claude' }, ctx.now())))
 
   server.registerTool('update_fact', {
     title: 'Update fact',
-    description: `Edits a fact; only the fields you pass change (tags replace the list). deck moves it to another topic deck. The card keeps its schedule and review history. A question that already exists in the target deck fails with a duplicate error. The fact keeps its status. ${FACT_RULES}`,
+    description: `Edits a fact; only the fields you pass change (tags replace the list). deck moves it to another deck. The card keeps its schedule and review history. A question that already exists in the target deck fails with a duplicate error. The fact keeps its status. ${FACT_RULES}`,
     inputSchema: {
       id: z.string().describe('Fact id, e.g. ft_abc123.'),
       front: factFields.front.optional(),
       back: factFields.back.optional(),
       tags: factFields.tags,
-      deck: z.string().optional().describe('Topic deck name or id to move it to.'),
+      deck: z.string().optional().describe('Deck name or id to move it to.'),
     },
   }, guard((a) => {
     const { id, deck, ...patch } = a
@@ -279,10 +291,10 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
 
   server.registerTool('set_fact_status', {
     title: 'Set fact status',
-    description: 'Applies one action to several facts: approve (inbox → active, starts studying), reject (→ rejected: never studied, kept so the same question is recognised as a duplicate), suspend / unsuspend (the card stops or resumes being scheduled, history kept), delete (removes the fact, its card and review history permanently — prefer reject or suspend unless the user asked to delete).',
+    description: 'Applies one action to several facts: drop (→ rejected: never shown again, kept so the same question is recognised as a duplicate), restore (a dropped fact → active again), suspend / unsuspend (the card stops or resumes being scheduled, history kept), delete (removes the fact, its card and review history permanently — prefer drop or suspend unless the user asked to delete).',
     inputSchema: {
       ids: z.array(z.string()).min(1).max(200).describe('Fact ids.'),
-      action: z.enum(['approve', 'reject', 'delete', 'suspend', 'unsuspend']),
+      action: z.enum(['drop', 'restore', 'delete', 'suspend', 'unsuspend']),
     },
   }, guard(({ ids, action }) => {
     const now = ctx.now()
@@ -291,7 +303,7 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
       for (const id of ids) {
         try {
           if (action === 'delete') deleteFact(db, uid, id)
-          else if (action === 'approve' || action === 'reject') updateFact(db, uid, id, { status: action === 'approve' ? 'active' : 'rejected' }, now)
+          else if (action === 'drop' || action === 'restore') updateFact(db, uid, id, { status: action === 'drop' ? 'rejected' : 'active' }, now)
           else setFactSuspended(db, uid, id, action === 'suspend')
           results.push({ id, ok: true })
         } catch (e) {
@@ -304,16 +316,16 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
 
   server.registerTool('list_packs', {
     title: 'List content packs',
-    description: 'Ready-made topic decks the app ships (e.g. "Irregular verbs"): id, name, description, count of cards, whether the user has added it (added, deckId) and how many of its cards they still lack (missing). Suggest one when it fits what the user wants to learn; add it only when they agree.',
+    description: 'Ready-made sets of cards the app ships (e.g. "Irregular verbs"): id, name, description, count of cards, whether the user has added it (added, deckId) and how many of its cards they still lack (missing). Suggest one when it fits what the user wants to learn; add it only when they agree.',
     annotations: { readOnlyHint: true },
   }, guard(() => listPacks(db, uid)))
 
   server.registerTool('add_pack', {
     title: 'Add content pack',
-    description: 'Adds a content pack to the user\'s collection as a topic deck named after it (5 new cards a day, in review): its cards are active at once, introduced in the pack\'s order (most useful first). Running it again adds only cards the user lacks. Only when the user asked for it.',
-    inputSchema: { id: z.string().describe('Pack id from list_packs.') },
-  }, guard(({ id }) => {
-    const r = addPack(db, uid, id, ctx.now())
+    description: 'Adds a content pack\'s cards to a deck (default: irregular verbs into the English deck, other packs into a deck named after the pack), each tagged with the pack\'s name; they are active at once, introduced in the pack\'s order (most useful first). Running it again adds only cards the user lacks. Only when the user asked for it.',
+    inputSchema: { id: z.string().describe('Pack id from list_packs.'), deck: z.string().optional().describe('Deck name or id to add it to.') },
+  }, guard(({ id, deck }) => {
+    const r = addPack(db, uid, id, ctx.now(), { deckId: deck })
     return { deck: { id: r.deck.id, name: r.deck.name }, added: r.added, alreadyAdded: r.alreadyAdded, duplicates: r.duplicates }
   }))
 
@@ -373,7 +385,7 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
     annotations: { readOnlyHint: true },
   }, guard((a) => {
     const l = lex()
-    const deck = mustBeKind(deckOf(a.deck), 'language')
+    const deck = mustHaveLanguages(deckOf(a.deck))
     const d = dashboard(db, uid, deck, l, opts, ctx.now())
     const v = d.vocabulary
     const cur = v.current
@@ -402,7 +414,6 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
       partsOfSpeech: mix('pos'),
       cefrLevels: mix('cefr'),
       weakest: leeches(db, uid, { deckId: deck.id, minLapses: 2, limit: 10 }).map((x) => ({ id: x.wordId, term: x.term, translations: x.translations, maxLapses: x.maxLapses, directions: x.cards.map((c) => c.direction) })),
-      inbox: d.counts.words.inbox,
     }
   }))
 

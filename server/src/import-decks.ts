@@ -19,7 +19,7 @@ import { loadConfig } from './config.ts'
 import { newId, openDb, type Db } from './db.ts'
 import { loadLexicon, type Lexicon } from './lexicon.ts'
 import { createFact, findDuplicateFact } from './facts.ts'
-import { createTopicDeck, defaultDeck, findDeckByName, findDuplicate, HttpError, insertCard } from './repo.ts'
+import { createDeck, defaultDeck, findDeckByName, findDuplicate, HttpError, insertCard } from './repo.ts'
 import { ensureUser, migrationEnv } from './users.ts'
 import { convertPair, convertTags, englishSide, isVocabularyDeckName, looksLikeWordPair, mergeTranslations, parseExtra } from './vocab-convert.ts'
 
@@ -409,10 +409,9 @@ function importTopics(db: Db, userId: string, rows: Flashcard[], prefix: string,
     let id = decks.get(name)
     if (id) return id
     const existing = findDeckByName(db, userId, name)
-    if (existing && existing.kind !== 'topic') throw new Error(`"${name}" is already a ${existing.kind} deck; rename it or pick another --topics prefix`)
     if (existing) s.decks.existing.push(name)
     else s.decks.created.push(name)
-    id = existing?.id ?? createTopicDeck(db, userId, { name }, now).id
+    id = existing?.id ?? createDeck(db, userId, { name }, now).id
     decks.set(name, id)
     return id
   }

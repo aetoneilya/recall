@@ -77,7 +77,7 @@ describe('migration to v4', () => {
     // The rest of the app reads the current schema (v6: deck kinds, study_cards).
     migrate(db, ENV)
     expect(listDecks(db, 'us_a')).toMatchObject([{ id: 'dk_a', newPerDay: 20, reverseAfterDays: 7, typeAnswer: 'off' }])
-    expect(searchWords(db, 'us_b', {}, NOW).words).toMatchObject([{ id: 'wd_2', status: 'inbox', cards: { reverse: { enabled: false } } }])
+    expect(searchWords(db, 'us_b', {}, NOW).words).toMatchObject([{ id: 'wd_2', status: 'active', cards: { reverse: { enabled: false } } }])
     expect(applyReviews(db, 'us_a', [{ id: 'r2', cardId: 'cd_1f', rating: 3, reviewedAt: '2026-10-25T09:00:00.000Z' }])).toMatchObject({ applied: 1 })
     expect(() => db.exec("UPDATE decks SET type_answer = 'sometimes'")).toThrow(/CHECK/)
   })

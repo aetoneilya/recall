@@ -47,7 +47,7 @@ const DATA: WeeklyData = {
   retention: { forward: { rate: 0.92, reviews: 150 }, reverse: { rate: 0.71, reviews: 60 } },
   labels: { forward: 'EN→RU', reverse: 'RU→EN' }, estimate: 8400, estimateChange: 350,
   hardest: [{ term: 'tenacious', again: 4 }, { term: 'aloof', again: 3 }, { term: 'wary', again: 2 }],
-  inbox: 2, typeAnswer: 'off', lastTestAt: '2026-10-01T00:00:00.000Z', totalWords: 400,
+  typeAnswer: 'off', lastTestAt: '2026-10-01T00:00:00.000Z', totalWords: 400,
 }
 const NOW = msk('2026-10-25', '19:00')
 
@@ -69,13 +69,12 @@ describe('weekly report text', () => {
   })
 
   it('suggests one concrete thing', () => {
-    expect(suggestion({ ...DATA, inbox: 12 }, NOW)).toBe('12 words waiting in inbox — approve the ones you want to learn')
     expect(suggestion({ ...DATA, typeAnswer: 'reverse' }, NOW)).toBe('RU→EN retention 71% — take fewer new words for a few days')
     const fine = { ...DATA, retention: { forward: { rate: 0.92, reviews: 150 }, reverse: { rate: 0.88, reviews: 60 } } }
     expect(suggestion({ ...fine, reviews: 100, lastWeekReviews: 180 }, NOW)).toMatch(/^Fewer reviews than last week/)
     expect(suggestion({ ...fine, lastTestAt: null }, NOW)).toBe('Take the vocabulary test to update your estimate')
-    expect(suggestion(fine, NOW)).toBe('2 words waiting in inbox')
-    expect(suggestion({ ...fine, inbox: 0 }, NOW)).toBe('Steady week — keep going')
+    expect(suggestion(fine, NOW)).toBe('Steady week — keep going')
+    expect(suggestion({ ...fine, newWords: 2 }, NOW)).toBe('Send me words you meet while reading — or a photo of the page')
   })
 })
 
@@ -101,7 +100,7 @@ describe('weekly report job', () => {
     rate(ctx, cardsOf(ctx, t.id)[0]!.id, 1, new Date('2026-10-21T09:05:00Z'))
     rate(ctx, cardsOf(ctx, a.id)[0]!.id, 1, new Date('2026-10-22T09:00:00Z'))
     rate(ctx, cardsOf(ctx, w.id)[0]!.id, 3, new Date('2026-10-23T09:00:00Z'))
-    addWord(ctx, 'proposal', { status: 'inbox', at: new Date('2026-10-24T09:00:00Z') })
+    addWord(ctx, 'proposal', { at: new Date('2026-10-24T09:00:00Z') })
 
     const sent: [number, string][] = []
     const send = async (chat: number, text: string) => void sent.push([chat, text])
@@ -113,7 +112,7 @@ describe('weekly report job', () => {
 
     ctx.clock.t = msk('2026-10-25', '19:01')
     const data = weeklyData(ctx, getUser(ctx.db, me.id)!, ctx.now())
-    expect(data).toMatchObject({ reviews: 4, lastWeekReviews: 1, newWords: 4, inbox: 1, hardest: [{ term: 'tenacious', again: 2 }, { term: 'aloof', again: 1 }], streak: 0 })
+    expect(data).toMatchObject({ reviews: 4, lastWeekReviews: 1, newWords: 4, hardest: [{ term: 'tenacious', again: 2 }, { term: 'aloof', again: 1 }], streak: 0 })
     await weeklyTick(ctx, send)
     await weeklyTick(ctx, send)
     expect(sent).toHaveLength(1)

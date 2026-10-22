@@ -15,7 +15,7 @@ const headers = (init: RequestInit) => init.headers as Record<string, string>
 
 describe('api client', () => {
   it('sends Telegram init data on every request when present', async () => {
-    const { f, calls } = recorder(() => json({ items: [], counts: { new: 0, learning: 0, review: 0 }, inbox: 0 }))
+    const { f, calls } = recorder(() => json({ items: [], counts: { new: 0, learning: 0, review: 0 } }))
     const api = createApi({ fetch: f, initData: () => 'query_id=1&user=%7B%7D&hash=abc' })
     await api.queue()
     await api.postReviews([])
@@ -108,20 +108,20 @@ describe('api client', () => {
   })
 
   it('defaults deck fields an older server leaves out', async () => {
-    const { f } = recorder(() => json({ decks: [{ id: 'dk_1', name: 'English', counts: { total: 3, due: 1, new: 2, inbox: 0 } }] }))
+    const { f } = recorder(() => json({ decks: [{ id: 'dk_1', name: 'English', counts: { total: 3, due: 1, new: 2 } }] }))
     const [d] = await createApi({ fetch: f }).decks()
     expect(d.typeAnswer).toBe('off')
     expect(d.forwardEnabled).toBe(true)
     expect(d.reverseAfterDays).toBeNull()
-    expect(d.counts).toEqual({ total: 3, active: 0, inbox: 0, known: 0, learning: 0, due: 1, new: 2, newTotal: 0 })
+    expect(d.counts).toEqual({ total: 3, active: 0, dropped: 0, known: 0, learning: 0, due: 1, new: 2, newTotal: 0 })
     const { f: g } = recorder(() => json({ decks: [{ id: 'dk_1', typeAnswer: 'both', reverseEnabled: false, reverseAfterDays: 7 }] }))
     expect(await createApi({ fetch: g }).decks()).toMatchObject([{ typeAnswer: 'both', reverseEnabled: false, reverseAfterDays: 7 }])
   })
 
   it('builds the words query without empty params', async () => {
     const { f, calls } = recorder(() => json({ words: [{ id: 'wd_1' }], total: 7 }))
-    const page = await createApi({ fetch: f }).words({ q: '', status: 'inbox', sort: 'alpha', limit: 500, offset: 0 })
-    expect(calls[0].url).toBe('/api/words?status=inbox&sort=alpha&limit=500&offset=0')
+    const page = await createApi({ fetch: f }).words({ q: '', status: 'rejected', sort: 'alpha', limit: 500, offset: 0 })
+    expect(calls[0].url).toBe('/api/words?status=rejected&sort=alpha&limit=500&offset=0')
     expect(page).toEqual({ words: [{ id: 'wd_1' }], total: 7 })
   })
 

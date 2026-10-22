@@ -39,13 +39,11 @@
   }
   void load()
 
-  // Topic decks, a small block under the vocabulary: from the review
-  // session's cached copy (offline too), refreshed on each visit.
-  let topicDecks = $state.raw<DeckWithCounts[]>(
-    (Object.values(session.decks) as DeckWithCounts[]).filter((d) => d.kind === 'topic' && d.counts),
-  )
+  // Every deck, a small block under the vocabulary, with its top tags: from
+  // the review session's cached copy (offline too), refreshed on each visit.
+  let decks = $state.raw<DeckWithCounts[]>((Object.values(session.decks) as DeckWithCounts[]).filter((d) => d.counts))
   void getDecks(true)
-    .then((ds) => (topicDecks = ds.filter((d) => d.kind === 'topic')))
+    .then((ds) => (decks = ds))
     .catch(() => {})
 
   const fmt = (n: number) => Math.round(n).toLocaleString('en-US')
@@ -77,7 +75,6 @@
           { n: data.counts.known, label: 'known' },
           { n: data.counts.mastered, label: 'mastered' },
           { n: data.counts.words.active, label: 'active' },
-          { n: data.counts.words.inbox, label: 'inbox', go: '/inbox' },
           { n: data.counts.words.total, label: 'total' },
         ]
       : [],
@@ -100,7 +97,7 @@
       <span class="skel" style="width: 80%; margin-top: 10px"></span>
     </div>
     <div class="tiles" style="margin-top: 12px">
-      {#each [0, 1, 2, 3, 4] as i (i)}<div class="tile"><span class="skel" style="width: 60%; height: 20px"></span><span class="skel" style="width: 80%; margin-top: 6px; height: 10px"></span></div>{/each}
+      {#each [0, 1, 2, 3] as i (i)}<div class="tile"><span class="skel" style="width: 60%; height: 20px"></span><span class="skel" style="width: 80%; margin-top: 6px; height: 10px"></span></div>{/each}
     </div>
     <div class="panel" style="margin-top: 36px"><span class="skel" style="height: 110px; border-radius: 8px"></span></div>
   {:else}
@@ -144,11 +141,7 @@
     <div class="section-label">Words</div>
     <div class="tiles">
       {#each tiles as t (t.label)}
-        {#if t.go}
-          <button class="tile tap" onclick={() => navigate(t.go!)}><b>{fmt(t.n)}</b><span>{t.label}</span></button>
-        {:else}
-          <div class="tile"><b>{fmt(t.n)}</b><span>{t.label}</span></div>
-        {/if}
+        <div class="tile"><b>{fmt(t.n)}</b><span>{t.label}</span></div>
       {/each}
     </div>
 
@@ -206,15 +199,17 @@
       </p>
     </div>
 
-    {#if topicDecks.length}
-      <div class="section-label">Topics</div>
+    {#if decks.length > 1 || decks.some((d) => d.tags?.length)}
+      <div class="section-label">Decks</div>
       <div class="group topics">
-        {#each topicDecks as d (d.id)}
+        {#each decks as d (d.id)}
           {@const c = d.counts}
+          {@const shown = c.total - c.dropped}
           <div class="row topic">
             <span class="tmain">
-              <span class="tname">{d.name}{#if !d.inReview}<span class="chip">not in review</span>{/if}</span>
-              <span class="tsub">{fmt(c.total)} {c.total === 1 ? 'card' : 'cards'} · {fmt(c.known)} known · {fmt(c.learning)} learning · {fmt(c.newTotal)} new</span>
+              <span class="tname">{d.name}</span>
+              <span class="tsub">{fmt(shown)} {shown === 1 ? 'card' : 'cards'} · {fmt(c.known)} known · {fmt(c.learning)} learning · {fmt(c.newTotal)} new</span>
+              {#if d.tags?.length}<span class="ttags">{d.tags.slice(0, 4).map((t) => `${t.tag} ${t.n}`).join(' · ')}{d.tags.length > 4 ? ` · +${d.tags.length - 4}` : ''}</span>{/if}
             </span>
             <span class="today" aria-label="{c.due + c.new} due today"><b>{fmt(c.due + c.new)}</b> today</span>
           </div>
@@ -356,6 +351,13 @@
     color: var(--muted);
     font-variant-numeric: tabular-nums;
   }
+  .ttags {
+    font-size: 12.5px;
+    color: var(--faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .today {
     flex: none;
     font-size: 13px;
@@ -370,7 +372,7 @@
   }
   .tiles {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 6px;
   }
   .tile {
@@ -382,12 +384,6 @@
     align-items: center;
     text-align: center;
     min-width: 0;
-  }
-  .tile.tap {
-    transition: transform var(--t-press) var(--ease-out);
-  }
-  .tile.tap:active {
-    transform: scale(0.96);
   }
   .tile b {
     font-size: 19px;

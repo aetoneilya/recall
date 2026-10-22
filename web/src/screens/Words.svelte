@@ -1,24 +1,29 @@
 <script lang="ts">
-  import { CEFR_LEVELS, PARTS_OF_SPEECH, posLabel, type Direction } from '@recall/core'
+  import { CEFR_LEVELS, PARTS_OF_SPEECH, posLabel, type CardType, type Direction } from '@recall/core'
   import { onMount } from 'svelte'
+  import AddPicker from '../components/AddPicker.svelte'
+  import DeckSwitcher from '../components/DeckSwitcher.svelte'
   import Icon from '../components/Icon.svelte'
-  import LibrarySwitch from '../components/LibrarySwitch.svelte'
-  import Facts from './Facts.svelte'
-  import { facts } from '../lib/facts.svelte.ts'
-  import { session } from '../lib/review.svelte.ts'
   import { status } from '../lib/app.svelte.ts'
+  import { facts } from '../lib/facts.svelte.ts'
+  import { deckContents, libraryRows, type LibrarySort } from '../lib/library.ts'
+  import { renderInline } from '../lib/markdown.ts'
+  import { session } from '../lib/review.svelte.ts'
+  import { TYPE_NAMES } from '../lib/reviewFilter.ts'
   import { navigate } from '../lib/router.svelte.ts'
-  import { DIR_STATES, dirState, filterWords, type DirState, type WordSort } from '../lib/wordFilter.ts'
+  import { DIR_STATES, dirState, type DirState } from '../lib/wordFilter.ts'
   import { POS_NAMES } from '../lib/wordForm.ts'
   import { wordsView } from '../lib/wordsView.svelte.ts'
   import { words } from '../lib/words.svelte.ts'
 
-  // Kept in a module, so coming back from a word restores search and filters.
+  // The Cards tab: one deck's cards of every type — words, questions,
+  // grammar rules — cached on the device, searched and filtered as you type.
+  // The deck is the one under review (the same switcher).
   const f = wordsView.filter
 
   onMount(() => {
     void words.ensure()
-    // Back from a word: where the list was left.
+    void facts.ensure()
     requestAnimationFrame(() => wordsView.scroller?.scrollTo({ top: wordsView.scrollTop }))
   })
   // Offline adds that just synced, approvals elsewhere.
@@ -26,22 +31,53 @@
     void status.wordsVersion
     void words.ensure()
   })
+  $effect(() => {
+    void status.factsVersion
+    void facts.ensure()
+  })
 
-  const list = $derived(words.all ? filterWords(words.all, f) : null)
+  const deckList = $derived(Object.values(session.decks))
+  const deckId = $derived(session.deckId || deckList[0]?.id || '')
+  const deck = $derived(session.decks[deckId])
+  const loaded = $derived(!!words.all && !!facts.all)
+  const rows = $derived(loaded ? libraryRows(words.all!, facts.all!, deckId, f) : null)
+  const contents = $derived(deckContents(words.all ?? [], facts.all ?? [], deckId))
+  const total = $derived(contents.types.word + contents.types.fact + contents.types.rule)
+  const presentTypes = $derived((['word', 'fact', 'rule'] as CardType[]).filter((t) => contents.types[t] > 0))
+  // Switcher: what each deck holds.
+  const choices = $derived(
+    deckList.map((d) => ({
+      id: d.id,
+      name: d.name,
+      n: (words.all ?? []).filter((w) => w.deckId === d.id && w.status !== 'rejected').length + (facts.all ?? []).filter((x) => x.deckId === d.id && x.status !== 'rejected').length,
+    })),
+  )
+
   let shown = $state(Math.max(80, Math.ceil(wordsView.scrollTop / 60) + 40))
   let first = true
   $effect(() => {
-    void [f.q, f.status, f.pos, f.cefr, f.state, f.sort]
+    void [f.q, f.type, f.tag, f.status, f.pos, f.cefr, f.state, f.sort, deckId]
     if (first) first = false
     else {
       shown = 80
       wordsView.scroller?.scrollTo({ top: 0 })
     }
   })
-  const filtered = $derived(!!(f.status || f.pos || f.cefr || f.state))
+  // A tag or type the new deck doesn't have is dropped on a switch.
+  $effect(() => {
+    if (!loaded) return
+    if (f.tag && !contents.tags.some((t) => t.tag === f.tag)) f.tag = ''
+    if (f.type && !presentTypes.includes(f.type)) f.type = ''
+  })
+  const filtered = $derived(!!(f.status || f.pos || f.cefr || f.state || f.tag || f.type))
+  const wordsOnly = $derived(f.type === 'word' || (presentTypes.length === 1 && presentTypes[0] === 'word'))
 
   const STATE_NAMES: Record<DirState, string> = { new: 'New', learning: 'Learning', known: 'Known', fading: 'Fading', suspended: 'Suspended', off: 'Off' }
-  const SORT_NAMES: Record<WordSort, string> = { recent: 'Recent', alpha: 'A–Z', freq: 'Most common', difficulty: 'Hardest' }
+  const SORT_NAMES = $derived<Partial<Record<LibrarySort, string>>>(
+    wordsOnly ? { recent: 'Recent', alpha: 'A–Z', freq: 'Most common', difficulty: 'Hardest' } : { recent: 'Recent', alpha: 'A–Z', difficulty: 'Hardest' },
+  )
+  // Dropped cards are hidden unless asked for; open one to restore it.
+  const STATUS_NAMES: Record<'' | 'rejected' | 'all', string> = { '': 'Active', rejected: 'Dropped', all: 'Active & dropped' }
   const dirs: Direction[] = ['forward', 'reverse']
   const dirName: Record<Direction, string> = { forward: 'EN→RU', reverse: 'RU→EN' }
 
@@ -54,42 +90,58 @@
   }
 
   function clearFilters() {
+    f.type = ''
+    f.tag = ''
     f.status = ''
     f.pos = ''
     f.cefr = ''
     f.state = ''
   }
 
-  // Topics join the tab once there is a topic deck (or cached facts).
-  const hasTopics = $derived(Object.values(session.decks).some((d) => d.kind === 'topic') || !!facts.all?.length)
-  void facts.restore()
-
-  const open = (id: string) => navigate(`/word/${id}?from=${encodeURIComponent('/words')}`)
+  let addOpen = $state(false)
+  const from = encodeURIComponent('/words')
+  const openWord = (id: string) => navigate(`/word/${id}?from=${from}`)
+  const openFact = (id: string) => navigate(`/fact/${id}?from=${from}`)
 </script>
 
-{#if hasTopics && wordsView.kind === 'facts'}
-  <Facts />
-{:else}
 <div class="words-screen">
   <div class="screen" bind:this={wordsView.scroller} onscroll={(e) => (wordsView.scrollTop = e.currentTarget.scrollTop)}>
     <div class="screen-title">
-      <h1>Words</h1>
-      {#if words.all}<span class="total">{list?.length === words.all.length ? words.all.length : `${list?.length} of ${words.all.length}`}</span>{/if}
+      <h1>Cards</h1>
+      {#if rows}<span class="total">{rows.length === total ? total : `${rows.length} of ${total}`}</span>{/if}
     </div>
-    {#if hasTopics}<LibrarySwitch />{/if}
+    <div class="switcher"><DeckSwitcher options={choices} selected={deckId} onselect={(id) => session.selectDeck(id)} /></div>
 
     <div class="search">
       <Icon name="search" size={18} />
-      <input type="search" bind:value={f.q} placeholder="Search words, translations, examples" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="search" aria-label="Search" />
+      <input type="search" bind:value={f.q} placeholder="Search cards" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="search" aria-label="Search" />
     </div>
+
+    {#if presentTypes.length > 1}
+      <div class="types" role="radiogroup" aria-label="Card type">
+        <button role="radio" aria-checked={!f.type} class:on={!f.type} onclick={() => (f.type = '')}>All</button>
+        {#each presentTypes as t (t)}
+          <button role="radio" aria-checked={f.type === t} class:on={f.type === t} onclick={() => (f.type = t)}>{TYPE_NAMES[t]} <b>{contents.types[t]}</b></button>
+        {/each}
+      </div>
+    {/if}
 
     <div class="filters" role="group" aria-label="Filters">
       <label class="pick" class:on={f.sort !== 'recent'}>
-        <span>{SORT_NAMES[f.sort]}</span>
+        <span>{SORT_NAMES[f.sort] ?? 'Recent'}</span>
         <select bind:value={f.sort} aria-label="Sort">
           {#each Object.entries(SORT_NAMES) as [k, v] (k)}<option value={k}>{v}</option>{/each}
         </select>
       </label>
+      {#if contents.tags.length}
+        <label class="pick" class:on={f.tag}>
+          <span>{f.tag || 'Any tag'}</span>
+          <select bind:value={f.tag} aria-label="Tag">
+            <option value="">Any tag</option>
+            {#each contents.tags as t (t.tag)}<option value={t.tag}>{t.tag} ({t.n})</option>{/each}
+          </select>
+        </label>
+      {/if}
       <label class="pick" class:on={f.state}>
         <span>{f.state ? STATE_NAMES[f.state] : 'Any state'}</span>
         <select bind:value={f.state} aria-label="State">
@@ -98,37 +150,35 @@
         </select>
       </label>
       <label class="pick" class:on={f.status}>
-        <span>{f.status === '' ? 'Studied & inbox' : f.status === 'all' ? 'All, incl. rejected' : f.status === 'active' ? 'Studied' : f.status === 'inbox' ? 'Inbox' : 'Rejected'}</span>
+        <span>{STATUS_NAMES[f.status === 'active' ? '' : f.status]}</span>
         <select bind:value={f.status} aria-label="Status">
-          <option value="">Studied & inbox</option>
-          <option value="active">Studied</option>
-          <option value="inbox">Inbox</option>
-          <option value="rejected">Rejected</option>
-          <option value="all">All, incl. rejected</option>
+          {#each Object.entries(STATUS_NAMES) as [k, v] (k)}<option value={k}>{v}</option>{/each}
         </select>
       </label>
-      <label class="pick" class:on={f.pos}>
-        <span>{f.pos ? POS_NAMES[f.pos] : 'Any part'}</span>
-        <select bind:value={f.pos} aria-label="Part of speech">
-          <option value="">Any part of speech</option>
-          {#each PARTS_OF_SPEECH as p (p)}<option value={p}>{POS_NAMES[p]}</option>{/each}
-        </select>
-      </label>
-      <label class="pick" class:on={f.cefr}>
-        <span>{f.cefr || 'Any level'}</span>
-        <select bind:value={f.cefr} aria-label="CEFR level">
-          <option value="">Any level</option>
-          {#each CEFR_LEVELS as c (c)}<option value={c}>{c}</option>{/each}
-        </select>
-      </label>
+      {#if wordsOnly}
+        <label class="pick" class:on={f.pos}>
+          <span>{f.pos ? POS_NAMES[f.pos] : 'Any part'}</span>
+          <select bind:value={f.pos} aria-label="Part of speech">
+            <option value="">Any part of speech</option>
+            {#each PARTS_OF_SPEECH as p (p)}<option value={p}>{POS_NAMES[p]}</option>{/each}
+          </select>
+        </label>
+        <label class="pick" class:on={f.cefr}>
+          <span>{f.cefr || 'Any level'}</span>
+          <select bind:value={f.cefr} aria-label="CEFR level">
+            <option value="">Any level</option>
+            {#each CEFR_LEVELS as c (c)}<option value={c}>{c}</option>{/each}
+          </select>
+        </label>
+      {/if}
     </div>
 
-    {#if !list}
-      {#if words.error}
+    {#if !rows}
+      {#if words.error || facts.error}
         <div class="empty">
           <Icon name="offline" size={40} stroke={1.4} />
-          <p><strong>Couldn't load your words</strong>{words.error}</p>
-          <button class="btn" onclick={() => words.ensure(true)}><Icon name="refresh" size={18} /> Try again</button>
+          <p><strong>Couldn't load your cards</strong>{words.error || facts.error}</p>
+          <button class="btn" onclick={() => (words.ensure(true), facts.ensure(true))}><Icon name="refresh" size={18} /> Try again</button>
         </div>
       {:else}
         <div class="group skel-group" aria-label="Loading">
@@ -137,50 +187,64 @@
           {/each}
         </div>
       {/if}
-    {:else if !list.length}
+    {:else if !rows.length}
       <div class="empty">
         <Icon name={f.q ? 'search' : 'words'} size={40} stroke={1.4} />
         {#if f.q || filtered}
-          <p><strong>No matches</strong>{f.q ? `Nothing contains “${f.q.trim()}”${filtered ? ' with these filters' : ''}.` : 'No word fits these filters.'}</p>
+          <p><strong>No matches</strong>{f.q ? `Nothing contains “${f.q.trim()}”${filtered ? ' with these filters' : ''}.` : 'No card fits these filters.'}</p>
           {#if filtered}<button class="btn" onclick={clearFilters}>Clear filters</button>{/if}
-          {#if f.q}<button class="btn primary" onclick={() => navigate(`/add?from=${encodeURIComponent('/words')}`)}><Icon name="plus" size={18} /> Add “{f.q.trim()}”</button>{/if}
         {:else}
-          <p><strong>No words yet</strong>Add the ones you meet while reading, or ask Claude to propose some.</p>
-          <button class="btn primary" onclick={() => navigate(`/add?from=${encodeURIComponent('/words')}`)}><Icon name="plus" size={18} /> Add a word</button>
+          <p><strong>No cards in {deck?.name ?? 'this deck'} yet</strong>Add words you meet, questions to remember, or grammar rules to practise.</p>
         {/if}
+        <button class="btn primary" onclick={() => (addOpen = true)}><Icon name="plus" size={18} /> Add a card</button>
       </div>
     {:else}
       <div class="group">
-        {#each list.slice(0, shown) as w (w.id)}
-          <button class="row word" onclick={() => open(w.id)}>
-            <span class="main">
-              <span class="line1">
-                <span class="term" lang="en">{w.term}</span>
-                {#if posLabel(w.pos)}<span class="pos">{posLabel(w.pos)}</span>{/if}
-                {#if w.status !== 'active'}<span class="chip status {w.status}">{w.status}</span>{/if}
+        {#each rows.slice(0, shown) as r (r.id)}
+          {#if r.kind === 'word'}
+            {@const w = r.item}
+            <button class="row word" onclick={() => openWord(w.id)}>
+              <span class="main">
+                <span class="line1">
+                  <span class="term" lang="en">{w.term}</span>
+                  {#if posLabel(w.pos)}<span class="pos">{posLabel(w.pos)}</span>{/if}
+                  {#if w.status === 'rejected'}<span class="chip status rejected">dropped</span>{/if}
+                </span>
+                <span class="tr" lang="ru">{w.translations.join(', ')}</span>
               </span>
-              <span class="tr" lang="ru">{w.translations.join(', ')}</span>
-            </span>
-            <span class="dots" aria-label={dirs.map((d) => `${dirName[d]} ${STATE_NAMES[dirState(w.cards[d]) ?? 'new']}`).join(', ')}>
-              {#each dirs as d (d)}
-                {@const s = dirState(w.cards[d])}
-                <i class="dot {s ?? 'none'}" title="{dirName[d]}: {s ? STATE_NAMES[s] : '—'}"></i>
-              {/each}
-            </span>
-          </button>
+              <span class="dots" aria-label={dirs.map((d) => `${dirName[d]} ${STATE_NAMES[dirState(w.cards[d]) ?? 'new']}`).join(', ')}>
+                {#each dirs as d (d)}
+                  {@const s = dirState(w.cards[d])}
+                  <i class="dot {s ?? 'none'}" title="{dirName[d]}: {s ? STATE_NAMES[s] : '—'}"></i>
+                {/each}
+              </span>
+            </button>
+          {:else}
+            {@const x = r.item}
+            {@const s = dirState(x.card)}
+            <button class="row fact" onclick={() => openFact(x.id)}>
+              <span class="main">
+                <!-- renderInline escapes before adding its own tags. -->
+                <span class="q">{@html renderInline(x.front)}</span>
+                <span class="sub">
+                  {#if r.kind === 'rule'}<span class="kind">Grammar · {x.exercises?.active ?? 0} exercises</span>{/if}
+                  <span class="state {s ?? 'none'}">{s ? STATE_NAMES[s] : 'No card'}</span>
+                  {#if x.status === 'rejected'}<span class="chip status rejected">dropped</span>{/if}
+                  {#each x.tags as t (t)}<span class="tag">{t}</span>{/each}
+                </span>
+              </span>
+              <i class="dot {s ?? 'none'}" aria-hidden="true"></i>
+            </button>
+          {/if}
         {/each}
       </div>
-      {#if list.length > shown}<div class="sentinel" use:more></div>{/if}
-      <p class="legend" aria-hidden="true">
-        <span><i class="dot new"></i>new</span><span><i class="dot learning"></i>learning</span><span><i class="dot known"></i>known</span><span><i class="dot fading"></i>fading</span>
-        <span class="faint">left EN→RU · right RU→EN</span>
-      </p>
+      {#if rows.length > shown}<div class="sentinel" use:more></div>{/if}
     {/if}
   </div>
 
-  <button class="fab" onclick={() => navigate(`/add?from=${encodeURIComponent('/words')}`)} aria-label="Add a word"><Icon name="plus" size={26} stroke={2.2} /></button>
+  <button class="fab" onclick={() => (addOpen = true)} aria-label="Add a card"><Icon name="plus" size={26} stroke={2.2} /></button>
+  {#if addOpen}<AddPicker {deck} from="/words" onclose={() => (addOpen = false)} />{/if}
 </div>
-{/if}
 
 <style>
   .words-screen {
@@ -302,9 +366,6 @@
     flex: none;
     align-self: center;
   }
-  .status.inbox {
-    color: var(--accent);
-  }
   .status.rejected {
     color: var(--again);
   }
@@ -349,19 +410,6 @@
   .sentinel {
     height: 1px;
   }
-  .legend {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 14px;
-    margin: 12px 16px 0;
-    font-size: 12.5px;
-    color: var(--muted);
-  }
-  .legend span {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-  }
   .faint {
     color: var(--faint);
   }
@@ -382,5 +430,105 @@
   }
   .fab:active {
     transform: scale(0.92);
+  }
+  .switcher {
+    margin: -2px 0 10px;
+  }
+  .types {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    margin: 0 -16px 8px;
+    padding: 0 16px;
+    scrollbar-width: none;
+  }
+  .types::-webkit-scrollbar {
+    display: none;
+  }
+  .types button {
+    flex: none;
+    height: 30px;
+    padding: 0 12px;
+    border-radius: 15px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--muted);
+    box-shadow: inset 0 0 0 1px var(--hairline);
+    font-variant-numeric: tabular-nums;
+  }
+  .types button b {
+    font-weight: 600;
+    color: var(--faint);
+  }
+  .types button.on {
+    color: var(--accent);
+    background: var(--accent-soft);
+    box-shadow: none;
+  }
+  .types button.on b {
+    color: inherit;
+  }
+  .fact {
+    gap: 10px;
+    min-height: 60px;
+  }
+  .q {
+    font-weight: 600;
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+  .q :global(code) {
+    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+    font-size: 0.86em;
+    font-weight: 500;
+  }
+  .q :global(em.wl) {
+    color: var(--muted);
+  }
+  .sub {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
+    font-size: 13px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .kind {
+    color: var(--accent);
+    font-weight: 500;
+  }
+  .state.new {
+    color: var(--c-new);
+  }
+  .state.learning {
+    color: var(--c-learn);
+  }
+  .state.known,
+  .state.fading {
+    color: var(--c-review);
+  }
+  .state.suspended,
+  .state.off,
+  .state.none {
+    color: var(--faint);
+  }
+  .tag {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tag::before {
+    content: '·';
+    margin-right: 6px;
+    color: var(--faint);
+  }
+  .fact .dot {
+    flex: none;
   }
 </style>

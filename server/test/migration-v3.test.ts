@@ -114,7 +114,8 @@ describe('migration to words (v2 → v3)', () => {
       ['forte', 'other', 'active'],
       ['overheads', 'other', 'active'],
       ['to frown', 'verb', 'active'],
-      ['to streamline', 'verb', 'inbox'],
+      // Was in the inbox; v9 has none.
+      ['to streamline', 'verb', 'active'],
     ])
     const w = (term: string) => words.find((x) => x.term === term)!
     const cards = (term: string) => Object.fromEntries(wordCards(db, 'us_a', w(term).id).map((c) => [c.direction, c.id]))
@@ -180,7 +181,7 @@ describe('migration to words (v2 → v3)', () => {
     db.close()
     // v6 rebuilds tables too and takes its own snapshot.
     const backups = fs.readdirSync(path.join(dir, 'backups')).sort()
-    expect(backups).toEqual(['pre-v3', 'pre-v6'].map((v) => `${v}-${NOW.toISOString().replace(/[:.]/g, '-')}.db`))
+    expect(backups).toEqual(['pre-v3', 'pre-v6', 'pre-v9'].map((v) => `${v}-${NOW.toISOString().replace(/[:.]/g, '-')}.db`))
     const snap = new DatabaseSync(path.join(dir, 'backups', backups[0]!), { readOnly: true })
     expect(schemaVersion(snap)).toBe(2)
     expect((snap.prepare('SELECT count(*) AS n FROM notes').get() as { n: number }).n).toBe(12)

@@ -10,16 +10,16 @@ import type { AppContext } from './context.ts'
 import { dashboard } from './dashboard.ts'
 import { addPack, listPacks } from './packs.ts'
 import { addExercises, deleteExercise, listExercises, updateExercise } from './exercises.ts'
-import { createFact, deleteFact, factInboxCount, factItem, getFact, inboxFacts, searchFacts, setFactSuspended, updateFact } from './facts.ts'
+import { createFact, deleteFact, factItem, getFact, searchFacts, setFactSuspended, updateFact } from './facts.ts'
 import { fsrsInfo, optimizeNow, REQUEST_RETENTION } from './fsrs.ts'
 import { lexiconOf } from './lexicon.ts'
 import { createLoginNonce, pollLoginNonce, START_PREFIX } from './login.ts'
 import {
-  approveAll, cardSummary, createDeck, createTopicDeck, createWord, defaultDeck, deleteDeck, deleteWord, getDeck, HttpError, inboxWords, mustBeKind, mustGetWord, resolveDeck,
+  cardSummary, createDeck, createWord, defaultDeck, deleteDeck, deleteWord, getDeck, HttpError, mergeDecks, mustGetWord, mustHaveLanguages, resolveDeck,
   searchWords, setSuspended, setWordStatus, setWordSuspended, syncFreqRanks, TYPE_ANSWERS, updateDeck, updateWord, withCards, WORD_SORTS,
   type TypeAnswer, type WordRow, type WordSort,
 } from './repo.ts'
-import { applyReviews, buildQueue, decksWithCounts, factLogs, inboxCount, stats, studyDay, undoReview, wordLogs } from './study.ts'
+import { applyReviews, buildQueue, decksWithCounts, factLogs, reviewOptions, stats, studyDay, undoReview, wordLogs } from './study.ts'
 import { createApiToken, deleteApiToken, listApiTokens } from './tokens.ts'
 import { allowedUser, isOwner, ownerUser, updateUserSettings, userDayOptions, type User } from './users.ts'
 import { answerVocabTest, createVocabTest, listVocabTests } from './vocab.ts'
@@ -59,20 +59,25 @@ const WordFields = {
 const WordBody = z.object({ deckId: z.string().optional(), ...WordFields })
 const WordPatchBody = z.object({ ...WordFields, status: statusSchema }).partial()
 const typeAnswerSchema = z.enum(tuple<TypeAnswer>(TYPE_ANSWERS))
-const LanguageDeckBody = z.object({
-  kind: z.literal('language').optional(),
+const DeckBody = z.object({
   name: z.string().optional(),
-  targetLang: z.string(),
-  nativeLang: z.string(),
+  // Both or neither: a deck with languages takes words.
+  targetLang: z.string().nullable().optional(),
+  nativeLang: z.string().nullable().optional(),
   newPerDay: z.number().int().optional(),
   typeAnswer: typeAnswerSchema.optional(),
 }).strict()
-const TopicDeckBody = z.object({ kind: z.literal('topic'), name: z.string(), newPerDay: z.number().int().optional(), inReview: z.boolean().optional() }).strict()
-const DeckBody = z.union([TopicDeckBody, LanguageDeckBody])
+const ReviewFilterBody = z.object({
+  types: z.array(z.enum(['word', 'fact', 'rule'])).optional(),
+  tags: z.array(z.string().max(100)).max(100).optional(),
+  pos: z.array(posSchema).optional(),
+  cefr: z.array(cefrSchema).optional(),
+  directions: z.array(z.enum(['forward', 'reverse'])).optional(),
+}).strict()
 const DeckPatchBody = z.object({
   name: z.string(),
   newPerDay: z.number().int(),
-  inReview: z.boolean(),
+  reviewFilter: ReviewFilterBody.nullable(),
   forwardEnabled: z.boolean(),
   reverseEnabled: z.boolean(),
   reverseAfterDays: z.number().nullable(),
@@ -140,7 +145,7 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
     if (!ref) return defaultDeck(db, uid(req), ctx.now())
     const d = resolveDeck(db, uid(req), ref)
     if (!d) throw new HttpError(404, 'deck not found')
-    return mustBeKind(d, 'language')
+    return mustHaveLanguages(d)
   }
   const item = (req: Request, id: string) => {
     const row = db.prepare('SELECT * FROM words WHERE id = ? AND user_id = ?').get(id, uid(req)) as WordRow | undefined
@@ -280,7 +285,7 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
     const deck = qstr(req.query.deck)
     const deckId = deck ? resolveDeck(db, uid(req), deck)?.id ?? '-' : undefined
     const q = buildQueue(db, uid(req), opts(req), ctx.now(), { limit: qint(req.query.limit, 200), deckId })
-    res.json({ ...q, inbox: inboxCount(db, uid(req)) + factInboxCount(db, uid(req)) })
+    res.json(q)
   })
 
   r.post('/reviews', (req, res) => {
@@ -300,8 +305,7 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
   })
 
   r.post('/decks', (req, res) => {
-    const b = parse(DeckBody, req.body)
-    const deck = b.kind === 'topic' ? createTopicDeck(db, uid(req), b, ctx.now()) : createDeck(db, uid(req), b, ctx.now())
+    const deck = createDeck(db, uid(req), parse(DeckBody, req.body), ctx.now())
     res.status(201).json({ deck })
   })
 
@@ -309,11 +313,36 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
     res.json({ deck: updateDeck(db, uid(req), req.params.id as string, parse(DeckPatchBody, req.body)) })
   })
 
-  // A topic deck; one with facts only with ?facts=delete (they go too, with
-  // their history), else 409 {error, facts}.
+  // Moves every card into another deck (tagged with this deck's name unless
+  // tag: false) and deletes this one once empty.
+  r.post('/decks/:id/merge', (req, res) => {
+    const { into, tag } = parse(z.object({ into: z.string().min(1), tag: z.boolean().optional() }).strict(), req.body)
+    const target = resolveDeck(db, uid(req), into)
+    if (!target) throw new HttpError(404, 'deck not found')
+    res.json(mergeDecks(db, uid(req), req.params.id as string, target.id, { tag: tag ?? true }, ctx.now()))
+  })
+
+  // The review filter sheet: the deck's options and today's count under ?filter= (json, not saved).
+  r.get('/decks/:id/review-options', (req, res) => {
+    let draft: unknown = null
+    const raw = qstr(req.query.filter)
+    if (raw) {
+      try {
+        draft = JSON.parse(raw)
+      } catch {
+        throw new HttpError(400, 'filter must be JSON')
+      }
+    }
+    const filter = draft === null ? null : parse(ReviewFilterBody, draft)
+    res.json(reviewOptions(db, uid(req), opts(req), ctx.now(), req.params.id as string, filter))
+  })
+
+  // A deck; one with cards only with ?cards=delete (they go too, with their
+  // history), else 409 {error, words, facts}.
   r.delete('/decks/:id', (req, res) => {
-    const facts = deleteDeck(db, uid(req), req.params.id as string, { withFacts: req.query.facts === 'delete' })
-    res.json({ ok: true, facts })
+    const withCards = req.query.cards === 'delete' || req.query.facts === 'delete'
+    const gone = deleteDeck(db, uid(req), req.params.id as string, { withCards })
+    res.json({ ok: true, ...gone })
   })
 
   // ---------- packs ----------
@@ -324,8 +353,9 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
 
   // Adds the pack's missing cards (all of them the first time).
   r.post('/packs/:id', (req, res) => {
-    const out = addPack(db, uid(req), req.params.id as string, ctx.now())
-    res.json({ ...out, packs: listPacks(db, uid(req)) })
+    const { deckId } = parse(z.object({ deckId: z.string().optional() }).strict(), req.body ?? {})
+    const out = addPack(db, uid(req), req.params.id as string, ctx.now(), { deckId })
+    res.json({ ...out, packs: listPacks(db, uid(req), ctx.now()) })
   })
 
   // ---------- facts ----------
@@ -336,6 +366,7 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
     res.json(searchFacts(db, uid(req), {
       deck: qstr(q.deck),
       q: qstr(q.q),
+      tag: qstr(q.tag),
       status: status ? parse(factStatusSchema, status) : undefined,
       limit: qint(q.limit, 50),
       offset: qint(q.offset, 0),
@@ -387,7 +418,8 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
     res.json({ ok: true })
   })
 
-  for (const [action, status] of [['approve', 'active'], ['reject', 'rejected']] as const) {
+  // Drop: never shown again, kept so the same question is recognised as a duplicate.
+  for (const [action, status] of [['drop', 'rejected'], ['restore', 'active']] as const) {
     r.post(`/facts/:id/${action}`, (req, res) => {
       const f = updateFact(db, uid(req), req.params.id as string, { status }, ctx.now())
       res.json({ fact: factItem(db, uid(req), f.id, ctx.now()) })
@@ -451,7 +483,7 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
     res.json({ ok: true })
   })
 
-  for (const [action, status] of [['approve', 'active'], ['reject', 'rejected']] as const) {
+  for (const [action, status] of [['drop', 'rejected'], ['restore', 'active']] as const) {
     r.post(`/words/:id/${action}`, (req, res) => {
       const w = setWordStatus(db, uid(req), req.params.id as string, status, ctx.now())
       res.json({ word: item(req, w.id) })
@@ -470,23 +502,6 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
       res.json({ card: { ...card, summary: cardSummary(card, deck, ctx.now()) } })
     })
   }
-
-  r.get('/inbox', (req, res) => {
-    const deck = qstr(req.query.deck)
-    // Proposals of both kinds; ?deck= picks one deck, language or topic.
-    const d = deck ? resolveDeck(db, uid(req), deck) : null
-    if (deck && !d) throw new HttpError(404, 'deck not found')
-    res.json({
-      words: d?.kind === 'topic' ? [] : inboxWords(db, uid(req), ctx.now(), d?.id),
-      facts: d?.kind === 'language' ? [] : inboxFacts(db, uid(req), ctx.now(), d?.id),
-    })
-  })
-
-  r.post('/inbox/approve-all', (req, res) => {
-    const { deckId } = parse(z.object({ deckId: z.string().optional() }), req.body ?? {})
-    const id = deckId ? resolveDeck(db, uid(req), deckId)?.id ?? '-' : undefined
-    res.json({ approved: approveAll(db, uid(req), id, ctx.now()) })
-  })
 
   // ---------- progress ----------
 

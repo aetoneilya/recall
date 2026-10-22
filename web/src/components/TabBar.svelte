@@ -1,13 +1,11 @@
 <script lang="ts">
-  import { status } from '../lib/app.svelte.ts'
   import { navigate, router, type Tab } from '../lib/router.svelte.ts'
   import { haptic } from '../lib/telegram.ts'
   import Icon from './Icon.svelte'
 
   const tabs: { tab: Tab; path: string; label: string }[] = [
     { tab: 'review', path: '/', label: 'Review' },
-    { tab: 'words', path: '/words', label: 'Words' },
-    { tab: 'inbox', path: '/inbox', label: 'Inbox' },
+    { tab: 'words', path: '/words', label: 'Cards' },
     { tab: 'progress', path: '/progress', label: 'Progress' },
     { tab: 'settings', path: '/settings', label: 'Settings' },
   ]
@@ -25,9 +23,6 @@
     <button class:active={router.route.tab === t.tab} onclick={() => go(t)} aria-label={t.label}>
       <span class="icon">
         <Icon name={t.tab} size={24} />
-        {#if t.tab === 'inbox' && status.inbox > 0}
-          <span class="badge">{status.inbox}</span>
-        {/if}
       </span>
       <span class="label">{t.label}</span>
     </button>
@@ -67,16 +62,6 @@
   }
   button:active .icon {
     transform: scale(0.88);
-  }
-  .badge {
-    position: absolute;
-    top: -5px;
-    left: 15px;
-    height: 17px;
-    min-width: 17px;
-    font-size: 11px;
-    padding: 0 5px;
-    box-shadow: 0 0 0 2px var(--surface);
   }
   .label {
     font-size: 10.5px;

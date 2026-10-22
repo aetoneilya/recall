@@ -87,7 +87,7 @@ describe('queue', () => {
     addWord(ctx, 'new 1', { at: new Date('2026-10-01T00:00:00Z') })
     addWord(ctx, 'new 2', { at: new Date('2026-10-02T00:00:00Z') })
     setWordSuspended(ctx.db, ctx.user.id, addWord(ctx, 'suspended').id, true)
-    addWord(ctx, 'in inbox', { status: 'inbox' })
+    addWord(ctx, 'dropped', { status: 'rejected' })
 
     const q = buildQueue(ctx.db, ctx.user.id, TZ, ctx.now())
     expect(q.items.map((i) => wordOf(i).term)).toEqual([

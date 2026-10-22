@@ -10,7 +10,6 @@
   import Dashboard from './screens/Dashboard.svelte'
   import FactEditor from './screens/FactEditor.svelte'
   import Denied from './screens/Denied.svelte'
-  import Inbox from './screens/Inbox.svelte'
   import Login from './screens/Login.svelte'
   import Review from './screens/Review.svelte'
   import Settings from './screens/Settings.svelte'
@@ -64,11 +63,6 @@
       <div class="view" data-enter={enter}>
       {#if a === 'add'}
         <AddWord />
-      {:else if a === 'inbox' && b}
-        <!-- Proposals of both kinds share #/inbox/<id>; fact ids start with ft_. -->
-        {#key b}{#if b.startsWith('ft_')}<FactEditor id={b} inbox />{:else}<WordEditor id={b} inbox />{/if}{/key}
-      {:else if a === 'inbox'}
-        <Inbox />
       {:else if a === 'fact' && b}
         {#key b}<FactEditor id={b} />{/key}
       {:else if a === 'word' && b}

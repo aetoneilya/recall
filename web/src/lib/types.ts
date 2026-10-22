@@ -1,7 +1,7 @@
 // Shapes of the REST API responses as the web app uses them (DESIGN.md
 // "REST API"). Entities come from @recall/core; these are the envelopes and
 // the server-side shapes (repo.ts, dashboard.ts, vocab.ts) around them.
-import type { Card, Cefr, Deck, DeckKind, Direction, Example, ExerciseItem, Fact, FactInput, FactStatus, PartOfSpeech, QueueItem, ReviewLog, Word, WordInput, WordStatus } from '@recall/core'
+import type { Card, CardType, Cefr, Deck, Direction, Example, ExerciseItem, Fact, FactInput, FactStatus, PartOfSpeech, QueueItem, ReviewLog, Word, WordInput, WordStatus } from '@recall/core'
 
 export interface MeUser {
   id: string
@@ -81,19 +81,17 @@ export interface QueueCounts {
   review: number
 }
 
-// Today's counts of one deck, whether in review or not (the deck chips).
+// Today's counts of one deck under its review filter (the deck switcher).
 export interface QueueDeck {
   id: string
   name: string
-  kind: DeckKind
-  inReview: boolean
+  hasLanguages: boolean
   counts: QueueCounts
 }
 
 export interface QueueResponse {
   items: QueueItem[]
   counts: QueueCounts
-  inbox: number
   // Every deck; older servers send none.
   decks: QueueDeck[]
 }
@@ -112,10 +110,10 @@ export interface DeckSettings extends Deck {
 }
 
 export interface DeckCounts {
-  // Words (facts in a topic deck) by status.
+  // Words and facts by status (dropped = rejected).
   total: number
   active: number
-  inbox: number
+  dropped: number
   known: number
   // Cards of enabled directions.
   learning: number
@@ -126,9 +124,28 @@ export interface DeckCounts {
 
 export interface DeckWithCounts extends DeckSettings {
   counts: DeckCounts
+  // Tags in use, most used first.
+  tags: { tag: string; n: number }[]
 }
 
-export type DeckPatch = Partial<Pick<DeckSettings, 'name' | 'newPerDay' | 'inReview' | 'forwardEnabled' | 'reverseEnabled' | 'reverseAfterDays' | 'typeAnswer'>>
+export type DeckPatch = Partial<Pick<DeckSettings, 'name' | 'newPerDay' | 'forwardEnabled' | 'reverseEnabled' | 'reverseAfterDays' | 'typeAnswer' | 'reviewFilter'>>
+
+// The review filter sheet: what a deck has to filter by, and today's count under a draft.
+export interface ReviewOptions {
+  counts: QueueCounts
+  types: { value: CardType; n: number }[]
+  tags: { value: string; n: number }[]
+  pos: { value: PartOfSpeech; n: number }[]
+  cefr: { value: Cefr; n: number }[]
+  directions: { value: Direction; n: number }[]
+}
+
+export interface MergeResult {
+  from: { id: string; name: string; deleted: boolean }
+  into: { id: string; name: string }
+  moved: { words: number; facts: number }
+  skipped: { kind: 'word' | 'fact'; id: string; text: string }[]
+}
 
 export type CardStateName = 'new' | 'learning' | 'review' | 'relearning'
 
@@ -174,7 +191,9 @@ export interface PackInfo {
   added: boolean
   // Cards of it not in the collection yet.
   missing: number
+  // Where its cards are, else where they'd go (a deck named after it is made then).
   deckId?: string
+  deckName: string
 }
 
 export interface FactItem extends Fact {
@@ -322,7 +341,7 @@ export interface ActivityDay {
 export interface Dashboard {
   deck: Deck
   counts: {
-    words: { total: number; active: number; inbox: number; rejected: number }
+    words: { total: number; active: number; rejected: number }
     directions: Record<Direction, DirectionCounts>
     known: number
     mastered: number

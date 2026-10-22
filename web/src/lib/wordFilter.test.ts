@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dirState, emptyFilter, filterWords, matches } from './wordFilter.ts'
+import { dirState, matches } from './wordFilter.ts'
 import type { CardSummary, WordItem } from './types.ts'
 
 const card = (p: Partial<CardSummary> = {}): CardSummary => ({
@@ -25,34 +25,17 @@ describe('dirState', () => {
   })
 })
 
-describe('filterWords', () => {
+describe('matches', () => {
   const words = [
-    word('to frown', { translations: ['хмуриться'], createdAt: '2026-10-03T00:00:00Z', freqRank: 9000, pos: 'verb' }),
-    word('moor', { translations: ['вересковая пустошь'], examples: [{ text: 'The wind howled across the moor.', translation: null }], freqRank: 7000, cefr: 'C1' }),
-    word('ёлка', { translations: ['fir'], status: 'inbox', createdAt: '2026-10-02T00:00:00Z' }),
-    word('bleak', { status: 'rejected', cards: { forward: card({ lapses: 4 }), reverse: null } }),
+    word('to frown', { translations: ['хмуриться'] }),
+    word('moor', { translations: ['вересковая пустошь'], examples: [{ text: 'The wind howled across the moor.', translation: null }] }),
+    word('ёлка', { translations: ['fir'] }),
   ]
-  const terms = (xs: WordItem[]) => xs.map((w) => w.term)
 
   it('searches term, translations and examples, folding case and ё', () => {
-    expect(matches(words[1], 'HOWLED moor')).toBe(true)
-    expect(matches(words[0], 'хмур')).toBe(true)
-    expect(matches(words[2], 'елка')).toBe(true)
-    expect(matches(words[0], 'frown xyz')).toBe(false)
-  })
-
-  it('hides rejected words unless asked, and filters by status, pos, CEFR and state', () => {
-    expect(terms(filterWords(words, emptyFilter()))).toEqual(['to frown', 'ёлка', 'moor'])
-    expect(terms(filterWords(words, { ...emptyFilter(), status: 'all' }))).toHaveLength(4)
-    expect(terms(filterWords(words, { ...emptyFilter(), status: 'inbox' }))).toEqual(['ёлка'])
-    expect(terms(filterWords(words, { ...emptyFilter(), pos: 'verb' }))).toEqual(['to frown'])
-    expect(terms(filterWords(words, { ...emptyFilter(), cefr: 'C1' }))).toEqual(['moor'])
-    expect(terms(filterWords(words, { ...emptyFilter(), state: 'new' }))).toEqual(['to frown', 'ёлка', 'moor'])
-  })
-
-  it('sorts alphabetically ignoring "to", by frequency with unranked last, and by difficulty', () => {
-    expect(terms(filterWords(words, { ...emptyFilter(), sort: 'alpha' }))).toEqual(['to frown', 'moor', 'ёлка'])
-    expect(terms(filterWords(words, { ...emptyFilter(), sort: 'freq' }))).toEqual(['moor', 'to frown', 'ёлка'])
-    expect(terms(filterWords(words, { ...emptyFilter(), status: 'all', sort: 'difficulty' }))[0]).toBe('bleak')
+    expect(matches(words[1]!, 'HOWLED moor')).toBe(true)
+    expect(matches(words[0]!, 'хмур')).toBe(true)
+    expect(matches(words[2]!, 'елка')).toBe(true)
+    expect(matches(words[0]!, 'frown xyz')).toBe(false)
   })
 })

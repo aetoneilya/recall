@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { openDb, type Db } from '../src/db.ts'
 import { importDecks, topicTag } from '../src/import-decks.ts'
 import { factCard, searchFacts } from '../src/facts.ts'
-import { createTopicDeck, listDecks, searchWords, wordCards } from '../src/repo.ts'
+import { createDeck, listDecks, searchWords, wordCards } from '../src/repo.ts'
 import { factLogs, wordLogs } from '../src/study.ts'
 import { ensureUser } from '../src/users.ts'
 import { testLexicon } from './helpers.ts'
@@ -115,7 +115,7 @@ describe('Decks importer', () => {
     const db = openDb(':memory:')
     const uid = userOf(db)
     // A topic deck that already exists is filled, not duplicated.
-    createTopicDeck(db, uid, { name: 'Java Core' }, NOW)
+    createDeck(db, uid, { name: 'Java Core' }, NOW)
     const dry = importDecks(src, db, uid, { now: NOW, dryRun: true })
     expect(dry.topics.facts.created).toBe(3)
     expect(listDecks(db, uid).map((d) => d.name)).toEqual(['Java Core'])
@@ -132,7 +132,7 @@ describe('Decks importer', () => {
     expect(s.words.created).toBe(2)
     expect(s.skipped).toEqual({ cloze: 2, notWords: 1, unsupportedType: 0 })
     expect(s.logs).toEqual({ imported: 2, alreadyImported: 0, orphaned: 1 })
-    expect(listDecks(db, uid).map((d) => [d.name, d.kind])).toEqual([['English', 'language'], ['Concurrency', 'topic'], ['Java Core', 'topic']])
+    expect(listDecks(db, uid).map((d) => [d.name, d.targetLang])).toEqual([['English', 'en'], ['Concurrency', null], ['Java Core', null]])
 
     const facts = searchFacts(db, uid, { deck: 'Concurrency' }, NOW).facts
     expect(facts.map((f) => [f.front, f.tags])).toEqual([['What is a race condition?', ['revolut']], ['What is a deadlock?', ['revolut', 'Locks', 'interview']]])

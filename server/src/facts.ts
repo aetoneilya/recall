@@ -1,12 +1,12 @@
-// Facts: Q&A cards of topic decks (front = question, back = answer, both
+// Facts: Q&A cards (front = question, back = answer, both
 // Markdown), one card each. Same ownership rule as words: every function
 // takes the acting user's id, and someone else's id behaves as unknown.
 import {
-  cleanFact, factKey, FACT_STATUSES, newCardState,
+  CLAUDE_TAG, cleanFact, factKey, FACT_STATUSES, newCardState,
   type Author, type CardState, type CleanFact, type Fact, type FactInput, type FactStatus,
 } from '@recall/core'
 import { newId, tx, type Db } from './db.ts'
-import { cardSummary, createTopicDeck, getDeck, HttpError, listDecks, mustBeKind, resolveDeck, stateValues, toCard, type CardRow, type CardSummary } from './repo.ts'
+import { cardSummary, createDeck, getDeck, HttpError, listDecks, resolveDeck, stateValues, toCard, withClaudeTag, type CardRow, type CardSummary } from './repo.ts'
 
 // A fact with the same normalised question already exists in the deck.
 export class DuplicateFactError extends HttpError {
@@ -100,7 +100,6 @@ export function createFact(db: Db, userId: string, input: NewFact, now: Date): {
   return tx(db, () => {
     const deck = getDeck(db, userId, input.deckId)
     if (!deck) throw new HttpError(404, 'deck not found')
-    mustBeKind(deck, 'topic')
     const f = cleanFactInput(input.fact)
     const dup = findDuplicateFact(db, userId, deck.id, f.front)
     if (dup) throw new DuplicateFactError(dup)
@@ -116,7 +115,7 @@ export function createFact(db: Db, userId: string, input: NewFact, now: Date): {
   })
 }
 
-// deckId moves the fact (with its card and history) to another topic deck.
+// deckId moves the fact (with its card and history) to another deck.
 export type FactPatch = Partial<FactInput> & { status?: FactStatus; deckId?: string }
 
 // Only the fields given change; the card and its history always stay.
@@ -127,7 +126,7 @@ export function updateFact(db: Db, userId: string, id: string, patch: FactPatch,
     if (patch.deckId !== undefined && patch.deckId !== cur.deckId) {
       const deck = resolveDeck(db, userId, patch.deckId)
       if (!deck) throw new HttpError(404, 'deck not found')
-      deckId = mustBeKind(deck, 'topic').id
+      deckId = deck.id
     }
     const f = cleanFactInput({
       front: patch.front ?? cur.front,
@@ -154,18 +153,6 @@ export function setFactSuspended(db: Db, userId: string, id: string, suspended: 
   db.prepare('UPDATE cards SET suspended = ? WHERE fact_id = ?').run(suspended ? 1 : 0, id)
 }
 
-// Oldest first.
-export function inboxFacts(db: Db, userId: string, now: Date, deckId?: string): FactItem[] {
-  const rows = (deckId
-    ? db.prepare("SELECT * FROM facts WHERE user_id = ? AND status = 'inbox' AND deck_id = ? ORDER BY created_at, id").all(userId, deckId)
-    : db.prepare("SELECT * FROM facts WHERE user_id = ? AND status = 'inbox' ORDER BY created_at, id").all(userId)) as unknown as FactRow[]
-  return factItems(db, userId, rows, now)
-}
-
-export function factInboxCount(db: Db, userId: string): number {
-  return (db.prepare("SELECT count(*) AS n FROM facts WHERE user_id = ? AND status = 'inbox'").get(userId) as { n: number }).n
-}
-
 export interface AddFactsResult {
   deck: { id: string; name: string; created: boolean }
   created: { index: number; id: string; front: string; status: FactStatus }[]
@@ -174,27 +161,28 @@ export interface AddFactsResult {
 }
 
 // Batch add (MCP): each fact validated and deduped by question like a manual
-// add, against facts of any status and earlier ones in the batch. The topic
-// deck is created only when asked.
+// add, against facts of any status and earlier ones in the batch; `tags`
+// join every fact's own. The deck is created only when asked.
 export function addFacts(
   db: Db,
   userId: string,
-  input: { deck: string; facts: FactInput[]; autoApprove?: boolean; createDeck?: boolean; createdBy: Author },
+  input: { deck: string; facts: FactInput[]; tags?: string[]; createDeck?: boolean; createdBy: Author },
   now: Date,
 ): AddFactsResult {
   return tx(db, () => {
     let deck = resolveDeck(db, userId, input.deck)
     let created = false
     if (!deck) {
-      if (!input.createDeck) throw new HttpError(404, `no topic deck "${input.deck}"; pass createDeck: true to create it, or call list_decks`)
-      deck = createTopicDeck(db, userId, { name: input.deck }, now)
+      if (!input.createDeck) throw new HttpError(404, `no deck "${input.deck}"; pass createDeck: true to create it, or call list_decks`)
+      deck = createDeck(db, userId, { name: input.deck }, now)
       created = true
     }
-    const d = mustBeKind(deck, 'topic')
+    const d = deck
     const out: AddFactsResult = { deck: { id: d.id, name: d.name, created }, created: [], duplicates: [], errors: [] }
-    const status: FactStatus = input.autoApprove ? 'active' : 'inbox'
+    const status: FactStatus = 'active'
     input.facts.forEach((p, index) => {
-      const r = cleanFact(p)
+      const tags = [...(input.tags ?? []), ...(p.tags ?? [])]
+      const r = cleanFact({ ...p, tags: input.createdBy === 'claude' ? withClaudeTag(tags) : tags })
       if ('error' in r) {
         out.errors.push({ index, front: p.front, error: r.error })
         return
@@ -203,7 +191,7 @@ export function addFacts(
       if (dup) {
         const differs: Record<string, unknown> = {}
         if (r.fact.back !== dup.back) differs.back = { existing: dup.back, proposed: r.fact.back }
-        const newTags = r.fact.tags.filter((t) => !dup.tags.includes(t))
+        const newTags = r.fact.tags.filter((t) => !dup.tags.includes(t) && t !== CLAUDE_TAG)
         if (newTags.length) differs.newTags = newTags
         out.duplicates.push({ index, existingId: dup.id, existingStatus: dup.status, front: dup.front, differs })
         return
@@ -252,6 +240,7 @@ export function factItem(db: Db, userId: string, id: string, now: Date): FactIte
 export interface FactSearch {
   deck?: string
   q?: string
+  tag?: string
   status?: FactStatus
   limit?: number
   offset?: number
@@ -270,6 +259,10 @@ export function searchFacts(db: Db, userId: string, s: FactSearch, now: Date): {
   if (s.status) {
     where.push('f.status = ?')
     args.push(s.status)
+  }
+  if (s.tag) {
+    where.push('EXISTS (SELECT 1 FROM json_each(f.tags) WHERE json_each.value = ?)')
+    args.push(s.tag)
   }
   if (s.q?.trim()) {
     const like = `%${s.q.trim().replace(/[\\%_]/g, (c) => '\\' + c)}%`

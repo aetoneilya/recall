@@ -14,7 +14,7 @@ export type Moment =
   | 'resume'
 
 export interface Context {
-  // Route parts, e.g. ['inbox'] or ['word', 'wd_1'].
+  // Route parts, e.g. ['words'] or ['word', 'wd_1'].
   parts: string[]
   // A card is on screen in the review tab, and whether its answer shows.
   card: boolean
@@ -26,12 +26,12 @@ export interface Context {
 }
 
 // Screens with something in progress: forms, an editor, the vocabulary test.
-const BUSY = new Set(['add', 'word', 'test'])
+const BUSY = new Set(['add', 'word', 'fact', 'test'])
 
 export function shouldApply(moment: Moment, c: Context): boolean {
   if (c.unsaved || c.pendingUndo) return false
-  const [a, b] = c.parts
-  if (BUSY.has(a ?? '') || (a === 'inbox' && b)) return false
+  const [a] = c.parts
+  if (BUSY.has(a ?? '')) return false
   const review = !a
   if (moment === 'summary') return review && !c.card
   if (moment === 'route') return !review || !c.card

@@ -2,7 +2,7 @@
   import { answerDiff, formsLine, wordFace, type AnswerCheck, type WordQueueItem } from '@recall/core'
   import { tick } from 'svelte'
   import { markTerm } from '../lib/mark.ts'
-  import Icon from './Icon.svelte'
+  import CardActions from './CardActions.svelte'
 
   // One review card, faces from core.wordFace(). `typed` / `check`: the
   // learner's typed answer and its verdict, shown above the answer.
@@ -15,7 +15,8 @@
     check = null,
     langs = ['en', 'ru'],
     onedit,
-  }: { item: WordQueueItem; revealed: boolean; typed?: string; check?: AnswerCheck | null; langs?: [string, string]; onedit?: () => void } = $props()
+    ondrop,
+  }: { item: WordQueueItem; revealed: boolean; typed?: string; check?: AnswerCheck | null; langs?: [string, string]; onedit?: () => void; ondrop?: () => void } = $props()
 
   const f = $derived(wordFace(item.word, item.card.direction))
   const forward = $derived(item.card.direction === 'forward')
@@ -62,17 +63,7 @@
     {#if isNew}<span class="new">New</span>{/if}
   </div>
   {#if revealed && onedit}
-    <button
-      class="edit"
-      onclick={(e) => {
-        e.stopPropagation()
-        onedit()
-      }}
-      onmousedown={(e) => e.preventDefault()}
-      aria-label="Edit “{item.word.term}”"
-    >
-      <Icon name="edit" size={18} />
-    </button>
+    <CardActions {onedit} {ondrop} label="Edit “{item.word.term}”" />
   {/if}
   <div class="body" bind:this={body}>
     {#if forward}
@@ -150,8 +141,8 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 4px 6px;
-    /* Room on the right for the edit button, so nothing shifts on reveal. */
-    padding: 16px 48px 0 20px;
+    /* Room on the right for the corner buttons, so nothing shifts on reveal. */
+    padding: 16px 92px 0 20px;
     font-size: 13px;
     line-height: 18px;
     color: var(--muted);
@@ -171,26 +162,6 @@
     content: '·';
     margin-right: 6px;
     color: var(--faint);
-  }
-  .edit {
-    position: absolute;
-    top: 3px;
-    right: 3px;
-    width: 44px;
-    height: 44px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 14px;
-    color: var(--faint);
-    animation: fade-in var(--t-fast) ease;
-    transition:
-      color var(--t-fast) ease,
-      background-color var(--t-fast) ease;
-  }
-  .edit:active {
-    color: var(--accent);
-    background: var(--accent-soft);
   }
   .new {
     margin-left: 2px;

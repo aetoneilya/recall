@@ -243,7 +243,8 @@ export function vocabularyWords(db: Db, env: MigrationEnv) {
         if (c.note.source?.startsWith('decks:')) refs.push(c.note.source.slice('decks:'.length))
       }
       const statuses = group.map((c) => c.note.status)
-      const status: WordStatus = statuses.includes('active') ? 'active' : statuses.includes('inbox') ? 'inbox' : 'rejected'
+      // 'inbox' still existed then; v9 makes it active.
+      const status: WordStatus | 'inbox' = statuses.includes('active') ? 'active' : statuses.includes('inbox') ? 'inbox' : 'rejected'
       const created = group.map((c) => c.note.created_at).sort()[0]!
       const updated = group.map((c) => c.note.updated_at).sort().at(-1)!
       const wordId = newId('wd')

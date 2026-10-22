@@ -14,22 +14,20 @@ describe('parseRoute', () => {
     expect(r('#/add?from=/')).toEqual({ path: '/add', tab: 'review', query: { from: '/' } })
     expect(r('#/word/wd_1?from=/')).toEqual({ path: '/word/wd_1', tab: 'review', query: { from: '/' } })
     expect(r('#/test')).toMatchObject({ path: '/test', tab: 'progress' })
-    // A fact's editor: the review card's, else the Topics list's.
+    // A fact's editor: the review card's, else the Cards tab's.
     expect(r('#/fact/ft_1?from=/')).toMatchObject({ path: '/fact/ft_1', tab: 'review' })
     expect(r('#/fact/new?from=%2Fwords&deck=dk_t')).toEqual({ path: '/fact/new', tab: 'words', query: { from: '/words', deck: 'dk_t' } })
-    expect(r('#/inbox/ft_1')).toMatchObject({ path: '/inbox/ft_1', tab: 'inbox' })
   })
 
   it("maps the bot's deep links", () => {
     expect(r('#/words/abc')).toEqual({ path: '/word/abc', tab: 'words', query: {} })
     expect(r('#/words/new?term=to%20frown')).toEqual({ path: '/add', tab: 'review', query: { term: 'to frown' } })
     expect(r('#/dashboard')).toMatchObject({ path: '/progress', tab: 'progress' })
-    expect(r('#/inbox')).toMatchObject({ path: '/inbox', tab: 'inbox' })
   })
 
   it('drops the launch parameters Telegram appends', () => {
     expect(r('#/words/abc?term=x&tgWebAppData=query_id%3D1&tgWebAppVersion=8.0')).toEqual({ path: '/word/abc', tab: 'words', query: { term: 'x' } })
-    expect(r('#/inbox&tgWebAppData=a%3Db&tgWebAppPlatform=ios')).toEqual({ path: '/inbox', tab: 'inbox', query: {} })
+    expect(r('#/progress&tgWebAppData=a%3Db&tgWebAppPlatform=ios')).toEqual({ path: '/progress', tab: 'progress', query: {} })
     expect(r('#/words/new?term=bleak&tgWebAppStartParam=x')).toEqual({ path: '/add', tab: 'review', query: { term: 'bleak' } })
     expect(r('#tgWebAppData=query_id%3D1&tgWebAppVersion=8.0')).toEqual({ path: '/', tab: 'review', query: {} })
     expect(r('#/tgWebAppData=x')).toEqual({ path: '/', tab: 'review', query: {} })
@@ -38,5 +36,9 @@ describe('parseRoute', () => {
   it('keeps old links working', () => {
     expect(r('#/browse/dk_1')).toMatchObject({ path: '/words' })
     expect(r('#/stats')).toMatchObject({ path: '/progress' })
+    // The inbox is gone: the list opens the Cards tab, a proposal its editor.
+    expect(r('#/inbox')).toMatchObject({ path: '/words', tab: 'words' })
+    expect(r('#/inbox/ft_1')).toMatchObject({ path: '/fact/ft_1', tab: 'words' })
+    expect(r('#/inbox/wd_1')).toMatchObject({ path: '/word/wd_1', tab: 'words' })
   })
 })

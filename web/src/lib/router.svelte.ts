@@ -1,4 +1,4 @@
-// Hash router: #/words, #/word/wd_x, #/fact/ft_x, #/add, #/inbox/wd_y, #/progress, #/test. History entries carry a
+// Hash router: #/words, #/word/wd_x, #/fact/ft_x, #/add, #/progress, #/test. History entries carry a
 // depth so Back (ours or Telegram's) can tell an in-app step from a deep link.
 
 import { parseRoute, type Route } from './route.ts'

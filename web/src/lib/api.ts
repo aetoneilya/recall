@@ -1,4 +1,4 @@
-import type { ExerciseInput, QueueItem, ReviewInput } from '@recall/core'
+import type { ExerciseInput, QueueItem, ReviewFilter, ReviewInput } from '@recall/core'
 import type {
   ApiToken,
   AutofillResult,
@@ -6,6 +6,8 @@ import type {
   DeckPatch,
   DeckWithCounts,
   ExerciseInfo,
+  MergeResult,
+  ReviewOptions,
   FactDetail,
   FactItem,
   FactPatch,
@@ -147,7 +149,8 @@ export function createApi(opts: ApiOptions = {}) {
     createToken: (name: string) => post<NewToken>('/api/tokens', { name }),
     deleteToken: (id: string) => request<unknown>('DELETE', `/api/tokens/${enc(id)}`),
 
-    queue: async (limit = 200) => normalizeQueue(await get<Json>(`/api/queue?limit=${limit}`)),
+    // One deck's session (all decks' without one) and every deck's counts.
+    queue: async (limit = 200, deckId?: string) => normalizeQueue(await get<Json>(`/api/queue?limit=${limit}${deckId ? `&deck=${enc(deckId)}` : ''}`)),
     // keepalive lets the upload survive the page being hidden mid-request,
     // which is exactly when the outbox flushes on iOS.
     postReviews: (inputs: ReviewInput[]) => post<ReviewsResult>('/api/reviews', inputs, { keepalive: true }),
@@ -155,11 +158,15 @@ export function createApi(opts: ApiOptions = {}) {
 
     decks: async () => list<Json>(await get<unknown>('/api/decks'), 'decks').map(normalizeDeck),
     patchDeck: async (id: string, d: DeckPatch) => normalizeDeck(unwrap<Json>(await request<Json>('PATCH', `/api/decks/${enc(id)}`, d), 'deck')),
-    createTopicDeck: async (name: string) => normalizeDeck(unwrap<Json>(await post<Json>('/api/decks', { kind: 'topic', name }), 'deck')),
-    // A topic deck; one with facts only with withFacts (they're deleted too), else HttpError 409 with data.facts.
-    deleteDeck: (id: string, withFacts = false) => request<{ ok: true; facts: number }>('DELETE', `/api/decks/${enc(id)}${withFacts ? '?facts=delete' : ''}`),
+    // Languages both or neither: a deck with them takes words.
+    createDeck: async (d: { name: string; targetLang?: string | null; nativeLang?: string | null }) => normalizeDeck(unwrap<Json>(await post<Json>('/api/decks', d), 'deck')),
+    // One with cards only with withCards (they're deleted too), else HttpError 409 with data.words / data.facts.
+    deleteDeck: (id: string, withCards = false) => request<{ ok: true; words: number; facts: number }>('DELETE', `/api/decks/${enc(id)}${withCards ? '?cards=delete' : ''}`),
+    mergeDeck: (id: string, into: string, tag = true) => post<MergeResult>(`/api/decks/${enc(id)}/merge`, { into, tag }),
+    reviewOptions: (id: string, filter: ReviewFilter | null) =>
+      get<ReviewOptions>(`/api/decks/${enc(id)}/review-options${filter ? `?filter=${enc(JSON.stringify(filter))}` : ''}`),
 
-    facts: async (q: { deck?: string; q?: string; limit?: number; offset?: number } = {}) => {
+    facts: async (q: { deck?: string; q?: string; tag?: string; limit?: number; offset?: number } = {}) => {
       const qs = new URLSearchParams()
       for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== '') qs.set(k, String(v))
       const data = await get<Json>(`/api/facts?${qs}`)
@@ -169,7 +176,7 @@ export function createApi(opts: ApiOptions = {}) {
 
     packs: async () => list<PackInfo>(await get<unknown>('/api/packs'), 'packs'),
     // Adds the pack's missing cards; the updated list comes back.
-    addPack: (id: string) => post<{ added: number; alreadyAdded: number; duplicates: number; packs: PackInfo[] }>(`/api/packs/${enc(id)}`),
+    addPack: (id: string, deckId?: string) => post<{ added: number; alreadyAdded: number; duplicates: number; packs: PackInfo[] }>(`/api/packs/${enc(id)}`, deckId ? { deckId } : {}),
 
     fact: (id: string) => get<FactDetail>(`/api/facts/${enc(id)}`),
     exercises: async (factId: string) => list<ExerciseInfo>(await get<unknown>(`/api/facts/${enc(factId)}/exercises`), 'exercises'),
@@ -182,8 +189,8 @@ export function createApi(opts: ApiOptions = {}) {
     createFact: async (f: NewFact) => unwrap<FactItem>(await post<Json>('/api/facts', f), 'fact'),
     updateFact: async (id: string, p: FactPatch) => unwrap<FactItem>(await request<Json>('PATCH', `/api/facts/${enc(id)}`, p), 'fact'),
     deleteFact: (id: string) => request<unknown>('DELETE', `/api/facts/${enc(id)}`),
-    approveFact: async (id: string) => unwrap<FactItem>(await post<Json>(`/api/facts/${enc(id)}/approve`), 'fact'),
-    rejectFact: async (id: string) => unwrap<FactItem>(await post<Json>(`/api/facts/${enc(id)}/reject`), 'fact'),
+    // Drop: never shown again (status rejected); restore brings it back.
+    dropFact: async (id: string, on = true) => unwrap<FactItem>(await post<Json>(`/api/facts/${enc(id)}/${on ? 'drop' : 'restore'}`), 'fact'),
     suspendFact: async (id: string, on: boolean) => unwrap<FactItem>(await post<Json>(`/api/facts/${enc(id)}/${on ? 'suspend' : 'unsuspend'}`), 'fact'),
 
     words: async (q: WordQuery = {}): Promise<WordsPage> => {
@@ -200,22 +207,13 @@ export function createApi(opts: ApiOptions = {}) {
     createWord: async (w: NewWord) => unwrap<WordItem>(await post<Json>('/api/words', w), 'word'),
     updateWord: async (id: string, p: WordPatch) => unwrap<WordItem>(await request<Json>('PATCH', `/api/words/${enc(id)}`, p), 'word'),
     deleteWord: (id: string) => request<unknown>('DELETE', `/api/words/${enc(id)}`),
-    approve: async (id: string) => unwrap<WordItem>(await post<Json>(`/api/words/${enc(id)}/approve`), 'word'),
-    reject: async (id: string) => unwrap<WordItem>(await post<Json>(`/api/words/${enc(id)}/reject`), 'word'),
+    dropWord: async (id: string, on = true) => unwrap<WordItem>(await post<Json>(`/api/words/${enc(id)}/${on ? 'drop' : 'restore'}`), 'word'),
     suspendCard: (cardId: string, on: boolean) => post<unknown>(`/api/cards/${enc(cardId)}/${on ? 'suspend' : 'unsuspend'}`),
-
-    // Proposals of both kinds; older servers send words only.
-    inbox: async () => {
-      const d = await get<unknown>('/api/inbox')
-      const facts = d && typeof d === 'object' && Array.isArray((d as Json).facts) ? ((d as Json).facts as FactItem[]) : []
-      return { words: list<WordItem>(d, 'words'), facts }
-    },
-    approveAll: (deckId?: string) => post<{ approved: number }>('/api/inbox/approve-all', deckId ? { deckId } : {}),
 
     dashboard: () => get<Dashboard>('/api/dashboard'),
     // Cards coming due per study day, today first (14 days).
-    forecast: async () => {
-      const d = await get<Json>('/api/stats?days=1')
+    forecast: async (deckId?: string) => {
+      const d = await get<Json>(`/api/stats?days=1${deckId ? `&deck=${enc(deckId)}` : ''}`)
       return list<{ day: string; due: number }>(d, 'forecast')
     },
     startVocabTest: () => post<VocabTestStart>('/api/vocab-test'),
@@ -260,12 +258,10 @@ function normalizeQueue(d: Json): QueueResponse {
   return {
     items: list<QueueItem>(d, 'items').map(normalizeItem),
     counts: counts3(d.counts),
-    inbox: num(d.inbox),
     decks: (Array.isArray(d.decks) ? (d.decks as Json[]) : []).map((x) => ({
       id: String(x.id),
       name: String(x.name ?? ''),
-      kind: x.kind === 'topic' ? 'topic' : 'language',
-      inReview: x.inReview !== false,
+      hasLanguages: x.hasLanguages === true || x.kind === 'language',
       counts: counts3(x.counts),
     }) satisfies QueueDeck),
   }
@@ -279,8 +275,8 @@ function normalizeDeck(d: Json): DeckWithCounts {
   const typeAnswer = TYPE_ANSWER.includes(d.typeAnswer as TypeAnswer) ? (d.typeAnswer as TypeAnswer) : 'off'
   return {
     ...(d as unknown as DeckWithCounts),
-    kind: d.kind === 'topic' ? 'topic' : 'language',
-    inReview: d.inReview !== false,
+    reviewFilter: d.reviewFilter && typeof d.reviewFilter === 'object' ? (d.reviewFilter as ReviewFilter) : null,
+    tags: Array.isArray(d.tags) ? (d.tags as { tag: string; n: number }[]) : [],
     targetLang: typeof d.targetLang === 'string' ? d.targetLang : null,
     nativeLang: typeof d.nativeLang === 'string' ? d.nativeLang : null,
     forwardEnabled: d.forwardEnabled !== false,
@@ -290,7 +286,7 @@ function normalizeDeck(d: Json): DeckWithCounts {
     counts: {
       total: num(c.total),
       active: num(c.active),
-      inbox: num(c.inbox),
+      dropped: num(c.dropped),
       known: num(c.known),
       learning: num(c.learning),
       due: num(c.due),

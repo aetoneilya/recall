@@ -26,18 +26,25 @@ npm run check                     # typecheck + tests in all workspaces
 npm run build                     # web/dist
 ```
 
-Content packs (ready-made topic decks, e.g. 159 irregular verbs) live in `server/data/packs/*.json` and are added per user from Settings → Topics → Packs (or MCP `add_pack`); see DESIGN.md *Content packs* for the file format.
+Content packs (ready-made cards, e.g. 159 irregular verbs) live in `server/data/packs/*.json` and are added per user, into a deck of your choice, from Settings → Packs (or MCP `add_pack`); see DESIGN.md *Content packs* for the file format.
 
-Grammar rules with exercise pools (kept outside the repo: they come from private notes) are imported per user; `rules.choice.json`, then `rules.reviewed.json` next to the file is preferred, re-running adds only new rules and items, and `--replace` swaps an imported rule's old typed exercises for the new tap ones (flagged out of the pool; the card and its history stay):
+Grammar rules with exercise pools (kept outside the repo: they come from private notes) are imported per user, into the English deck tagged `Grammar` (`--deck`, `--tag` to change); `rules.choice.json`, then `rules.reviewed.json` next to the file is preferred, re-running adds only new rules and items, and `--replace` swaps an imported rule's old typed exercises for the new tap ones (flagged out of the pool; the card and its history stay):
 
 ```bash
-node server/src/import-exercises.ts --file <dir>/rules.json --db ./server/recall.db --user <telegram-id> [--deck "Grammar"] [--replace] --dry-run
+node server/src/import-exercises.ts --file <dir>/rules.json --db ./server/recall.db --user <telegram-id> [--deck English] [--tag Grammar] [--replace] --dry-run
 ```
 
-Import from the Obsidian Decks plugin into one user's collection (reads the source read-only; re-running skips what's already imported and adds what's new; `--user` defaults to `OWNER_TELEGRAM_ID`). Vocabulary goes into the English deck; Decks decks named `<prefix><topic>` become topic decks of Q&A facts (`--topics` defaults to `"Revolut — "`, so "Revolut — Java Core" → "Java Core", tagged `revolut`; `--topics ""` imports no topics):
+Import from the Obsidian Decks plugin into one user's collection (reads the source read-only; re-running skips what's already imported and adds what's new; `--user` defaults to `OWNER_TELEGRAM_ID`). Vocabulary goes into the English deck; Decks decks named `<prefix><topic>` become decks of Q&A facts (`--topics` defaults to `"Revolut — "`, so "Revolut — Java Core" → "Java Core", tagged `revolut`; `--topics ""` imports no topics):
 
 ```bash
 node server/src/import-decks.ts --from <vault>/.obsidian/plugins/decks/flashcards.db --db ./server/recall.db --user <telegram-id> [--topics "Revolut — "] --dry-run
+```
+
+Decks are big containers (English, Programming); subjects inside are tags. To fold separate decks into one, each source's name becoming a tag on its cards (cards, schedules and history kept; duplicates stay behind and are listed; emptied sources are deleted; `--dry-run` rolls back):
+
+```bash
+node server/src/merge-decks.ts --db ./server/recall.db --user <telegram-id> --into Programming --create-into "Java Core" Concurrency Databases --dry-run
+node server/src/merge-decks.ts --db ./server/recall.db --user <telegram-id> --into English Grammar "Irregular verbs" --dry-run
 ```
 
 ## Deploy (small VPS, no Docker)
@@ -67,9 +74,9 @@ Signing in: inside Telegram the Mini App signs in by itself; in Safari / the ins
 - **Claude Code:** create a personal token in Settings → Personal tokens; the app shows the ready `claude mcp add --transport http mnemosyne https://<domain>/mcp --header "Authorization: Bearer mn_…"` command. (The legacy `MCP_TOKEN` from the env file still works and acts as the owner.)
 - **claude.ai / Claude app:** Settings → Connectors → Add custom connector → `https://<domain>/mcp`. The OAuth consent page confirms who you are through the bot.
 
-What Claude can do through MCP: look up, add and fix words (`search_words`, `get_word`, `add_words`, `update_word`, `set_word_status`), read progress (`review_stats`, `get_leeches`, `vocabulary_profile`), add the app's content packs (`list_packs`, `add_pack`; the same as Settings → Topics → Packs, e.g. "Irregular verbs"), and make topic flashcards from your notes: `list_decks`, `create_topic`, `search_facts`, `add_facts` (Markdown answers, one idea per card; duplicates by question are reported, not added; `createDeck: true` creates a missing topic), `update_fact` (also moves a fact to another topic), `set_fact_status`, and grammar exercise pools: `list_exercises`, `add_exercises` (tap-based items: choose a word for the gap, or spot the mistake and pick its replacement; distractors from the rule's contrast set, exactly one grammatical option). With `ANTHROPIC_API_KEY` set, pools running low are topped up by Claude once a day per rule. Ask e.g. "make 10 cards on Kafka from this note into the Kafka topic".
+What Claude can do through MCP: look up, add and fix words (`search_words`, `get_word`, `add_words`, `update_word`, `set_word_status`), read progress (`review_stats`, `get_leeches`, `vocabulary_profile`), add the app's content packs (`list_packs`, `add_pack`; the same as Settings → Packs, e.g. "Irregular verbs"), and make flashcards from your notes: `list_decks`, `create_deck`, `search_facts`, `add_facts` (into a deck, the subject as a tag; Markdown answers, one idea per card; duplicates by question are reported, not added; `createDeck: true` creates a missing deck), `update_fact` (also moves a fact to another deck), `set_fact_status`, and grammar exercise pools: `list_exercises`, `add_exercises` (tap-based items: choose a word for the gap, or spot the mistake and pick its replacement; distractors from the rule's contrast set, exactly one grammatical option). With `ANTHROPIC_API_KEY` set, pools running low are topped up by Claude once a day per rule. Ask e.g. "make 10 cards on Kafka from this note into Programming".
 
-New words and cards from Claude land in the **Inbox** and aren't scheduled until approved in the app (unless you ask for `autoApprove`).
+Words and cards from Claude are studied at once (within the deck's new cards per day) and tagged `claude`; drop the ones you don't want (⋯ on the card, or in its editor) — a dropped card never comes back and Claude won't propose it again.
 
 ## Telegram
 

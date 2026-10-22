@@ -114,7 +114,7 @@ describe('http auth', () => {
 
     // What MCP_TOKEN adds lands in the owner's collection.
     await callTool(url, STATIC, 'add_words', { words: [{ term: 'owner word', pos: 'noun', translations: ['слово'] }] })
-    const words = (await (await fetch(`${url}/api/words?status=inbox`, { headers: tg(OWNER) })).json()) as any
+    const words = (await (await fetch(`${url}/api/words?tag=claude`, { headers: tg(OWNER) })).json()) as any
     expect(words.words.map((w: { term: string }) => w.term)).toEqual(['owner word'])
     const friendWords = (await (await fetch(`${url}/api/words`, { headers: tg(FRIEND) })).json()) as any
     expect(friendWords).toEqual({ words: [], total: 0 })

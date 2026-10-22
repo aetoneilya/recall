@@ -1,4 +1,4 @@
-// Adding words by messaging the bot: one word → inbox card with buttons,
+// Adding words by messaging the bot: one word → added at once, a card with buttons,
 // duplicates, context sentences, batches, picking words from a paragraph or
 // a photo, draft ownership and expiry, the daily limit. Telegram and Claude
 // are fakes.
@@ -10,7 +10,7 @@ import type { AutofillClient } from '../src/autofill.ts'
 import { getWord, searchWords } from '../src/repo.ts'
 import { ensureUser } from '../src/users.ts'
 import { fakeBot } from './fake-telegram.ts'
-import { addWord, makeCtx, type TestCtx } from './helpers.ts'
+import { addWord, cardsOf, makeCtx, rate, type TestCtx } from './helpers.ts'
 
 const ME = 1001
 const FRIEND = 2002
@@ -88,44 +88,45 @@ describe('reading a message', () => {
 })
 
 describe('adding a word by message', () => {
-  it('saves it to the inbox and shows a card with ✅ ✏️ ✖ ↔', async () => {
+  it('adds it to the deck at once and shows a card with ✏️ ✖ ↔', async () => {
     const { ctx, ai, tg } = setup()
     const text = await tg.message(ME, 'frown')
-    expect(text).toBe('<b>to frown</b> /fraʊn/ · verb · B2\nхмуриться, насупиться\n<i>She frowned at him.</i>\nОна нахмурилась.')
+    expect(text).toBe('✅ <b>to frown</b> /fraʊn/ · verb · B2\nхмуриться, насупиться\n<i>She frowned at him.</i>\nОна нахмурилась.')
     const [w] = words(ctx)
-    expect(w).toMatchObject({ term: 'to frown', pos: 'verb', status: 'inbox', createdBy: 'user', ipa: 'fraʊn', freqRank: 2500 })
+    expect(w).toMatchObject({ term: 'to frown', pos: 'verb', status: 'active', createdBy: 'user', ipa: 'fraʊn', freqRank: 2500 })
     expect(ai.calls).toHaveLength(1)
     const shown = tg.buttons()
-    expect(shown.map(([l]) => l)).toEqual(['✅ Add', '✏️ Edit', '✖', '↔ Other meaning'])
-    expect(shown[1]![1]).toBe(`http://localhost:9/#/words/${w!.id}`)
+    expect(shown.map(([l]) => l)).toEqual(['✏️ Edit', '✖', '↔ Other meaning'])
+    expect(shown[0]![1]).toBe(`http://localhost:9/#/words/${w!.id}`)
     for (const [, data] of shown.filter(([l]) => l !== '✏️ Edit')) expect(Buffer.byteLength(data)).toBeLessThanOrEqual(64)
     expect(tg.calls.some((c) => c.method === 'sendChatAction')).toBe(true)
 
     // ↔ switches the word to the next meaning and back.
     const card = tg.last()!
-    const msgId = [...tg.messages.keys()].at(-1)!
-    expect((await tg.press(ME, tg.data('↔ Other meaning'))).edited).toBe('<b>frown</b> /fraʊn/ · noun · B2\nхмурый взгляд\n<i>Example with frown.</i>\nПример: frown.')
-    expect(getWord(ctx.db, ctx.user.id, w!.id)).toMatchObject({ term: 'frown', pos: 'noun', translations: ['хмурый взгляд'], status: 'inbox' })
+    expect((await tg.press(ME, tg.data('↔ Other meaning'))).edited).toBe('✅ <b>frown</b> /fraʊn/ · noun · B2\nхмурый взгляд\n<i>Example with frown.</i>\nПример: frown.')
+    expect(getWord(ctx.db, ctx.user.id, w!.id)).toMatchObject({ term: 'frown', pos: 'noun', translations: ['хмурый взгляд'], status: 'active' })
     expect((await tg.press(ME, tg.data('↔ Other meaning'))).edited).toBe(card.text)
     expect(getWord(ctx.db, ctx.user.id, w!.id)).toMatchObject({ term: 'to frown', pos: 'verb' })
-
-    // ✅ approves it; the message shrinks to one line and the Edit button.
-    expect((await tg.press(ME, tg.data('✅ Add', msgId), msgId)).edited).toBe('✅ Added: <b>to frown</b> — хмуриться')
-    expect(getWord(ctx.db, ctx.user.id, w!.id)!.status).toBe('active')
-    expect(tg.buttons(msgId)).toEqual([['✏️ Edit', `http://localhost:9/#/words/${w!.id}`]])
   })
 
-  it('✖ deletes the inbox word', async () => {
+  it('✖ deletes the new word, or drops it once reviewed', async () => {
     const { ctx, tg } = setup()
     await tg.message(ME, 'bone')
     const id = words(ctx)[0]!.id
-    expect(tg.buttons().map(([l]) => l)).toEqual(['✅ Add', '✏️ Edit', '✖'])
+    expect(tg.buttons().map(([l]) => l)).toEqual(['✏️ Edit', '✖'])
     const no = tg.data('✖')
     expect((await tg.press(ME, no)).edited).toBe('✖ Removed: bone')
     expect(getWord(ctx.db, ctx.user.id, id)).toBeNull()
     expect(tg.buttons()).toEqual([])
     // The draft is gone with it.
     expect(await tg.press(ME, no)).toMatchObject({ edited: undefined, popup: 'This message has expired — send the word again' })
+
+    // Reviewed in the meantime: kept as dropped, with its history.
+    await tg.message(ME, 'wary')
+    const wary = words(ctx)[0]!
+    rate(ctx, cardsOf(ctx, wary.id)[0]!.id, 3, ctx.now())
+    expect((await tg.press(ME, tg.data('✖'))).edited).toBe('✖ Removed: wary')
+    expect(getWord(ctx.db, ctx.user.id, wary.id)!.status).toBe('rejected')
   })
 
   it('reports a duplicate with its state and offers the new translations', async () => {
@@ -181,7 +182,7 @@ describe('adding a word by message', () => {
 })
 
 describe('several words at once', () => {
-  it('adds each line to the inbox with one progress message, then ✅ Add all or ✖ per word', async () => {
+  it('adds each line with one progress message, then ✖ per word', async () => {
     const { ctx, tg } = setup()
     addWord(ctx, 'house', { translations: ['дом'] })
     await tg.message(ME, 'frown\nbone\nhouse\nwary')
@@ -189,16 +190,19 @@ describe('several words at once', () => {
     expect(progress.slice(0, 3)).toEqual(['⏳ Adding 4 words… 1/4', '⏳ Adding 4 words… 2/4', '⏳ Adding 4 words… 3/4'])
     expect(tg.calls.filter((c) => c.method === 'sendMessage').map((c) => c.payload.text)).toEqual(['⏳ Adding 4 words…'])
     expect(tg.last()!.text).toBe([
-      '📥 3 words in your inbox:', '1. <b>to frown</b> — хмуриться', '2. <b>bone</b> — bone ru', '3. <b>wary</b> — wary ru',
+      '✅ Added 3 words:', '1. <b>to frown</b> — хмуриться', '2. <b>bone</b> — bone ru', '3. <b>wary</b> — wary ru',
       'Already in your deck: house — дом (new)'].join('\n'))
-    expect(tg.buttons().map(([l]) => l)).toEqual(['✅ Add all', '✏️ Review in app', '✖ to frown', '✖ bone', '✖ wary'])
-    expect(tg.data('✏️ Review in app')).toBe('http://localhost:9/#/inbox')
+    expect(words(ctx).map((w) => [w.term, w.status]).sort()).toEqual([['bone', 'active'], ['house', 'active'], ['to frown', 'active'], ['wary', 'active']])
+    expect(tg.buttons().map(([l]) => l)).toEqual(['✏️ Open in app', '✖ to frown', '✖ bone', '✖ wary'])
+    expect(tg.data('✏️ Open in app')).toBe('http://localhost:9/#/words')
 
     await tg.press(ME, tg.data('✖ bone'))
     expect(tg.last()!.text).toContain('<s>2. <b>bone</b> — bone ru</s>')
-    expect(tg.buttons().map(([l]) => l)).toEqual(['✅ Add all', '✏️ Review in app', '✖ to frown', '✖ wary'])
-    expect((await tg.press(ME, tg.data('✅ Add all'))).edited).toBe('✅ Added 2 words: to frown, wary\nAlready in your deck: house — дом (new)')
-    expect(words(ctx).map((w) => [w.term, w.status])).toEqual([['house', 'active'], ['to frown', 'active'], ['wary', 'active']])
+    expect(tg.buttons().map(([l]) => l)).toEqual(['✏️ Open in app', '✖ to frown', '✖ wary'])
+    expect(words(ctx).map((w) => w.term).sort()).toEqual(['house', 'to frown', 'wary'])
+    await tg.press(ME, tg.data('✖ to frown'))
+    await tg.press(ME, tg.data('✖ wary'))
+    expect(words(ctx).map((w) => w.term)).toEqual(['house'])
     expect(tg.buttons()).toEqual([])
   })
 })
@@ -237,8 +241,8 @@ describe('picking words from a paragraph or a photo', () => {
     await tg.press(ME, tg.data('✓ aloof'))
     expect(tg.buttons().map(([l]) => l)).toEqual(['✓ tenacious', 'aloof', '✓ red herring', '➕ Add selected (2)'])
     await tg.press(ME, tg.data('➕ Add selected (2)'))
-    expect(tg.last()!.text).toBe('📥 2 words in your inbox:\n1. <b>tenacious</b> — tenacious ru\n2. <b>red herring</b> — red herring ru')
-    const added = words(ctx).filter((w) => w.status === 'inbox')
+    expect(tg.last()!.text).toBe('✅ Added 2 words:\n1. <b>tenacious</b> — tenacious ru\n2. <b>red herring</b> — red herring ru')
+    const added = words(ctx).filter((w) => w.term !== 'frown')
     expect(added.map((w) => [w.term, w.examples[0]!.text])).toEqual([['red herring', 'It was a red herring.'], ['tenacious', 'The old man was tenacious.']])
     // One extraction call, then one autofill per selected word, with the gloss as a hint.
     expect(ai.calls).toHaveLength(3)
@@ -278,19 +282,19 @@ describe('bot drafts', () => {
     const friend = ensureUser(ctx.db, ctx.cfg, FRIEND, ctx.now())
     await tg.message(ME, 'bone')
     const id = words(ctx)[0]!.id
-    const ok = tg.data('✅ Add')
+    const ok = tg.data('✖')
     const alt = 'w:alt:' + ok.split(':')[2]
 
     // Someone else pressing (or forging) the button: as if it didn't exist.
     expect(await tg.press(FRIEND, ok, undefined, ME)).toMatchObject({ edited: undefined, popup: 'This message has expired — send the word again' })
-    expect(await tg.press(FRIEND, 'w:ok:bd_0000000000')).toMatchObject({ popup: 'This message has expired — send the word again' })
-    expect(getWord(ctx.db, ctx.user.id, id)!.status).toBe('inbox')
+    expect(await tg.press(FRIEND, 'w:no:bd_0000000000')).toMatchObject({ popup: 'This message has expired — send the word again' })
+    expect(getWord(ctx.db, ctx.user.id, id)).not.toBeNull()
     expect(words(ctx, friend.id)).toEqual([])
     expect(await tg.press(ME, alt)).toMatchObject({ popup: 'No other meaning to switch to' })
 
     ctx.clock.t = new Date(ctx.clock.t.getTime() + 7 * 86400_000 + 1)
     expect(await tg.press(ME, ok)).toMatchObject({ edited: undefined, popup: 'This message has expired — send the word again' })
-    expect(getWord(ctx.db, ctx.user.id, id)!.status).toBe('inbox')
+    expect(getWord(ctx.db, ctx.user.id, id)).not.toBeNull()
     // Expired drafts are cleaned up as new ones are made.
     await tg.message(ME, 'wary')
     expect((ctx.db.prepare('SELECT count(*) AS n FROM bot_drafts').get() as { n: number }).n).toBe(1)
@@ -300,14 +304,14 @@ describe('bot drafts', () => {
     const { ctx, tg } = setup()
     const friend = ensureUser(ctx.db, ctx.cfg, FRIEND, ctx.now())
     await tg.message(ME, 'bone')
-    const mine = tg.data('✅ Add')
+    const mine = tg.data('✖')
     await tg.message(FRIEND, 'bone')
-    const theirs = tg.data('✅ Add')
+    const theirs = tg.data('✖')
     expect(words(ctx, friend.id)).toHaveLength(1)
     await tg.press(FRIEND, mine, undefined, ME)
     await tg.press(FRIEND, theirs)
-    expect(words(ctx)[0]!.status).toBe('inbox')
-    expect(words(ctx, friend.id)[0]!.status).toBe('active')
+    expect(words(ctx)).toHaveLength(1)
+    expect(words(ctx, friend.id)).toEqual([])
   })
 })
 
@@ -316,8 +320,8 @@ describe('commands', () => {
     const { ctx, tg } = setup()
     expect(await tg.message(ME, '/help')).toBe(HELP_TEXT)
     addWord(ctx, 'frown')
-    addWord(ctx, 'bone', { status: 'inbox' })
-    expect(await tg.message(ME, '/stats')).toBe('📊 Vocabulary ≈ 0 words\nKnown words: 0 · mastered 0\nStreak: 0 days\nDue today: 1 · inbox 1')
+    addWord(ctx, 'bone', { status: 'rejected' })
+    expect(await tg.message(ME, '/stats')).toBe('📊 Vocabulary ≈ 0 words\nKnown words: 0 · mastered 0\nStreak: 0 days\nDue today: 1')
     expect(tg.buttons()).toEqual([['Open dashboard', 'http://localhost:9/#/dashboard']])
     expect(await tg.message(ME, '/nonsense')).toBe('Unknown command. /help shows what I can do.')
     expect(await tg.message(7, 'frown')).toMatch(/private bot/)

@@ -26,7 +26,7 @@ export interface DirectionCounts {
 export interface Dashboard {
   deck: Deck
   counts: {
-    words: { total: number; active: number; inbox: number; rejected: number }
+    words: { total: number; active: number; rejected: number }
     directions: Record<Direction, DirectionCounts>
     // Active words known in any enabled direction.
     known: number
@@ -84,7 +84,7 @@ export function dashboard(db: Db, userId: string, deck: Deck, lex: Lexicon, opts
   return {
     deck,
     counts: {
-      words: { total: words.reduce((s, w) => s + w.n, 0), active: byStatus.active ?? 0, inbox: byStatus.inbox ?? 0, rejected: byStatus.rejected ?? 0 },
+      words: { total: words.reduce((s, w) => s + w.n, 0), active: byStatus.active ?? 0, rejected: byStatus.rejected ?? 0 },
       directions,
       known: knownWords.size,
       mastered,

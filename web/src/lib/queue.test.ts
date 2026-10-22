@@ -1,6 +1,6 @@
 import { newCardState, type CardState, type Direction, type Fact, type QueueItem, type Word, type WordQueueItem } from '@recall/core'
 import { describe, expect, it } from 'vitest'
-import { applyRating, buildQueue, counts, deckCounts, dropWord, emptyQueue, LEARN_AHEAD_MS, nextItem, patchFact, patchWord, waiting } from './queue.ts'
+import { applyRating, buildQueue, counts, deckCounts, dropWord, emptyQueue, keepExercises, LEARN_AHEAD_MS, nextItem, patchFact, patchWord, waiting, withSchedules } from './queue.ts'
 
 const day = { timeZone: 'Europe/Moscow', startHour: 4 }
 // 13:00 MSK; the study day ends at 04:00 MSK tomorrow.
@@ -295,5 +295,26 @@ describe('exercise items in the queue', () => {
     expect(q.main[0]).toMatchObject({ kind: 'fact', exercises })
     const r = applyRating(q, q.main[0]!, 3, now, day)
     expect(r.item).toMatchObject({ exercises })
+  })
+})
+
+describe('the card on screen across a refresh', () => {
+  it('keeps the exercises it is answered with, though the server picked new ones', () => {
+    const mine = [{ id: 'ex_1', type: 'gap' as const, prompt: 'a', answer: 'a', accepted: [], explain: null }]
+    const theirs = [{ id: 'ex_9', type: 'gap' as const, prompt: 'b', answer: 'b', accepted: [], explain: null }]
+    const cur = { ...factItem('f1', 'ft1', newCardState(now)), exercises: mine } as QueueItem
+    const fresh = { ...factItem('f1', 'ft1', newCardState(now)), exercises: theirs } as QueueItem
+    expect(keepExercises(cur, fresh)).toMatchObject({ exercises: mine })
+    const plain = factItem('f2', 'ft2', newCardState(now))
+    expect(keepExercises(plain, fresh)).toBe(fresh)
+  })
+
+  it('puts schedules rated here into cached items (a new day keeps them applied)', () => {
+    const a = factItem('f1', 'ft1', newCardState(now))
+    const b = factItem('f2', 'ft2', newCardState(now))
+    const rated = reviewState(min(60 * 24 * 3))
+    const out = withSchedules([a, b], { f1: rated })
+    expect(out[0]!.card.schedule).toEqual(rated)
+    expect(out[1]).toBe(b)
   })
 })

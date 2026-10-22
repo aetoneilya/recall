@@ -85,6 +85,8 @@ describe('tap exercises', () => {
     expect(correctedParts('His shoes gets wet.', 'gets', 'get').filter((p) => p.changed)).toEqual([{ text: 'get', changed: true }])
     expect(join(correctedParts('It ends on Friday, gets.', 'gets', 'too'))).toBe('It ends on Friday, too.')
     expect(join(correctedParts('See you on next week.', 'on', '—'))).toBe('See you next week.')
+    // The first word deleted: the next one starts the sentence.
+    expect(join(correctedParts('The life is short.', 'The', '—'))).toBe('Life is short.')
     expect(join(correctedParts('I am agree with you.', 'am agree', 'agree'))).toBe('I agree with you.')
   })
 

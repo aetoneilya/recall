@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { blankTerm, cleanFact, formsLine, cleanIpa, cleanWord, dayKey, dedupeKey, factKey, itemOf, newCardState, nextDayStart, normalizeTerm, preview, review, wordFace, type QueueItem } from './index.ts'
+import { blankTerm, cleanFact, formsLine, cleanIpa, cleanWord, dayKey, dedupeKey, factKey, itemOf, newCardState, nextDayStart, dayStart, normalizeTerm, preview, review, wordFace, type QueueItem } from './index.ts'
 
 describe('words', () => {
   const word = {
@@ -105,5 +105,36 @@ describe('day', () => {
   })
   it('finds the next 4 a.m.', () => {
     expect(nextDayStart(new Date('2026-10-21T10:00:00Z'), opts).toISOString()).toBe('2026-10-22T01:00:00.000Z')
+    expect(dayStart(new Date('2026-10-21T10:00:00Z'), opts).toISOString()).toBe('2026-10-21T01:00:00.000Z')
+  })
+  it('keeps half- and quarter-hour zones on their own 4 a.m.', () => {
+    const india = { timeZone: 'Asia/Kolkata', startHour: 4 }
+    // 04:15 IST = 22:45 UTC: the day began at 22:30 UTC and ends a day later.
+    const at = new Date('2026-10-21T22:45:00Z')
+    expect(dayStart(at, india).toISOString()).toBe('2026-10-21T22:30:00.000Z')
+    expect(nextDayStart(at, india).toISOString()).toBe('2026-10-22T22:30:00.000Z')
+    const nepal = { timeZone: 'Asia/Kathmandu', startHour: 4 }
+    expect(nextDayStart(new Date('2026-10-21T12:00:00Z'), nepal).toISOString()).toBe('2026-10-21T22:15:00.000Z')
+    // Exactly at the boundary: the new day.
+    expect(dayStart(new Date('2026-10-21T22:30:00Z'), india).toISOString()).toBe('2026-10-21T22:30:00.000Z')
+  })
+})
+
+describe('review filter', () => {
+  it('lets everything through when empty, and narrows by type, tag and word fields', async () => {
+    const { inReviewFilter, cleanReviewFilter } = await import('./index.ts')
+    const word = { type: 'word' as const, tags: ['book'], pos: 'phrasal_verb' as const, cefr: 'B2' as const, direction: 'reverse' as const }
+    const fact = { type: 'fact' as const, tags: ['Concurrency'] }
+    const rule = { type: 'rule' as const, tags: ['Grammar'] }
+    expect([word, fact, rule].every((c) => inReviewFilter(null, c) && inReviewFilter({}, c))).toBe(true)
+    expect([word, fact, rule].map((c) => inReviewFilter({ types: ['word', 'rule'] }, c))).toEqual([true, false, true])
+    expect([word, fact, rule].map((c) => inReviewFilter({ tags: ['Concurrency', 'book'] }, c))).toEqual([true, true, false])
+    // Word-only fields leave other cards alone.
+    expect([word, fact].map((c) => inReviewFilter({ pos: ['idiom'] }, c))).toEqual([false, true])
+    expect(inReviewFilter({ cefr: ['B2', 'C1'], directions: ['reverse'] }, word)).toBe(true)
+    expect(inReviewFilter({ directions: ['forward'] }, word)).toBe(false)
+    expect(inReviewFilter({ cefr: ['C1'] }, { ...word, cefr: null })).toBe(false)
+    expect(cleanReviewFilter({ types: [], tags: ['a', 'a'] })).toEqual({ tags: ['a'] })
+    expect(cleanReviewFilter({ pos: [] })).toBeNull()
   })
 })

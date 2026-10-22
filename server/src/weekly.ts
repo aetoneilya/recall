@@ -10,7 +10,6 @@ import type { AppContext } from './context.ts'
 import { dashboard } from './dashboard.ts'
 import { lexiconOf } from './lexicon.ts'
 import { defaultDeck, syncFreqRanks, type DeckInfo, type TypeAnswer } from './repo.ts'
-import { inboxCount } from './study.ts'
 import { isAllowed, listUsers, setBotStarted, setWeeklySent, userDayOptions, type User } from './users.ts'
 
 export const CATCH_UP_MINUTES = 48 * 60
@@ -79,7 +78,6 @@ export interface WeeklyData {
   estimate: number | null
   estimateChange: number | null
   hardest: { term: string; again: number }[]
-  inbox: number
   typeAnswer: TypeAnswer
   // Latest valid vocabulary test.
   lastTestAt: string | null
@@ -120,7 +118,6 @@ export function weeklyData(ctx: AppContext, user: User, now: Date, deck: DeckInf
     estimate,
     estimateChange: estimate !== null && user.weeklyLastEstimate !== null ? estimate - user.weeklyLastEstimate : null,
     hardest: hardest.map((h) => ({ term: h.term, again: h.again })),
-    inbox: inboxCount(db, user.id),
     typeAnswer: deck.typeAnswer,
     lastTestAt: dash.vocabulary.latestTest?.completedAt ?? null,
     totalWords: dash.counts.words.total,
@@ -135,7 +132,6 @@ const plural = (k: number, one: string, many = `${one}s`) => `${n(k)} ${k === 1 
 // One concrete thing to do next, most pressing first.
 export function suggestion(d: WeeklyData, now: Date): string {
   const weak = (['reverse', 'forward'] as const).find((dir) => d.retention[dir].reviews >= 20 && (d.retention[dir].rate ?? 1) < 0.8)
-  if (d.inbox >= 5) return `${plural(d.inbox, 'word')} waiting in inbox — approve the ones you want to learn`
   if (weak) {
     const r = d.retention[weak]
     const typing = d.typeAnswer === 'both' || (d.typeAnswer === 'reverse' && weak === 'reverse')
@@ -144,7 +140,6 @@ export function suggestion(d: WeeklyData, now: Date): string {
   if (!d.reviews) return 'No reviews this week — even five minutes a day keeps words from fading'
   if (d.lastWeekReviews && d.reviews < d.lastWeekReviews * 0.7) return 'Fewer reviews than last week — a short session every day beats a long one on Sunday'
   if (!d.lastTestAt || now.getTime() - Date.parse(d.lastTestAt) > 60 * 86400_000) return 'Take the vocabulary test to update your estimate'
-  if (d.inbox) return `${plural(d.inbox, 'word')} waiting in inbox`
   if (d.newWords < 5) return 'Send me words you meet while reading — or a photo of the page'
   return 'Steady week — keep going'
 }

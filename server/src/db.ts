@@ -233,7 +233,43 @@ export const MIGRATIONS: Migration[] = [
   CREATE INDEX fact_exercises_import_ref ON fact_exercises(import_ref);
   `),
   },
+  // v9: decks are big containers of any card type; topics become tags (by a
+  // merge, not here). kind and in_review go; languages are optional on any
+  // deck (both or neither); each deck keeps a review filter. The inbox is
+  // gone: words and facts waiting there become active.
+  { before: backupBefore(9, (db) => hasRows(db, 'decks')), run: plainDecks },
 ]
+
+function plainDecks(db: Db) {
+  db.exec(`
+  CREATE TABLE decks_v9 (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    name TEXT NOT NULL,
+    target_lang TEXT,
+    native_lang TEXT,
+    new_per_day INTEGER NOT NULL DEFAULT 15,
+    forward_enabled INTEGER NOT NULL DEFAULT 1,
+    reverse_enabled INTEGER NOT NULL DEFAULT 1,
+    reverse_after_days REAL,
+    type_answer TEXT NOT NULL DEFAULT 'off' CHECK (type_answer IN ('off', 'reverse', 'both')),
+    review_filter TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE (id, user_id),
+    CHECK ((target_lang IS NULL) = (native_lang IS NULL))
+  );
+  INSERT INTO decks_v9(id, user_id, name, target_lang, native_lang, new_per_day, forward_enabled, reverse_enabled, reverse_after_days, type_answer, created_at)
+    SELECT id, user_id, name, target_lang, native_lang, new_per_day, forward_enabled, reverse_enabled, reverse_after_days, type_answer, created_at FROM decks ORDER BY rowid;
+  -- words and facts keep pointing at "decks".
+  DROP TABLE decks;
+  ALTER TABLE decks_v9 RENAME TO decks;
+  CREATE UNIQUE INDEX decks_user_name ON decks(user_id, name COLLATE NOCASE);
+  CREATE UNIQUE INDEX decks_user_lang ON decks(user_id, target_lang) WHERE target_lang IS NOT NULL;
+  -- No inbox any more: whatever waited there is studied now.
+  UPDATE words SET status = 'active' WHERE status = 'inbox';
+  UPDATE facts SET status = 'active' WHERE status = 'inbox';
+  `)
+}
 
 // The file a connection works on; '' for :memory:.
 export function dbFile(db: Db): string {

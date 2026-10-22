@@ -13,3 +13,6 @@ export function getDecks(force = false): Promise<DeckWithCounts[]> {
   }
   return cached.p
 }
+
+// A deck with languages takes words.
+export const hasDeckLanguages = (d: { targetLang: string | null; nativeLang: string | null }) => !!d.targetLang && !!d.nativeLang

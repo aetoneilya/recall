@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { addWords, createWord, defaultDeck, DuplicateWordError, refreshFreqRanks, searchWords, setWordStatus, updateWord } from '../src/repo.ts'
+import { addWords, createWord, defaultDeck, DuplicateWordError, getWord, refreshFreqRanks, searchWords, setWordStatus, updateWord } from '../src/repo.ts'
 import { wordLogs } from '../src/study.ts'
 import { addWord, cardsOf, makeCtx, rate } from './helpers.ts'
 
@@ -43,23 +43,24 @@ describe('words', () => {
     expect(setWordStatus(ctx.db, ctx.user.id, w.id, 'rejected', ctx.now()).status).toBe('rejected')
   })
 
-  it('adds batches to the inbox, reporting duplicates with what differs', () => {
+  it('adds batches, active and tagged claude, reporting duplicates with what differs', () => {
     const ctx = makeCtx()
     const existing = addWord(ctx, 'bid', { translations: ['ставка'], ipa: 'bɪd' })
     const r = addWords(ctx.db, ctx.user.id, {
       createdBy: 'claude',
       words: [
-        { term: 'to frown', pos: 'verb', translations: ['хмуриться'] },
+        { term: 'to frown', pos: 'verb', translations: ['хмуриться'], tags: ['feelings', 'Claude'] },
         { term: 'bid', pos: 'noun', translations: ['ставка', 'заявка'], ipa: 'bɪd', examples: [{ text: 'A high bid.' }] },
         { term: 'frown', pos: 'verb', translations: ['хмуриться'] },
         { term: '', pos: 'noun', translations: ['x'] },
       ],
     }, ctx.now(), ctx.lexicon)
     expect(r.deck.name).toBe('English')
-    expect(r.created).toMatchObject([{ index: 0, term: 'to frown', status: 'inbox', freqRank: 2500 }])
+    expect(r.created).toMatchObject([{ index: 0, term: 'to frown', status: 'active', freqRank: 2500 }])
+    expect(getWord(ctx.db, ctx.user.id, r.created[0]!.id)).toMatchObject({ tags: ['claude', 'feelings'], createdBy: 'claude' })
     expect(r.duplicates).toEqual([
       { index: 1, existingId: existing.id, existingStatus: 'active', term: 'bid', pos: 'noun', differs: { newTranslations: ['заявка'], newExamples: [{ text: 'A high bid.', translation: null }] } },
-      { index: 2, existingId: r.created[0]!.id, existingStatus: 'inbox', term: 'to frown', pos: 'verb', differs: { term: { existing: 'to frown', proposed: 'frown' } } },
+      { index: 2, existingId: r.created[0]!.id, existingStatus: 'active', term: 'to frown', pos: 'verb', differs: { term: { existing: 'to frown', proposed: 'frown' } } },
     ])
     expect(r.errors).toEqual([{ index: 3, term: '', error: 'term is empty' }])
     expect(() => addWords(ctx.db, ctx.user.id, { deck: 'Klingon', createdBy: 'claude', words: [] }, ctx.now())).toThrow(/no deck/)

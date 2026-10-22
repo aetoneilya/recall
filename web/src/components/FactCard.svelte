@@ -1,14 +1,14 @@
 <script lang="ts">
   import type { FactQueueItem } from '@recall/core'
   import { tick } from 'svelte'
-  import Icon from './Icon.svelte'
+  import CardActions from './CardActions.svelte'
   import Markdown from './Markdown.svelte'
 
   // One fact's review card: the question, and once revealed the answer
   // under it, both Markdown. The deck is the context marker, like the
   // direction on a word's card. `onedit` opens the fact's editor; offered
   // once the answer shows.
-  let { item, revealed, onedit }: { item: FactQueueItem; revealed: boolean; onedit?: () => void } = $props()
+  let { item, revealed, onedit, ondrop }: { item: FactQueueItem; revealed: boolean; onedit?: () => void; ondrop?: () => void } = $props()
 
   const isNew = $derived(item.card.schedule.state === 0)
 
@@ -32,17 +32,7 @@
     {#if isNew}<span class="new">New</span>{/if}
   </div>
   {#if revealed && onedit}
-    <button
-      class="edit"
-      onclick={(e) => {
-        e.stopPropagation()
-        onedit()
-      }}
-      onmousedown={(e) => e.preventDefault()}
-      aria-label="Edit this card"
-    >
-      <Icon name="edit" size={18} />
-    </button>
+    <CardActions {onedit} {ondrop} label="Edit this card" />
   {/if}
   <div class="body" bind:this={body}>
     <div class="question"><Markdown source={item.fact.front} /></div>
@@ -72,8 +62,8 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 4px 6px;
-    /* Room on the right for the edit button, so nothing shifts on reveal. */
-    padding: 16px 48px 0 20px;
+    /* Room on the right for the corner buttons, so nothing shifts on reveal. */
+    padding: 16px 92px 0 20px;
     font-size: 13px;
     line-height: 18px;
     color: var(--muted);
@@ -101,26 +91,6 @@
     font-weight: 600;
     color: var(--c-new);
     background: color-mix(in srgb, var(--c-new) 13%, var(--surface));
-  }
-  .edit {
-    position: absolute;
-    top: 3px;
-    right: 3px;
-    width: 44px;
-    height: 44px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 14px;
-    color: var(--faint);
-    animation: fade-in var(--t-fast) ease;
-    transition:
-      color var(--t-fast) ease,
-      background-color var(--t-fast) ease;
-  }
-  .edit:active {
-    color: var(--accent);
-    background: var(--accent-soft);
   }
 
   /* The question sits a little way down and stays put when the answer

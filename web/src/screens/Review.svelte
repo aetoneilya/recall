@@ -1,13 +1,18 @@
 <script lang="ts">
   import { checkAnswer, checkExercise, exerciseRating, formatInterval, isTapType, preview, spotTokens, type AnswerCheck, type ExerciseAttempt, type ExerciseCheck, type Rating } from '@recall/core'
   import { flushSync, onMount, untrack } from 'svelte'
+  import AddPicker from '../components/AddPicker.svelte'
+  import DeckSwitcher from '../components/DeckSwitcher.svelte'
   import ExerciseCard from '../components/ExerciseCard.svelte'
+  import ReviewFilterSheet from '../components/ReviewFilterSheet.svelte'
+  import { filterSummary } from '../lib/reviewFilter.ts'
   import FactCard from '../components/FactCard.svelte'
   import Icon from '../components/Icon.svelte'
   import RatingBar from '../components/RatingBar.svelte'
   import Summary from '../components/Summary.svelte'
   import SyncPill from '../components/SyncPill.svelte'
   import WordCard from '../components/WordCard.svelte'
+  import { dropCard } from '../lib/drop.ts'
   import { fsrs } from '../lib/fsrs.ts'
   import { counts, remaining } from '../lib/queue.ts'
   import { session } from '../lib/review.svelte.ts'
@@ -35,8 +40,10 @@
   const typed = $derived(
     item?.kind === 'word' && (deck?.typeAnswer === 'both' || (deck?.typeAnswer === 'reverse' && item.card.direction === 'reverse')),
   )
-  // The deck chips: only once there's more than one deck to choose from.
-  const chips = $derived(session.chips)
+  // The deck under review, its filter sheet, the "+" picker.
+  const currentDeck = $derived(session.decks[session.deckId])
+  let filterOpen = $state(false)
+  let addOpen = $state(false)
   const LANG_NAMES: Record<string, string> = { en: 'English', ru: 'Russian', de: 'German', fr: 'French', es: 'Spanish' }
   const placeholder = $derived(
     item?.card.direction === 'reverse' ? `Type it in ${LANG_NAMES[langs[0]] ?? langs[0].toUpperCase()}` : `Type the ${LANG_NAMES[langs[1]] ?? ''} translation`,
@@ -306,18 +313,36 @@
     </div>
     <div class="right">
       <SyncPill />
-      <button class="add" onclick={() => navigate('/add?from=/')} aria-label="Add a word"><Icon name="plus" size={20} stroke={2.2} /></button>
+      <button class="add" onclick={() => (addOpen = true)} aria-label="Add a card"><Icon name="plus" size={20} stroke={2.2} /></button>
     </div>
   </header>
-  {#if chips.length > 1}
-    <div class="decks" role="group" aria-label="Decks in review">
-      {#each chips as d (d.id)}
-        <button class="deck" class:on={d.inReview} aria-pressed={d.inReview} onclick={() => session.toggleDeck(d.id)}>
-          {d.name}<b>{d.left}</b>
-        </button>
-      {/each}
+  {#if session.queueDecks.length}
+    <div class="deckbar">
+      <div class="switch-wrap">
+        <DeckSwitcher options={session.choices.map((d) => ({ id: d.id, name: d.name, n: d.left }))} selected={session.deckId} onselect={(id) => session.selectDeck(id)} />
+      </div>
+      <button class="filter-btn" class:on={!!session.filter} onclick={() => (filterOpen = true)} aria-label="What to review">
+        <Icon name="filter" size={18} stroke={2} />
+      </button>
     </div>
+    {#if session.filter}
+      <div class="fsum">
+        <span>{filterSummary(session.filter, [currentDeck?.targetLang ?? null, currentDeck?.nativeLang ?? null])}</span>
+        <button onclick={() => session.setFilter(null)}>Clear</button>
+      </div>
+    {/if}
   {/if}
+  {#if filterOpen && session.deckId}
+    <ReviewFilterSheet
+      deckId={session.deckId}
+      deckName={currentDeck?.name ?? ''}
+      langs={[currentDeck?.targetLang ?? null, currentDeck?.nativeLang ?? null]}
+      initial={session.filter}
+      onsave={(f) => session.setFilter(f)}
+      onclose={() => (filterOpen = false)}
+    />
+  {/if}
+  {#if addOpen}<AddPicker deck={currentDeck} from="/" onclose={() => (addOpen = false)} />{/if}
   <div class="progress" aria-hidden="true"><div style="transform: scaleX({progress})"></div></div>
 
   <div class="stage" bind:clientWidth={stageWidth} bind:clientHeight={stageHeight}>
@@ -360,11 +385,12 @@
               ontoken={tapToken}
               onbad={badItem}
               onedit={() => navigate(`/fact/${item.fact.id}?from=/`)}
+              ondrop={() => void dropCard('fact', item.fact.id, item.fact.front)}
             />
           {:else if item.kind === 'fact'}
-            <FactCard {item} revealed={session.revealed} onedit={() => navigate(`/fact/${item.fact.id}?from=/`)} />
+            <FactCard {item} revealed={session.revealed} onedit={() => navigate(`/fact/${item.fact.id}?from=/`)} ondrop={() => void dropCard('fact', item.fact.id, item.fact.front)} />
           {:else}
-            <WordCard {item} revealed={session.revealed} typed={answer} {check} {langs} onedit={() => navigate(`/word/${item.word.id}?from=/`)} />
+            <WordCard {item} revealed={session.revealed} typed={answer} {check} {langs} onedit={() => navigate(`/word/${item.word.id}?from=/`)} ondrop={() => void dropCard('word', item.word.id, item.word.term)} />
           {/if}
           {#if dir && lean && intervals}
             <div class="wash {dir} {tone[lean]}" style="opacity: {pull * 0.6}"></div>
@@ -402,6 +428,7 @@
           <input
             bind:this={input}
             bind:value={answer}
+            maxlength="500"
             onkeydown={onAnswerKey}
             {placeholder}
             lang={item.card.direction === 'reverse' ? langs[0] : langs[1]}
@@ -445,6 +472,7 @@
             class:gone={!!exCheck}
             bind:this={exInput}
             bind:value={exAnswer}
+            maxlength="500"
             onkeydown={onExerciseKey}
             placeholder={exercises?.[exIndex]?.type === 'fix' ? 'Type the corrected sentence' : 'Type the answer'}
             lang="en"
@@ -542,51 +570,57 @@
   .r {
     color: var(--c-review);
   }
-  /* Deck chips: which decks are in today's session, and what each has left. */
-  .decks {
+  /* The deck switcher and the filter: one row under the counts. */
+  .deckbar {
     flex: none;
     display: flex;
-    gap: 6px;
-    overflow-x: auto;
-    margin: 0 calc(-12px - var(--sar)) 8px calc(-12px - var(--sal));
-    padding: 0 calc(12px + var(--sar)) 0 calc(12px + var(--sal));
-    scrollbar-width: none;
-    -webkit-user-select: none;
-    user-select: none;
-  }
-  .decks::-webkit-scrollbar {
-    display: none;
-  }
-  .deck {
-    flex: none;
-    display: inline-flex;
     align-items: center;
-    gap: 6px;
-    height: 30px;
-    padding: 0 12px;
-    border-radius: 15px;
-    font-size: 14px;
-    font-weight: 500;
-    white-space: nowrap;
-    color: var(--faint);
-    background: transparent;
-    box-shadow: inset 0 0 0 1px var(--hairline);
-    font-variant-numeric: tabular-nums;
-    transition:
-      background-color var(--t-fast) ease,
-      color var(--t-fast) ease,
-      transform var(--t-press) var(--ease-out);
+    gap: 8px;
+    margin: 0 0 8px;
+    min-height: 36px;
   }
-  .deck b {
-    font-weight: 650;
+  .switch-wrap {
+    flex: 1;
+    min-width: 0;
+    padding-left: 4px;
   }
-  .deck.on {
+  .filter-btn {
+    flex: none;
+    width: 40px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 12px;
+    color: var(--muted);
+    background: var(--surface);
+  }
+  .filter-btn.on {
     color: var(--accent);
     background: var(--accent-soft);
-    box-shadow: none;
   }
-  .deck:active {
-    transform: scale(0.96);
+  .fsum {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: -2px 8px 8px;
+    font-size: 13px;
+    color: var(--accent);
+  }
+  .fsum span {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .fsum button {
+    flex: none;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    padding: 4px 2px;
   }
   .progress {
     flex: none;

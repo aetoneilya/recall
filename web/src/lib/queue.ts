@@ -179,3 +179,18 @@ export function patchFact(list: QueueItem[], fact: Fact, suspended = false): Que
 export function dropWord(list: QueueItem[], id: string): QueueItem[] {
   return list.filter((it) => itemOf(it).id !== id)
 }
+
+// The card on screen keeps the exercises it is being answered with, though a
+// refresh brings a newly picked set for it.
+export function keepExercises(cur: QueueItem, fresh: QueueItem): QueueItem {
+  return cur.kind === 'fact' && fresh.kind === 'fact' && cur.exercises ? { ...fresh, exercises: cur.exercises } : fresh
+}
+
+// Items with these cards' schedules put in.
+export function withSchedules(list: QueueItem[], schedules: Record<string, CardState>): QueueItem[] {
+  return list.map((it) => {
+    const s = schedules[it.card.id]
+    return s ? { ...it, card: { ...it.card, schedule: s } } : it
+  })
+}
+

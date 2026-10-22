@@ -2,8 +2,8 @@
 // acting user's id and only ever sees that user's rows: someone else's id
 // behaves as if it didn't exist.
 import {
-  cleanWord, dedupeKey, DIRECTIONS, newCardState, retrievability, WORD_STATUSES,
-  type Author, type Card, type CardState, type Cefr, type CleanWord, type Deck, type DeckKind, type Direction, type FsrsState,
+  CLAUDE_TAG, cleanReviewFilter, cleanWord, dedupeKey, DIRECTIONS, LIMITS, newCardState, retrievability, WORD_STATUSES,
+  type Author, type Card, type CardState, type Cefr, type CleanWord, type Deck, type Direction, type FsrsState, type ReviewFilter,
   type PartOfSpeech, type VerbForms, type Word, type WordInput, type WordStatus,
 } from '@recall/core'
 import { newId, tx, type Db } from './db.ts'
@@ -74,16 +74,15 @@ export interface WordRow {
 interface DeckRow {
   id: string
   user_id: string
-  kind: string
   name: string
   target_lang: string | null
   native_lang: string | null
   new_per_day: number
-  in_review: number
   forward_enabled: number
   reverse_enabled: number
   reverse_after_days: number | null
   type_answer: string
+  review_filter: string | null
   created_at: string
 }
 
@@ -141,18 +140,23 @@ function withForms(term: string, pos: PartOfSpeech): { forms?: VerbForms } {
 }
 
 function toDeck(r: DeckRow): DeckInfo {
+  let filter: ReviewFilter | null = null
+  try {
+    filter = r.review_filter ? cleanReviewFilter(JSON.parse(r.review_filter) as ReviewFilter) : null
+  } catch {
+    filter = null
+  }
   return {
     id: r.id,
-    kind: r.kind === 'topic' ? 'topic' : 'language',
     name: r.name,
     targetLang: r.target_lang,
     nativeLang: r.native_lang,
     newPerDay: r.new_per_day,
-    inReview: r.in_review === 1,
     forwardEnabled: r.forward_enabled === 1,
     reverseEnabled: r.reverse_enabled === 1,
     reverseAfterDays: r.reverse_after_days,
     typeAnswer: (TYPE_ANSWERS as readonly string[]).includes(r.type_answer) ? (r.type_answer as TypeAnswer) : 'off',
+    reviewFilter: filter,
     createdAt: r.created_at,
   }
 }
@@ -173,9 +177,9 @@ export const ENABLED_DIRECTION = "((c.direction = 'forward' AND d.forward_enable
 export const LANGUAGE_NAMES: Record<string, string> = { en: 'English', ru: 'Russian', de: 'German', fr: 'French', es: 'Spanish', it: 'Italian' }
 const LANG = /^[a-z]{2,3}$/
 
-// Language decks first, then topics; each in the order they were made.
+// Decks with languages first, then the rest; each in the order they were made.
 export function listDecks(db: Db, userId: string): DeckInfo[] {
-  return (db.prepare("SELECT * FROM decks WHERE user_id = ? ORDER BY kind = 'topic', created_at, name COLLATE NOCASE").all(userId) as unknown as DeckRow[]).map(toDeck)
+  return (db.prepare('SELECT * FROM decks WHERE user_id = ? ORDER BY target_lang IS NULL, created_at, name COLLATE NOCASE').all(userId) as unknown as DeckRow[]).map(toDeck)
 }
 
 export function getDeck(db: Db, userId: string, id: string): DeckInfo | null {
@@ -190,30 +194,25 @@ export function findDeckByName(db: Db, userId: string, name: string): DeckInfo |
 
 // A deck id, a (case-insensitive) name or a target language code ("en").
 export function resolveDeck(db: Db, userId: string, ref: string): DeckInfo | null {
-  const byLang = LANG.test(ref) ? (db.prepare("SELECT * FROM decks WHERE user_id = ? AND kind = 'language' AND target_lang = ?").get(userId, ref) as DeckRow | undefined) : undefined
+  const byLang = LANG.test(ref) ? (db.prepare('SELECT * FROM decks WHERE user_id = ? AND target_lang = ?').get(userId, ref) as DeckRow | undefined) : undefined
   return getDeck(db, userId, ref) ?? findDeckByName(db, userId, ref) ?? (byLang ? toDeck(byLang) : null)
 }
 
-// Words live in language decks, facts in topic decks.
-export function mustBeKind(deck: DeckInfo, kind: DeckKind): DeckInfo {
-  if (deck.kind !== kind) {
-    throw new HttpError(400, kind === 'language' ? `"${deck.name}" is a topic deck; words go into a language deck` : `"${deck.name}" is a language deck; facts go into a topic deck`)
-  }
+export const hasLanguages = (d: Pick<Deck, 'targetLang' | 'nativeLang'>) => !!d.targetLang && !!d.nativeLang
+
+// Words need a deck with languages; facts go anywhere.
+export function mustHaveLanguages(deck: DeckInfo): DeckInfo {
+  if (!hasLanguages(deck)) throw new HttpError(400, `"${deck.name}" has no languages; words go into a deck with languages`)
   return deck
 }
 
 export interface DeckInput {
   name?: string
-  targetLang: string
-  nativeLang: string
+  // Both or neither.
+  targetLang?: string | null
+  nativeLang?: string | null
   newPerDay?: number
   typeAnswer?: TypeAnswer
-}
-
-export interface TopicDeckInput {
-  name: string
-  newPerDay?: number
-  inReview?: boolean
 }
 
 const DECK_NAME_MAX = 100
@@ -227,67 +226,68 @@ function checkDeckName(db: Db, userId: string, raw: string, except?: string): st
   return name
 }
 
-// Facts are longer to answer than words: fewer new ones a day by default.
-export const TOPIC_NEW_PER_DAY = 5
+// A new deck without languages (facts, rules) starts with fewer new cards a day.
+export const PLAIN_NEW_PER_DAY = 5
 
-// A topic deck: facts on one subject. Its name is unique among all the
-// user's decks.
-export function createTopicDeck(db: Db, userId: string, input: TopicDeckInput, now: Date): DeckInfo {
-  const name = checkDeckName(db, userId, input.name ?? '')
+// A deck; with languages (one deck per target language) it takes words too.
+// Its name defaults to the language's ("English") and is unique per user.
+export function createDeck(db: Db, userId: string, input: DeckInput, now: Date): DeckInfo {
+  const targetLang = input.targetLang?.trim().toLowerCase() || null
+  const nativeLang = input.nativeLang?.trim().toLowerCase() || null
+  if (!targetLang !== !nativeLang) throw new HttpError(400, 'give both targetLang and nativeLang, or neither')
+  if (targetLang && nativeLang) {
+    if (!LANG.test(targetLang) || !LANG.test(nativeLang)) throw new HttpError(400, 'targetLang and nativeLang must be ISO 639-1 codes like "en"')
+    if (targetLang === nativeLang) throw new HttpError(400, 'targetLang and nativeLang must differ')
+    if (db.prepare('SELECT 1 FROM decks WHERE user_id = ? AND target_lang = ?').get(userId, targetLang)) {
+      throw new HttpError(409, `there is already a deck for ${LANGUAGE_NAMES[targetLang] ?? targetLang}: one deck per language`)
+    }
+  }
+  const name = checkDeckName(db, userId, input.name ?? (targetLang ? LANGUAGE_NAMES[targetLang] ?? targetLang : ''))
   const id = newId('dk')
-  db.prepare("INSERT INTO decks(id, user_id, kind, name, new_per_day, in_review, created_at) VALUES (?, ?, 'topic', ?, ?, ?, ?)")
-    .run(id, userId, name, checkNewPerDay(input.newPerDay ?? TOPIC_NEW_PER_DAY), input.inReview === false ? 0 : 1, now.toISOString())
+  db.prepare('INSERT INTO decks(id, user_id, name, target_lang, native_lang, new_per_day, type_answer, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(id, userId, name, targetLang, nativeLang, checkNewPerDay(input.newPerDay ?? (targetLang ? 15 : PLAIN_NEW_PER_DAY)), checkTypeAnswer(input.typeAnswer ?? 'off'), now.toISOString())
   return getDeck(db, userId, id)!
 }
 
-// Deletes a topic deck. One with facts only with `withFacts`: they go too,
-// with their cards and review history. Returns how many facts went.
-export function deleteDeck(db: Db, userId: string, id: string, { withFacts = false } = {}): number {
+// How many words and facts a deck holds.
+export function deckSize(db: Db, userId: string, id: string): { words: number; facts: number } {
+  const n = (t: string) => (db.prepare(`SELECT count(*) AS n FROM ${t} WHERE deck_id = ? AND user_id = ?`).get(id, userId) as { n: number }).n
+  return { words: n('words'), facts: n('facts') }
+}
+
+// Deletes a deck. One with cards only with `withCards`: its words and facts
+// go too, with their cards and review history. Returns how many went.
+export function deleteDeck(db: Db, userId: string, id: string, { withCards = false } = {}): { words: number; facts: number } {
   return tx(db, () => {
     const deck = getDeck(db, userId, id)
     if (!deck) throw new HttpError(404, 'deck not found')
-    if (deck.kind !== 'topic') throw new HttpError(400, 'only topic decks can be deleted')
-    const n = (db.prepare('SELECT count(*) AS n FROM facts WHERE deck_id = ? AND user_id = ?').get(id, userId) as { n: number }).n
-    if (n && !withFacts) throw new HttpError(409, `deck "${deck.name}" still has ${n} ${n === 1 ? 'fact' : 'facts'}`, { facts: n })
+    const size = deckSize(db, userId, id)
+    const n = size.words + size.facts
+    if (n && !withCards) throw new HttpError(409, `deck "${deck.name}" still has ${n} ${n === 1 ? 'card' : 'cards'}`, { ...size })
+    db.prepare('DELETE FROM words WHERE deck_id = ? AND user_id = ?').run(id, userId)
     db.prepare('DELETE FROM facts WHERE deck_id = ? AND user_id = ?').run(id, userId)
+    db.prepare('UPDATE vocab_tests SET deck_id = NULL WHERE deck_id = ?').run(id)
     db.prepare('DELETE FROM decks WHERE id = ? AND user_id = ?').run(id, userId)
-    return n
+    return size
   })
 }
 
-export function createDeck(db: Db, userId: string, input: DeckInput, now: Date): DeckInfo {
-  const targetLang = input.targetLang?.trim().toLowerCase() ?? ''
-  const nativeLang = input.nativeLang?.trim().toLowerCase() ?? ''
-  if (!LANG.test(targetLang) || !LANG.test(nativeLang)) throw new HttpError(400, 'targetLang and nativeLang must be ISO 639-1 codes like "en"')
-  if (targetLang === nativeLang) throw new HttpError(400, 'targetLang and nativeLang must differ')
-  const name = (input.name ?? LANGUAGE_NAMES[targetLang] ?? targetLang).trim()
-  if (!name) throw new HttpError(400, 'deck name is empty')
-  if (db.prepare("SELECT 1 FROM decks WHERE user_id = ? AND kind = 'language' AND target_lang = ?").get(userId, targetLang)) {
-    throw new HttpError(409, `there is already a deck for ${LANGUAGE_NAMES[targetLang] ?? targetLang}: one deck per language`)
-  }
-  if (findDeckByName(db, userId, name)) throw new HttpError(409, `deck "${name}" already exists`)
-  const id = newId('dk')
-  db.prepare('INSERT INTO decks(id, user_id, name, target_lang, native_lang, new_per_day, type_answer, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(id, userId, name, targetLang, nativeLang, checkNewPerDay(input.newPerDay ?? 15), checkTypeAnswer(input.typeAnswer ?? 'off'), now.toISOString())
-  return getDeck(db, userId, id)!
-}
-
 // The user's English deck (en → ru), created on first use; else their first
-// language deck. Never a topic deck: this is where words go by default.
+// deck with languages. This is where words go by default.
 export function defaultDeck(db: Db, userId: string, now: Date): DeckInfo {
-  const en = db.prepare("SELECT * FROM decks WHERE user_id = ? AND kind = 'language' AND target_lang = 'en'").get(userId) as DeckRow | undefined
+  const en = db.prepare("SELECT * FROM decks WHERE user_id = ? AND target_lang = 'en'").get(userId) as DeckRow | undefined
   if (en) return toDeck(en)
-  return listDecks(db, userId).find((d) => d.kind === 'language') ?? createDeck(db, userId, { targetLang: 'en', nativeLang: 'ru' }, now)
+  return listDecks(db, userId).find(hasLanguages) ?? createDeck(db, userId, { targetLang: 'en', nativeLang: 'ru' }, now)
 }
 
 export interface DeckPatch {
   name?: string
   newPerDay?: number
-  inReview?: boolean
   forwardEnabled?: boolean
   reverseEnabled?: boolean
   reverseAfterDays?: number | null
   typeAnswer?: TypeAnswer
+  reviewFilter?: ReviewFilter | null
 }
 
 // Turning a direction off keeps its cards and history; they are just not
@@ -295,13 +295,8 @@ export interface DeckPatch {
 export function updateDeck(db: Db, userId: string, id: string, patch: DeckPatch): DeckInfo {
   const deck = getDeck(db, userId, id)
   if (!deck) throw new HttpError(404, 'deck not found')
-  if (deck.kind === 'topic') {
-    const bad = (['forwardEnabled', 'reverseEnabled', 'reverseAfterDays', 'typeAnswer'] as const).filter((k) => patch[k] !== undefined)
-    if (bad.length) throw new HttpError(400, `${bad.join(', ')} ${bad.length === 1 ? 'does' : 'do'} not apply to a topic deck`)
-  }
   if (patch.name !== undefined) deck.name = checkDeckName(db, userId, patch.name, id)
   if (patch.newPerDay !== undefined) deck.newPerDay = checkNewPerDay(patch.newPerDay)
-  if (patch.inReview !== undefined) deck.inReview = patch.inReview
   if (patch.forwardEnabled !== undefined) deck.forwardEnabled = patch.forwardEnabled
   if (patch.reverseEnabled !== undefined) deck.reverseEnabled = patch.reverseEnabled
   if (!deck.forwardEnabled && !deck.reverseEnabled) throw new HttpError(400, 'at least one direction must stay enabled')
@@ -311,8 +306,10 @@ export function updateDeck(db: Db, userId: string, id: string, patch: DeckPatch)
     deck.reverseAfterDays = d
   }
   if (patch.typeAnswer !== undefined) deck.typeAnswer = checkTypeAnswer(patch.typeAnswer)
-  db.prepare('UPDATE decks SET name = ?, new_per_day = ?, in_review = ?, forward_enabled = ?, reverse_enabled = ?, reverse_after_days = ?, type_answer = ? WHERE id = ? AND user_id = ?')
-    .run(deck.name, deck.newPerDay, deck.inReview ? 1 : 0, deck.forwardEnabled ? 1 : 0, deck.reverseEnabled ? 1 : 0, deck.reverseAfterDays, deck.typeAnswer, id, userId)
+  if (patch.reviewFilter !== undefined) deck.reviewFilter = cleanReviewFilter(patch.reviewFilter)
+  db.prepare('UPDATE decks SET name = ?, new_per_day = ?, forward_enabled = ?, reverse_enabled = ?, reverse_after_days = ?, type_answer = ?, review_filter = ? WHERE id = ? AND user_id = ?')
+    .run(deck.name, deck.newPerDay, deck.forwardEnabled ? 1 : 0, deck.reverseEnabled ? 1 : 0, deck.reverseAfterDays, deck.typeAnswer,
+      deck.reviewFilter ? JSON.stringify(deck.reviewFilter) : null, id, userId)
   return deck
 }
 
@@ -324,6 +321,58 @@ function checkTypeAnswer(v: string): TypeAnswer {
 function checkNewPerDay(n: number): number {
   if (!Number.isInteger(n) || n < 0 || n > 1000) throw new HttpError(400, 'newPerDay must be an integer 0..1000')
   return n
+}
+
+export interface MergeResult {
+  from: { id: string; name: string; deleted: boolean }
+  into: { id: string; name: string }
+  moved: { words: number; facts: number }
+  // Already in the target by their dedupe key: left in the source.
+  skipped: { kind: 'word' | 'fact'; id: string; text: string }[]
+}
+
+// Moves every word and fact of one deck into another — cards, schedules,
+// history and exercise pools go with them — tagging each with the source's
+// name (`tag`). Duplicates of the target's (by dedupe key) stay behind and
+// are reported; the source is deleted once empty. Words only move between
+// decks with the same languages.
+export function mergeDecks(db: Db, userId: string, fromId: string, intoId: string, { tag = true } = {}, now = new Date()): MergeResult {
+  return tx(db, () => {
+    const from = getDeck(db, userId, fromId)
+    const into = getDeck(db, userId, intoId)
+    if (!from || !into) throw new HttpError(404, 'deck not found')
+    if (from.id === into.id) throw new HttpError(400, 'a deck cannot be merged into itself')
+    const words = db.prepare('SELECT id, term, tags, dedupe_key FROM words WHERE deck_id = ? AND user_id = ? ORDER BY created_at, id').all(from.id, userId) as { id: string; term: string; tags: string; dedupe_key: string }[]
+    if (words.length && (from.targetLang !== into.targetLang || from.nativeLang !== into.nativeLang)) {
+      throw new HttpError(409, `"${from.name}" has words and its languages differ from "${into.name}"'s; words can't move between languages`)
+    }
+    const facts = db.prepare('SELECT id, front, tags, dedupe_key FROM facts WHERE deck_id = ? AND user_id = ? ORDER BY created_at, id').all(from.id, userId) as { id: string; front: string; tags: string; dedupe_key: string }[]
+    const out: MergeResult = { from: { id: from.id, name: from.name, deleted: false }, into: { id: into.id, name: into.name }, moved: { words: 0, facts: 0 }, skipped: [] }
+    const at = now.toISOString()
+    const withTag = (json: string) => {
+      const tags = JSON.parse(json) as string[]
+      if (tag && !tags.some((t) => t.toLowerCase() === from.name.toLowerCase()) && tags.length < LIMITS.tags) tags.push(from.name.slice(0, LIMITS.tag))
+      return JSON.stringify(tags)
+    }
+    for (const [table, rows, kind] of [['words', words, 'word'], ['facts', facts, 'fact']] as const) {
+      const dup = db.prepare(`SELECT 1 FROM ${table} WHERE deck_id = ? AND dedupe_key = ?`)
+      const move = db.prepare(`UPDATE ${table} SET deck_id = ?, tags = ?, updated_at = ? WHERE id = ?`)
+      for (const r of rows as { id: string; tags: string; dedupe_key: string; term?: string; front?: string }[]) {
+        if (dup.get(into.id, r.dedupe_key)) {
+          out.skipped.push({ kind, id: r.id, text: r.term ?? r.front ?? '' })
+          continue
+        }
+        move.run(into.id, withTag(r.tags), at, r.id)
+        out.moved[kind === 'word' ? 'words' : 'facts']++
+      }
+    }
+    if (!out.skipped.length) {
+      db.prepare('UPDATE vocab_tests SET deck_id = ? WHERE deck_id = ?').run(into.id, from.id)
+      db.prepare('DELETE FROM decks WHERE id = ? AND user_id = ?').run(from.id, userId)
+      out.from.deleted = true
+    }
+    return out
+  })
 }
 
 // ---------- words ----------
@@ -367,7 +416,7 @@ export function createWord(db: Db, userId: string, input: NewWord, now: Date, le
   return tx(db, () => {
     const deck = getDeck(db, userId, input.deckId)
     if (!deck) throw new HttpError(404, 'deck not found')
-    mustBeKind(deck, 'language')
+    mustHaveLanguages(deck)
     const w = clean(input.word)
     const dup = findDuplicate(db, userId, input.deckId, w.term, w.pos)
     if (dup) throw new DuplicateWordError(dup)
@@ -429,19 +478,6 @@ export function setWordStatus(db: Db, userId: string, id: string, status: WordSt
 export function deleteWord(db: Db, userId: string, id: string) {
   const r = db.prepare('DELETE FROM words WHERE id = ? AND user_id = ?').run(id, userId)
   if (r.changes === 0) throw new HttpError(404, `word ${id} not found`)
-}
-
-// Words and facts in the inbox (of one deck, or all) → active.
-export function approveAll(db: Db, userId: string, deckId: string | undefined, now: Date): number {
-  const at = now.toISOString()
-  let n = 0
-  for (const table of ['words', 'facts']) {
-    const r = deckId
-      ? db.prepare(`UPDATE ${table} SET status = 'active', updated_at = ? WHERE user_id = ? AND status = 'inbox' AND deck_id = ?`).run(at, userId, deckId)
-      : db.prepare(`UPDATE ${table} SET status = 'active', updated_at = ? WHERE user_id = ? AND status = 'inbox'`).run(at, userId)
-    n += Number(r.changes)
-  }
-  return n
 }
 
 // Recomputes freqRank of every word (or one user's) against the current
@@ -633,14 +669,6 @@ export function searchWords(db: Db, userId: string, s: WordSearch, now: Date): {
   return { words: withCards(db, userId, rows, now), total }
 }
 
-// Oldest first.
-export function inboxWords(db: Db, userId: string, now: Date, deckId?: string): WordListItem[] {
-  const rows = (deckId
-    ? db.prepare("SELECT * FROM words WHERE user_id = ? AND status = 'inbox' AND deck_id = ? ORDER BY created_at, id").all(userId, deckId)
-    : db.prepare("SELECT * FROM words WHERE user_id = ? AND status = 'inbox' ORDER BY created_at, id").all(userId)) as unknown as WordRow[]
-  return withCards(db, userId, rows, now)
-}
-
 // ---------- batch add (MCP) ----------
 
 export interface AddWordsResult {
@@ -666,22 +694,26 @@ export function differences(existing: Word, w: CleanWord): Record<string, unknow
 }
 
 // Each word is validated and deduped like a manual add, against words of any
-// status (a rejected proposal stays rejected) and earlier words in the batch.
+// status (a dropped word stays dropped) and earlier words in the batch. The
+// words are studied at once; Claude's get the "claude" tag.
+// Claude's tag first, so it survives the tag limit.
+export const withClaudeTag = (tags: string[] | undefined) => [CLAUDE_TAG, ...(tags ?? []).filter((t) => t.trim().toLowerCase() !== CLAUDE_TAG)]
+
 export function addWords(
   db: Db,
   userId: string,
-  input: { deck?: string; words: WordInput[]; autoApprove?: boolean; createdBy: Author },
+  input: { deck?: string; words: WordInput[]; createdBy: Author },
   now: Date,
   lex?: Lexicon | null,
 ): AddWordsResult {
   return tx(db, () => {
     const deck = input.deck ? resolveDeck(db, userId, input.deck) : defaultDeck(db, userId, now)
     if (!deck) throw new HttpError(404, `no deck "${input.deck}"; call list_decks to see the existing ones`)
-    mustBeKind(deck, 'language')
+    mustHaveLanguages(deck)
     const out: AddWordsResult = { deck: { id: deck.id, name: deck.name }, created: [], duplicates: [], errors: [] }
-    const status: WordStatus = input.autoApprove ? 'active' : 'inbox'
+    const status: WordStatus = 'active'
     input.words.forEach((p, index) => {
-      const r = cleanWord(p)
+      const r = cleanWord(input.createdBy === 'claude' ? { ...p, tags: withClaudeTag(p.tags) } : p)
       if ('error' in r) {
         out.errors.push({ index, term: p.term, error: r.error })
         return

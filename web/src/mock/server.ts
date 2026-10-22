@@ -2,11 +2,13 @@
 // Implements the queue rules (learning first, reviews, new interleaved,
 // one card per word per day, new-per-day, disabled directions, the reverse
 // gate), autofill, the dashboard and the vocabulary test closely enough to
-// exercise every screen; topic decks of facts join the same session.
+// exercise every screen; decks hold words and facts, each reviewed on its own
+// under its review filter.
 // Loaded via dynamic import only in mock mode.
 import {
   cleanExercise,
   cleanFact,
+  cleanReviewFilter,
   cleanWord,
   DEFAULT_WEIGHTS,
   dayKey,
@@ -19,15 +21,19 @@ import {
   retrievability,
   review,
   type Card,
+  CLAUDE_TAG,
   type CardState,
+  type CardType,
   type Deck,
   type Direction,
   type ExerciseInput,
   type Fact,
   type FactInput,
   formsLine,
+  inReviewFilter,
   type QueueItem,
   type Rating,
+  type ReviewFilter,
   type ReviewInput,
   type ReviewLog,
   type Word,
@@ -135,30 +141,45 @@ function planState(plan: Plan, k: number, now: number): { state: CardState; susp
   }
 }
 
+// The pack: facts generated like the server's.
+const PACK = { id: 'irregular-verbs', name: 'Irregular verbs', description: 'The most common English irregular verbs, most frequent first.' }
+const packRef = (v: string) => `pack:${PACK.id}:${v}`
+const packRefs = new Map<string, string>()
+function packFact(v: (typeof irregularVerbs)[number]) {
+  const back = [`**${formsLine(v)}**`, `*${v.example.text}*\n${v.example.translation}`]
+  if (v.note) back.push(v.note)
+  return { front: `**to ${v.verb}**\n${v.translation}`, back: back.join('\n\n'), tags: [] }
+}
+function packInfo() {
+  const have = irregularVerbs.filter((v) => packRefs.has(packRef(v.verb)))
+  const deckId = have.length ? db.facts.find((f) => f.id === packRefs.get(packRef(have[0]!.verb)))?.deckId : undefined
+  const deck = deckId ? db.decks.find((d) => d.id === deckId) : db.decks.find((d) => d.targetLang === 'en')
+  return { ...PACK, count: irregularVerbs.length, added: have.length > 0, missing: irregularVerbs.length - have.length, deckId: deck?.id, deckName: deck?.name ?? PACK.name }
+}
+
 function seed() {
   const now = Date.now()
   const eng: MockDeck = {
     id: 'dk_english',
-    kind: 'language',
     name: 'English',
     targetLang: 'en',
     nativeLang: 'ru',
     newPerDay: 10,
-    inReview: true,
     forwardEnabled: true,
     reverseEnabled: true,
     reverseAfterDays: null,
     typeAnswer: 'reverse',
+    reviewFilter: null,
     createdAt: iso(now - 150 * D),
   }
   db.decks.push(eng)
   if (variant === 'empty') return
-  const inboxCount = seedWords.filter((s) => s.plan === 'inbox' || s.plan === 'rejected').length
-  let inboxK = 0
+  const claudeCount = seedWords.filter((s) => s.plan === 'claude' || s.plan === 'rejected').length
+  let claudeK = 0
   seedWords.forEach((s: SeedWord, k) => {
     if (s.freqRank !== null) ranks.set(normalizeTerm(s.term), s.freqRank)
-    const proposal = s.plan === 'inbox' || s.plan === 'rejected'
-    const createdAt = proposal ? iso(now - (inboxCount - inboxK++) * 5 * H) : iso(now - (140 - k * 3) * D)
+    const byClaude = s.plan === 'claude' || s.plan === 'rejected'
+    const createdAt = byClaude ? iso(now - (claudeCount - claudeK++) * 5 * H) : iso(now - (140 - k * 3) * D)
     const word: Word = {
       id: id('wd'),
       deckId: eng.id,
@@ -168,11 +189,11 @@ function seed() {
       ipa: s.ipa,
       examples: s.examples,
       note: s.note ?? null,
-      tags: s.tags ?? [],
+      tags: byClaude ? [CLAUDE_TAG, ...(s.tags ?? [])] : s.tags ?? [],
       freqRank: s.freqRank,
       cefr: s.cefr,
-      status: s.plan === 'inbox' ? 'inbox' : s.plan === 'rejected' ? 'rejected' : 'active',
-      createdBy: proposal ? 'claude' : k % 3 === 0 ? 'user' : 'import',
+      status: s.plan === 'rejected' ? 'rejected' : 'active',
+      createdBy: byClaude ? 'claude' : k % 3 === 0 ? 'user' : 'import',
       createdAt,
       updatedAt: createdAt,
     }
@@ -183,15 +204,10 @@ function seed() {
       db.cards.push({ id: id('cd'), wordId: word.id, factId: null, direction, suspended: p.suspended, schedule: p.state })
     })
   })
-  // Grammar: rules reviewed through their exercises.
-  const gdeck: MockDeck = {
-    id: 'dk_grammar', kind: 'topic', name: 'Grammar', targetLang: null, nativeLang: null, newPerDay: 5, inReview: true,
-    forwardEnabled: true, reverseEnabled: true, reverseAfterDays: null, typeAnswer: 'off', createdAt: iso(now - 30 * D),
-  }
-  db.decks.push(gdeck)
+  // Grammar rules, in English: reviewed through their exercises.
   grammar.forEach((r, k) => {
     const createdAt = iso(now - (20 - k) * D)
-    const fact: Fact = { id: id('ft'), deckId: gdeck.id, front: r.title, back: r.rule, tags: [], status: 'active', createdBy: 'import', createdAt, updatedAt: createdAt }
+    const fact: Fact = { id: id('ft'), deckId: eng.id, front: r.title, back: r.rule, tags: ['Grammar'], status: 'active', createdBy: 'import', createdAt, updatedAt: createdAt }
     db.facts.push(fact)
     const ps = planState(r.plan, 200 + k, now)
     db.cards.push({ id: id('cd'), wordId: null, factId: fact.id, direction: 'forward', suspended: false, schedule: ps.state })
@@ -199,18 +215,31 @@ function seed() {
       db.exercises.push({ ...it, id: id('ex'), factId: fact.id, status: 'active', needsReview: false, createdBy: 'import', createdAt, shownCount: 0, lastShownAt: null, correctCount: 0, wrongCount: 0 })
     }
   })
+  // The irregular-verbs pack, added to English: a few already studied.
+  irregularVerbs.forEach((v, k) => {
+    const createdAt = iso(now - (40 - k) * D)
+    const f = packFact(v)
+    const fact: Fact = { id: id('ft'), deckId: eng.id, ...f, tags: [PACK.name], status: 'active', createdBy: 'import', createdAt, updatedAt: createdAt }
+    db.facts.push(fact)
+    packRefs.set(packRef(v.verb), fact.id)
+    const ps = planState(k < 3 ? (['later', 'due', 'mastered'] as const)[k]! : 'new', 300 + k, now)
+    db.cards.push({ id: id('cd'), wordId: null, factId: fact.id, direction: 'forward', suspended: false, schedule: ps.state })
+  })
+  // Programming: Q&A cards, one tag per subject. Its review leaves Databases out (a filter demo).
+  const prog: MockDeck = {
+    id: 'dk_programming', name: 'Programming', targetLang: null, nativeLang: null, newPerDay: 5,
+    forwardEnabled: true, reverseEnabled: true, reverseAfterDays: null, typeAnswer: 'off',
+    reviewFilter: { tags: ['Concurrency', 'Java Core'] }, createdAt: iso(now - 90 * D),
+  }
+  db.decks.push(prog)
   seedTopics.forEach((t, ti) => {
-    const deck: MockDeck = {
-      id: `dk_topic${ti}`, kind: 'topic', name: t.name, targetLang: null, nativeLang: null, newPerDay: t.newPerDay, inReview: t.inReview,
-      forwardEnabled: true, reverseEnabled: true, reverseAfterDays: null, typeAnswer: 'off', createdAt: iso(now - (90 - ti) * D),
-    }
-    db.decks.push(deck)
     t.facts.forEach((f, k) => {
       const createdAt = iso(now - (60 - ti * 10 - k) * D)
-      const proposal = f.plan === 'inbox'
-      const fact: Fact = { id: id('ft'), deckId: deck.id, front: f.front, back: f.back, tags: f.tags ?? [], status: proposal ? 'inbox' : 'active', createdBy: proposal ? 'claude' : 'import', createdAt, updatedAt: createdAt }
+      const byClaude = f.plan === 'claude'
+      const tags = [...(byClaude ? [CLAUDE_TAG] : []), t.name, ...(f.tags ?? [])]
+      const fact: Fact = { id: id('ft'), deckId: prog.id, front: f.front, back: f.back, tags, status: 'active', createdBy: byClaude ? 'claude' : 'import', createdAt, updatedAt: createdAt }
       db.facts.push(fact)
-      const ps = planState(f.plan === 'inbox' ? 'new' : f.plan, 100 + ti * 10 + k, now)
+      const ps = planState(f.plan === 'claude' ? 'new' : f.plan, 100 + ti * 10 + k, now)
       db.cards.push({ id: id('cd'), wordId: null, factId: fact.id, direction: 'forward', suspended: ps.suspended, schedule: ps.state })
     })
   })
@@ -259,21 +288,6 @@ function formsOf(w: Word): Word {
   return { ...w, forms: { past: v.past.map(add), participle: v.participle.map(add) } }
 }
 
-// The pack: facts generated like the server's.
-const PACK = { id: 'irregular-verbs', name: 'Irregular verbs', description: 'The most common English irregular verbs, most frequent first.' }
-const packRef = (v: string) => `pack:${PACK.id}:${v}`
-const packRefs = new Map<string, string>()
-function packFact(v: (typeof irregularVerbs)[number]) {
-  const back = [`**${formsLine(v)}**`, `*${v.example.text}*\n${v.example.translation}`]
-  if (v.note) back.push(v.note)
-  return { front: `**to ${v.verb}**\n${v.translation}`, back: back.join('\n\n'), tags: [] }
-}
-function packInfo() {
-  const have = irregularVerbs.filter((v) => packRefs.has(packRef(v.verb)))
-  const deckId = have.length ? db.facts.find((f) => f.id === packRefs.get(packRef(have[0]!.verb)))?.deckId : undefined
-  return { ...PACK, count: irregularVerbs.length, added: have.length > 0, missing: irregularVerbs.length - have.length, ...(deckId ? { deckId } : {}) }
-}
-
 const deckOf = (deckId: string) => db.decks.find((d) => d.id === deckId)!
 const wordOf = (wordId: string) => db.words.find((w) => w.id === wordId)!
 const factOf = (factId: string) => db.facts.find((f) => f.id === factId)!
@@ -282,6 +296,9 @@ const cardsOf = (wordId: string) => db.cards.filter((c) => c.wordId === wordId)
 const ownerOf = (c: Card): Word | Fact => (c.factId ? factOf(c.factId) : wordOf(c.wordId!))
 const today = (now: Date) => dayKey(now, DAY)
 const isToday = (at: string, now: Date) => dayKey(new Date(at), DAY) === today(now)
+const hasLangs = (d: Deck) => !!d.targetLang && !!d.nativeLang
+// Decks with languages first, then by age, as the server lists them.
+const sortDecks = (ds: MockDeck[]) => [...ds].sort((a, b) => Number(hasLangs(b)) - Number(hasLangs(a)) || a.createdAt.localeCompare(b.createdAt))
 const enabled = (deck: Deck, dir: Direction) => (dir === 'forward' ? deck.forwardEnabled : deck.reverseEnabled)
 const known = (s: CardState, at: Date) => s.state === 2 && retrievability(s, at) >= 0.9
 const STATE_NAMES = ['new', 'learning', 'review', 'relearning'] as const
@@ -344,13 +361,19 @@ function lemma(term: string): string | null {
 
 // --- queue -----------------------------------------------------------------
 
-// Today's cards of every deck (or of one), then the session: those of decks
-// in review. Budgets are per deck and burying per word, so a deck's share
-// doesn't depend on the others.
-function buildQueue(now: Date, limit: number, deckId?: string) {
+// A card as the review filter sees it.
+const typeOf = (o: Word | Fact): CardType =>
+  'term' in o ? 'word' : db.exercises.filter((e) => e.factId === o.id && e.status === 'active').length >= 3 ? 'rule' : 'fact'
+const factsOf = (c: Card, o: Word | Fact) => ({ type: typeOf(o), tags: o.tags, ...('term' in o ? { pos: o.pos, cefr: o.cefr, direction: c.direction } : {}) })
+
+// Today's cards of every deck under its review filter (`draft` stands in for
+// one deck's), then the session: one deck's, or all. Budgets are per deck
+// and burying per word, so a deck's share doesn't depend on the others.
+function buildQueue(now: Date, limit: number, deckId?: string, draft?: { deckId: string; filter: ReviewFilter | null }) {
   const dayEnd = nextDayStart(now, DAY).getTime()
+  const filterOf = (d: string) => (draft && draft.deckId === d ? draft.filter : deckOf(d).reviewFilter)
   const owners = new Map<string, Word | Fact>()
-  for (const o of [...db.words, ...db.facts]) if (o.status === 'active' && (!deckId || o.deckId === deckId)) owners.set(o.id, o)
+  for (const o of [...db.words, ...db.facts]) if (o.status === 'active') owners.set(o.id, o)
   const ownerKey = (c: Card) => (c.factId ?? c.wordId)!
   const reviewedToday = new Map<string, Set<string>>()
   const firstLog = new Map<string, string>()
@@ -365,7 +388,7 @@ function buildQueue(now: Date, limit: number, deckId?: string) {
   }
   const cards = db.cards.filter((c) => {
     const o = owners.get(ownerKey(c))
-    return o && !c.suspended && (c.factId !== null || enabled(deckOf(o.deckId), c.direction))
+    return o && !c.suspended && (c.factId !== null || enabled(deckOf(o.deckId), c.direction)) && inReviewFilter(filterOf(o.deckId), factsOf(c, o))
   })
   const deckIdOf = (c: Card) => owners.get(ownerKey(c))!.deckId
   const dueT = (c: Card) => new Date(c.schedule.due).getTime()
@@ -435,10 +458,8 @@ function buildQueue(now: Date, limit: number, deckId?: string) {
     learning: cs.filter((c) => deckIdOf(c) === d && (c.schedule.state === 1 || c.schedule.state === 3)).length,
     review: cs.filter((c) => deckIdOf(c) === d && c.schedule.state === 2).length,
   })
-  const decks = db.decks.filter((d) => !deckId || d.id === deckId)
-    .sort((a, b) => Number(a.kind === 'topic') - Number(b.kind === 'topic'))
-    .map((d) => ({ id: d.id, name: d.name, kind: d.kind, inReview: d.inReview, counts: tally(out, d.id) }))
-  const session = out.filter((c) => deckId || deckOf(deckIdOf(c)).inReview)
+  const decks = sortDecks(db.decks).map((d) => ({ id: d.id, name: d.name, hasLanguages: hasLangs(d), counts: tally(out, d.id) }))
+  const session = out.filter((c) => !deckId || deckIdOf(c) === deckId)
   const items: QueueItem[] = session.slice(0, limit).map((c): QueueItem => {
     const o = owners.get(ownerKey(c))!
     const deckName = deckOf(o.deckId).name
@@ -451,26 +472,53 @@ function buildQueue(now: Date, limit: number, deckId?: string) {
     out,
     items,
     counts: { new: count([0]), learning: count([1, 3]), review: count([2]) },
-    inbox: [...db.words, ...db.facts].filter((w) => w.status === 'inbox' && (!deckId || w.deckId === deckId)).length,
     decks,
   }
 }
 
 function deckCounts(deck: MockDeck, now: Date) {
   const dayEnd = nextDayStart(now, DAY).getTime()
-  const words: (Word | Fact)[] = deck.kind === 'topic' ? db.facts.filter((f) => f.deckId === deck.id) : db.words.filter((w) => w.deckId === deck.id)
+  const words: (Word | Fact)[] = [...db.words, ...db.facts].filter((w) => w.deckId === deck.id)
   const active = new Set(words.filter((w) => w.status === 'active').map((w) => w.id))
-  const cards = db.cards.filter((c) => active.has((c.factId ?? c.wordId)!) && !c.suspended && (deck.kind === 'topic' || enabled(deck, c.direction)))
+  const cards = db.cards.filter((c) => active.has((c.factId ?? c.wordId)!) && !c.suspended && (!!c.factId || enabled(deck, c.direction)))
   const knownWords = new Set(cards.filter((c) => known(c.schedule, now)).map((c) => c.factId ?? c.wordId))
   return {
     total: words.length,
     active: active.size,
-    inbox: words.filter((w) => w.status === 'inbox').length,
+    dropped: words.filter((w) => w.status === 'rejected').length,
     known: knownWords.size,
     learning: cards.filter((c) => c.schedule.state === 1 || c.schedule.state === 3).length,
     due: cards.filter((c) => c.schedule.state !== 0 && new Date(c.schedule.due).getTime() < dayEnd).length,
-    new: buildQueue(now, 10_000, deck.id).out.filter((c) => c.schedule.state === 0).length,
+    new: buildQueue(now, 10_000, deck.id).decks.find((d) => d.id === deck.id)?.counts.new ?? 0,
     newTotal: cards.filter((c) => c.schedule.state === 0).length,
+  }
+}
+
+// Tags in use in a deck (active cards), most used first.
+function deckTags(deckId: string) {
+  const m = new Map<string, number>()
+  for (const o of [...db.words, ...db.facts]) if (o.deckId === deckId && o.status === 'active') for (const t of o.tags) m.set(t, (m.get(t) ?? 0) + 1)
+  return [...m].map(([tag, n]) => ({ tag, n })).sort((a, b) => b.n - a.n || a.tag.localeCompare(b.tag))
+}
+
+// "What to review": what a deck has, and today's count under a draft filter.
+function reviewOptions(deck: MockDeck, filter: ReviewFilter | null, now: Date) {
+  const q = buildQueue(now, 10_000, deck.id, { deckId: deck.id, filter })
+  const words = db.words.filter((w) => w.deckId === deck.id && w.status === 'active')
+  const facts = db.facts.filter((f) => f.deckId === deck.id && f.status === 'active')
+  const count = <T extends string>(xs: (T | null)[]) => {
+    const m = new Map<T, number>()
+    for (const x of xs) if (x) m.set(x, (m.get(x) ?? 0) + 1)
+    return [...m].map(([value, n]) => ({ value, n })).sort((a, b) => b.n - a.n || a.value.localeCompare(b.value))
+  }
+  const directions = words.length ? (['forward', 'reverse'] as const).filter((d) => enabled(deck, d)).map((value) => ({ value, n: words.length })) : []
+  return {
+    counts: q.counts,
+    types: count<CardType>([...words, ...facts].map(typeOf)),
+    tags: count([...words, ...facts].flatMap((x) => x.tags)),
+    pos: count(words.map((w) => w.pos)),
+    cefr: count(words.map((w) => w.cefr)),
+    directions,
   }
 }
 
@@ -489,7 +537,7 @@ function dupError(existing: Word): Fail {
 
 function createWord(body: Body, now: Date): Word {
   const deck = mustDeck(body.deckId as string | undefined)
-  if (deck.kind === 'topic') throw new Fail(400, `"${deck.name}" is a topic deck; words go into a language deck`)
+  if (!hasLangs(deck)) throw new Fail(400, `"${deck.name}" has no languages; words go into a deck with them`)
   const r = cleanWord(body as unknown as WordInput)
   if ('error' in r) throw new Fail(400, r.error)
   const dup = duplicateOf(deck.id, r.word.term, r.word.pos)
@@ -533,7 +581,6 @@ function pickExercises(factId: string) {
 
 function createFact(body: Body, now: Date): Fact {
   const deck = mustDeck(body.deckId as string | undefined)
-  if (deck.kind !== 'topic') throw new Fail(400, `"${deck.name}" is a language deck; facts go into a topic deck`)
   const r = cleanFact(body as unknown as FactInput)
   if ('error' in r) throw new Fail(400, r.error)
   const dup = db.facts.find((f) => f.deckId === deck.id && factKey(f.front) === factKey(r.fact.front))
@@ -547,7 +594,6 @@ function createFact(body: Body, now: Date): Fact {
 function updateFact(f: Fact, body: Body, now: Date): Fact {
   for (const k of Object.keys(body)) if (!['front', 'back', 'tags', 'status', 'deckId'].includes(k)) throw new Fail(400, `Unrecognized key: "${k}"`)
   const target = body.deckId ? mustDeck(String(body.deckId)) : deckOf(f.deckId)
-  if (target.kind !== 'topic') throw new Fail(400, `"${target.name}" is a language deck; facts go into a topic deck`)
   const r = cleanFact({ front: (body.front as string) ?? f.front, back: (body.back as string) ?? f.back, tags: (body.tags as string[]) ?? f.tags })
   if ('error' in r) throw new Fail(400, r.error)
   const dup = db.facts.find((x) => x.id !== f.id && x.deckId === target.id && factKey(x.front) === factKey(r.fact.front))
@@ -567,7 +613,7 @@ function updateWord(w: Word, body: Body, now: Date): Word {
   const dup = duplicateOf(w.deckId, r.word.term, r.word.pos, w.id)
   if (dup) throw dupError(dup)
   if ('status' in body) {
-    if (!['inbox', 'active', 'rejected'].includes(String(body.status))) throw new Fail(400, 'unknown status')
+    if (!['active', 'rejected'].includes(String(body.status))) throw new Fail(400, 'unknown status')
     w.status = body.status as Word['status']
   }
   Object.assign(w, r.word, { freqRank: rankOf(r.word.term) ?? (r.word.term === w.term ? w.freqRank : null), updatedAt: now.toISOString() })
@@ -921,7 +967,6 @@ function dashboard(deck: MockDeck, now: Date): Dashboard {
       words: {
         total: words.length,
         active: active.length,
-        inbox: words.filter((w) => w.status === 'inbox').length,
         rejected: words.filter((w) => w.status === 'rejected').length,
       },
       directions,
@@ -1022,13 +1067,17 @@ function patchMe(body: Body) {
   Object.assign(settings, body)
 }
 
-const DECK_KEYS = ['name', 'newPerDay', 'inReview', 'forwardEnabled', 'reverseEnabled', 'reverseAfterDays', 'typeAnswer']
-const LANGUAGE_ONLY = ['forwardEnabled', 'reverseEnabled', 'reverseAfterDays', 'typeAnswer']
+const DECK_KEYS = ['name', 'newPerDay', 'forwardEnabled', 'reverseEnabled', 'reverseAfterDays', 'typeAnswer', 'reviewFilter']
 
 function patchDeck(d: MockDeck, body: Body) {
   for (const k of Object.keys(body)) if (!DECK_KEYS.includes(k)) throw new Fail(400, `Unrecognized key: "${k}"`)
-  if (d.kind === 'topic') for (const k of Object.keys(body)) if (LANGUAGE_ONLY.includes(k)) throw new Fail(400, `${k} does not apply to a topic deck`)
-  if ('inReview' in body && typeof body.inReview !== 'boolean') throw new Fail(400, 'inReview must be a boolean')
+  if ('name' in body) {
+    const name = String(body.name ?? '').replace(/\s+/g, ' ').trim()
+    if (!name) throw new Fail(400, 'deck name is empty')
+    if (db.decks.some((x) => x.id !== d.id && x.name.toLowerCase() === name.toLowerCase())) throw new Fail(409, `deck "${name}" already exists`)
+    body.name = name
+  }
+  if ('reviewFilter' in body) body.reviewFilter = cleanReviewFilter(body.reviewFilter as ReviewFilter | null)
   if ('newPerDay' in body && (!Number.isInteger(body.newPerDay) || (body.newPerDay as number) < 0 || (body.newPerDay as number) > 999)) throw new Fail(400, 'newPerDay must be 0..999')
   if ('reverseAfterDays' in body && body.reverseAfterDays !== null && (typeof body.reverseAfterDays !== 'number' || body.reverseAfterDays < 1 || body.reverseAfterDays > 365))
     throw new Fail(400, 'reverseAfterDays must be 1..365 or null')
@@ -1119,8 +1168,8 @@ function handle(method: string, url: URL, body: unknown): unknown {
   if (p === '/api/queue') {
     const ref = url.searchParams.get('deck')
     const deckId = ref ? (resolveDeck(ref)?.id ?? '-') : undefined
-    const { items, counts, inbox, decks } = buildQueue(now, Number(url.searchParams.get('limit') ?? 200), deckId)
-    return { items, counts, inbox, decks }
+    const { items, counts, decks } = buildQueue(now, Number(url.searchParams.get('limit') ?? 200), deckId)
+    return { items, counts, decks }
   }
 
   if (p === '/api/reviews' && method === 'POST') {
@@ -1166,61 +1215,80 @@ function handle(method: string, url: URL, body: unknown): unknown {
   // ---------- decks ----------
 
   if (a === 'decks') {
-    if (!b && method === 'GET') {
-      const sorted = [...db.decks].sort((x, y) => Number(x.kind === 'topic') - Number(y.kind === 'topic'))
-      return { decks: sorted.map((d) => ({ ...d, counts: deckCounts(d, now) })) }
-    }
-    if (!b && method === 'POST' && B.kind === 'topic') {
-      const name = String(B.name ?? '').replace(/\s+/g, ' ').trim()
-      if (!name) throw new Fail(400, 'deck name is empty')
-      if (db.decks.some((d) => d.name.toLowerCase() === name.toLowerCase())) throw new Fail(409, `deck "${name}" already exists`)
-      const d: MockDeck = {
-        id: id('dk'), kind: 'topic', name, targetLang: null, nativeLang: null, newPerDay: Number(B.newPerDay ?? 5), inReview: B.inReview !== false,
-        forwardEnabled: true, reverseEnabled: true, reverseAfterDays: null, typeAnswer: 'off', createdAt: now.toISOString(),
-      }
-      db.decks.push(d)
-      return new Reply(201, { deck: d })
-    }
+    if (!b && method === 'GET') return { decks: sortDecks(db.decks).map((d) => ({ ...d, counts: deckCounts(d, now), tags: deckTags(d.id) })) }
     if (!b && method === 'POST') {
-      const lang = String(B.targetLang ?? '').toLowerCase()
-      if (!lang) throw new Fail(400, 'targetLang is required')
-      if (db.decks.some((d) => d.targetLang === lang)) throw new Fail(409, `a deck for ${lang} already exists`)
+      const name = String(B.name ?? '').replace(/\s+/g, ' ').trim()
+      const lang = B.targetLang ? String(B.targetLang).toLowerCase() : null
+      const native = B.nativeLang ? String(B.nativeLang).toLowerCase() : null
+      if (!!lang !== !!native) throw new Fail(400, 'targetLang and nativeLang go together')
+      const deckName = name || lang?.toUpperCase() || ''
+      if (!deckName) throw new Fail(400, 'deck name is empty')
+      if (db.decks.some((d) => d.name.toLowerCase() === deckName.toLowerCase())) throw new Fail(409, `deck "${deckName}" already exists`)
+      if (lang && db.decks.some((d) => d.targetLang === lang)) throw new Fail(409, `a deck for ${lang} already exists`)
       const d: MockDeck = {
-        id: id('dk'),
-        kind: 'language',
-        name: String(B.name ?? lang.toUpperCase()),
-        targetLang: lang,
-        nativeLang: String(B.nativeLang ?? 'ru'),
-        newPerDay: Number(B.newPerDay ?? 15),
-        inReview: true,
-        forwardEnabled: true,
-        reverseEnabled: true,
-        reverseAfterDays: null,
-        typeAnswer: 'off',
-        createdAt: now.toISOString(),
+        id: id('dk'), name: deckName, targetLang: lang, nativeLang: native, newPerDay: Number(B.newPerDay ?? (lang ? 15 : 5)),
+        forwardEnabled: true, reverseEnabled: true, reverseAfterDays: null, typeAnswer: 'off', reviewFilter: null, createdAt: now.toISOString(),
       }
       db.decks.push(d)
-      return new Reply(201, { deck: d })
+      return new Reply(201, { deck: { ...d, counts: deckCounts(d, now), tags: [] } })
     }
-    if (b && method === 'DELETE') {
-      const d = db.decks.find((x) => x.id === b)
-      if (!d) throw new Fail(404, 'deck not found')
-      if (d.kind !== 'topic') throw new Fail(400, 'only topic decks can be deleted')
-      const mine = db.facts.filter((f) => f.deckId === d.id)
-      if (mine.length && url.searchParams.get('facts') !== 'delete') throw new Fail(409, `deck "${d.name}" still has ${mine.length} facts`, { facts: mine.length })
-      const ids = new Set(mine.map((f) => f.id))
-      const cardIds = new Set(db.cards.filter((c) => c.factId && ids.has(c.factId)).map((c) => c.id))
+    const d = db.decks.find((x) => x.id === b)
+    if (!d) throw new Fail(404, 'deck not found')
+    if (method === 'DELETE') {
+      const words = db.words.filter((w) => w.deckId === d.id)
+      const facts = db.facts.filter((f) => f.deckId === d.id)
+      const withCards = ['delete'].includes(url.searchParams.get('cards') ?? url.searchParams.get('facts') ?? '')
+      if ((words.length || facts.length) && !withCards) throw new Fail(409, `deck "${d.name}" still has cards`, { words: words.length, facts: facts.length })
+      const ids = new Set([...words, ...facts].map((x) => x.id))
+      const cardIds = new Set(db.cards.filter((c) => ids.has((c.factId ?? c.wordId)!)).map((c) => c.id))
+      db.words = db.words.filter((w) => !ids.has(w.id))
       db.facts = db.facts.filter((f) => !ids.has(f.id))
+      db.exercises = db.exercises.filter((e) => !ids.has(e.factId))
       db.cards = db.cards.filter((c) => !cardIds.has(c.id))
       db.logs = db.logs.filter((l) => !cardIds.has(l.cardId))
       db.decks = db.decks.filter((x) => x.id !== d.id)
-      return { ok: true, facts: mine.length }
+      return { ok: true, words: words.length, facts: facts.length }
     }
-    if (b && method === 'PATCH') {
-      const d = db.decks.find((x) => x.id === b)
-      if (!d) throw new Fail(404, 'deck not found')
+    if (method === 'PATCH') {
       patchDeck(d, B)
       return { deck: d }
+    }
+    if (c === 'merge' && method === 'POST') {
+      const into = resolveDeck(String(B.into ?? ''))
+      if (!into || !B.into) throw new Fail(404, 'deck not found')
+      if (into.id === d.id) throw new Fail(400, 'a deck cannot be merged into itself')
+      const words = db.words.filter((w) => w.deckId === d.id)
+      if (words.length && (d.targetLang !== into.targetLang || d.nativeLang !== into.nativeLang)) throw new Fail(409, `"${into.name}" takes no words of ${d.name}'s languages`)
+      const tag = B.tag !== false
+      const moved = { words: 0, facts: 0 }
+      const skipped: { kind: 'word' | 'fact'; id: string; text: string }[] = []
+      const tagged = (tags: string[]) => (tag && !tags.includes(d.name) ? [...tags, d.name] : tags)
+      for (const w of words) {
+        if (duplicateOf(into.id, w.term, w.pos)) skipped.push({ kind: 'word', id: w.id, text: w.term })
+        else {
+          Object.assign(w, { deckId: into.id, tags: tagged(w.tags) })
+          moved.words++
+        }
+      }
+      for (const f of db.facts.filter((x) => x.deckId === d.id)) {
+        if (db.facts.some((x) => x.deckId === into.id && factKey(x.front) === factKey(f.front))) skipped.push({ kind: 'fact', id: f.id, text: f.front })
+        else {
+          Object.assign(f, { deckId: into.id, tags: tagged(f.tags) })
+          moved.facts++
+        }
+      }
+      const deleted = !skipped.length
+      if (deleted) db.decks = db.decks.filter((x) => x.id !== d.id)
+      return { from: { id: d.id, name: d.name, deleted }, into: { id: into.id, name: into.name }, moved, skipped }
+    }
+    if (c === 'review-options' && method === 'GET') {
+      let filter: ReviewFilter | null = null
+      try {
+        filter = cleanReviewFilter(JSON.parse(url.searchParams.get('filter') ?? 'null') as ReviewFilter | null)
+      } catch {
+        throw new Fail(400, 'filter is not JSON')
+      }
+      return reviewOptions(d, filter, now)
     }
   }
 
@@ -1229,17 +1297,14 @@ function handle(method: string, url: URL, body: unknown): unknown {
   if (p === '/api/packs') return { packs: [packInfo()] }
   if (a === 'packs' && b && method === 'POST') {
     if (b !== PACK.id) throw new Fail(404, `no pack ${b}`)
+    // The deck asked for, else where it already is, else the deck with English.
     const known = packInfo().deckId
-    let deck = known ? deckOf(known) : db.decks.find((d) => d.name.toLowerCase() === PACK.name.toLowerCase())
-    if (!deck) {
-      deck = { id: id('dk'), kind: 'topic', name: PACK.name, targetLang: null, nativeLang: null, newPerDay: 5, inReview: true, forwardEnabled: true, reverseEnabled: true, reverseAfterDays: null, typeAnswer: 'off', createdAt: now.toISOString() }
-      db.decks.push(deck)
-    }
+    const deck = B.deckId ? mustDeck(String(B.deckId)) : known ? deckOf(known) : (db.decks.find((d) => d.targetLang === 'en') ?? db.decks[0]!)
     let added = 0
     irregularVerbs.forEach((v, i) => {
       if (packRefs.has(packRef(v.verb))) return
       const at = new Date(now.getTime() + i).toISOString()
-      const fact: Fact = { id: id('ft'), deckId: deck.id, ...packFact(v), status: 'active', createdBy: 'import', createdAt: at, updatedAt: at }
+      const fact: Fact = { id: id('ft'), deckId: deck.id, ...packFact(v), tags: [PACK.name], status: 'active', createdBy: 'import', createdAt: at, updatedAt: at }
       db.facts.push(fact)
       db.cards.push({ id: id('cd'), wordId: null, factId: fact.id, direction: 'forward', suspended: false, schedule: newCardState(now) })
       packRefs.set(packRef(v.verb), fact.id)
@@ -1269,8 +1334,9 @@ function handle(method: string, url: URL, body: unknown): unknown {
       const ref = url.searchParams.get('deck')
       const deck = ref ? resolveDeck(ref) : null
       const q = (url.searchParams.get('q') ?? '').trim().toLowerCase()
+      const tag = url.searchParams.get('tag')
       const facts = db.facts
-        .filter((f) => (!ref || f.deckId === deck?.id) && (!q || `${f.front}\n${f.back}\n${f.tags.join(' ')}`.toLowerCase().includes(q)))
+        .filter((f) => (!ref || f.deckId === deck?.id) && (!tag || f.tags.includes(tag)) && (!q || `${f.front}\n${f.back}\n${f.tags.join(' ')}`.toLowerCase().includes(q)))
         .map((f) => factItem(f, now))
       return { facts, total: facts.length }
     }
@@ -1292,8 +1358,8 @@ function handle(method: string, url: URL, body: unknown): unknown {
       })
       return new Reply(created.length ? 201 : 200, { created, duplicates, errors, exercises: db.exercises.filter((e) => e.factId === f.id) })
     }
-    if (method === 'POST' && (c === 'approve' || c === 'reject')) {
-      f.status = c === 'approve' ? 'active' : 'rejected'
+    if (method === 'POST' && (c === 'drop' || c === 'restore')) {
+      f.status = c === 'drop' ? 'rejected' : 'active'
       f.updatedAt = now.toISOString()
       return { fact: factItem(f, now) }
     }
@@ -1324,8 +1390,8 @@ function handle(method: string, url: URL, body: unknown): unknown {
     if (!b && method === 'GET') return searchWords(url, now)
     if (!b && method === 'POST') return new Reply(201, { word: item(createWord(B, now), now) })
     const w = mustWord(b!)
-    if (c === 'approve' || c === 'reject') {
-      w.status = c === 'approve' ? 'active' : 'rejected'
+    if (method === 'POST' && (c === 'drop' || c === 'restore')) {
+      w.status = c === 'drop' ? 'rejected' : 'active'
       w.updatedAt = now.toISOString()
       return { word: item(w, now) }
     }
@@ -1355,42 +1421,16 @@ function handle(method: string, url: URL, body: unknown): unknown {
     return { card: { ...card, summary: summary(card, now) } }
   }
 
-  if (p === '/api/inbox') {
-    const ref = url.searchParams.get('deck')
-    const deck = ref ? mustDeck(ref) : null
-    return {
-      words: db.words
-        .filter((w) => w.status === 'inbox' && (!deck || w.deckId === deck.id))
-        .sort((x, y) => x.createdAt.localeCompare(y.createdAt))
-        .map((w) => item(w, now)),
-      facts: db.facts
-        .filter((f) => f.status === 'inbox' && (!deck || f.deckId === deck.id))
-        .sort((x, y) => x.createdAt.localeCompare(y.createdAt))
-        .map((f) => factItem(f, now)),
-    }
-  }
-  if (p === '/api/inbox/approve-all' && method === 'POST') {
-    const deck = B.deckId ? resolveDeck(String(B.deckId)) : null
-    let n = 0
-    for (const w of [...db.words, ...db.facts]) {
-      if (w.status !== 'inbox' || (B.deckId && w.deckId !== deck?.id)) continue
-      w.status = 'active'
-      w.updatedAt = now.toISOString()
-      n++
-    }
-    return { approved: n }
-  }
-
   // ---------- progress ----------
 
-  // Without ?deck= the forecast covers every deck in review, words and facts.
+  // Without ?deck= the forecast covers every deck, words and facts.
   if (p === '/api/stats') {
     const ref = url.searchParams.get('deck')
     const only = ref ? mustDeck(ref) : null
     const cards = db.cards.filter((c) => {
       const o = ownerOf(c)
       const deck = deckOf(o.deckId)
-      return (only ? deck.id === only.id : deck.inReview) && o.status === 'active' && !c.suspended && (!!c.factId || enabled(deck, c.direction)) && c.schedule.state !== 0
+      return (!only || deck.id === only.id) && o.status === 'active' && !c.suspended && (!!c.factId || enabled(deck, c.direction)) && c.schedule.state !== 0
     })
     const start = nextDayStart(now, DAY).getTime() - D
     const forecast = Array.from({ length: 14 }, (_, i) => ({

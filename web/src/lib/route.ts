@@ -3,7 +3,7 @@
 // bare "&", or as the whole hash (#tgWebAppData=…) — so every tgWebApp* key
 // is dropped and a hash of nothing but those is home.
 
-export type Tab = 'review' | 'words' | 'inbox' | 'progress' | 'settings'
+export type Tab = 'review' | 'words' | 'progress' | 'settings'
 
 export interface Route {
   path: string
@@ -22,15 +22,17 @@ export function parseRoute(hash: string): Route {
   let parts = p.split('/').filter(Boolean).map((s) => decodeURIComponent(s))
   const [a, b] = parts
   // Aliases: the bot's deep links (#/words/<id>, #/words/new?term=…,
-  // #/dashboard) and links from before words replaced notes.
+  // #/dashboard), links from before words replaced notes, and the inbox
+  // that is gone (a proposal's link opens its editor).
   if (a === 'words' && b === 'new') parts = ['add']
+  else if (a === 'inbox') parts = b ? [b.startsWith('ft_') ? 'fact' : 'word', b] : ['words']
   else if (a === 'words' && b) parts = ['word', b]
   else if (a === 'dashboard' || a === 'stats') parts = ['progress']
   else if (a === 'browse' || a === 'note') parts = ['words']
   const first = parts[0] ?? ''
   // Pushed screens belong to the tab they were opened from.
   const from = q.get('from') ?? ''
-  // A fact's editor belongs to the review card it was opened from, else to the Topics list.
+  // An editor belongs to the review card it was opened from, else to the Cards tab.
   const tab: Tab =
     first === 'fact'
       ? from === '/' ? 'review' : 'words'
@@ -40,8 +42,6 @@ export function parseRoute(hash: string): Route {
         ? 'review'
       : first === 'add'
         ? from.startsWith('/words') || from.startsWith('/word/') ? 'words' : 'review'
-        : first === 'inbox'
-          ? 'inbox'
           : first === 'progress' || first === 'test'
             ? 'progress'
             : first === 'settings'

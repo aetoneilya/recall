@@ -30,7 +30,7 @@ describe('data isolation between users', () => {
   // A's collection.
   let deckA: string
   let activeA: string
-  let inboxA: string
+  let claudeA: string
   let cardA: string
   let logA: string
   let testA: string
@@ -53,8 +53,8 @@ describe('data isolation between users', () => {
     activeA = created.body.word.id
     cardA = created.body.word.cards.forward.id
     const proposed = await callTool(url, tokenA, 'add_words', { words: [{ term: 'proposal', pos: 'noun', translations: ['предложение'] }] })
-    inboxA = proposed.created[0].id
-    expect(proposed.created[0].status).toBe('inbox')
+    claudeA = proposed.created[0].id
+    expect(proposed.created[0].status).toBe('active')
     logA = 'log-a-1'
     const reviewed = await a.call('POST', '/reviews', [{ id: logA, cardId: cardA, rating: 1, reviewedAt: new Date().toISOString() }])
     expect(reviewed.body).toMatchObject({ applied: 1 })
@@ -66,15 +66,13 @@ describe('data isolation between users', () => {
     const decksB = (await b.get('/decks')).body.decks
     expect(decksB).toHaveLength(1)
     expect(decksB[0].id).not.toBe(deckA)
-    expect(decksB[0].counts).toMatchObject({ total: 0, inbox: 0 })
+    expect(decksB[0].counts).toMatchObject({ total: 0, dropped: 0 })
     expect((await b.get('/words?q=secret')).body).toEqual({ words: [], total: 0 })
     expect((await b.get('/words')).body.total).toBe(0)
     expect((await b.get(`/words?deck=${deckA}`)).body.total).toBe(0)
-    expect((await b.get('/words?status=inbox')).body.total).toBe(0)
-    expect((await b.get('/inbox')).body).toEqual({ words: [], facts: [] })
-    expect((await b.get(`/inbox?deck=${deckA}`)).status).toBe(404)
+    expect((await b.get('/words?tag=claude')).body.total).toBe(0)
     const q = (await b.get('/queue')).body
-    expect(q).toMatchObject({ items: [], counts: { new: 0, learning: 0, review: 0 }, inbox: 0 })
+    expect(q).toMatchObject({ items: [], counts: { new: 0, learning: 0, review: 0 } })
     expect((await b.get(`/queue?deck=${deckA}`)).body.items).toEqual([])
     const st = (await b.get('/stats')).body
     expect(st.reviews).toBe(0)
@@ -94,11 +92,9 @@ describe('data isolation between users', () => {
   it('REST: B modifies nothing of A', async () => {
     expect((await b.call('PATCH', `/words/${activeA}`, { term: 'pwned' })).status).toBe(404)
     expect((await b.call('DELETE', `/words/${activeA}`)).status).toBe(404)
-    expect((await b.call('POST', `/words/${inboxA}/approve`)).status).toBe(404)
-    expect((await b.call('POST', `/words/${inboxA}/reject`)).status).toBe(404)
+    expect((await b.call('POST', `/words/${claudeA}/drop`)).status).toBe(404)
+    expect((await b.call('POST', `/words/${claudeA}/restore`)).status).toBe(404)
     expect((await b.call('POST', `/words/${activeA}/suspend`)).status).toBe(404)
-    expect((await b.call('POST', '/inbox/approve-all', {})).body).toEqual({ approved: 0 })
-    expect((await b.call('POST', '/inbox/approve-all', { deckId: deckA })).body).toEqual({ approved: 0 })
     expect((await b.call('POST', `/cards/${cardA}/suspend`)).status).toBe(404)
     expect((await b.call('PATCH', `/decks/${deckA}`, { name: 'pwned', newPerDay: 0, reverseEnabled: false })).status).toBe(404)
     // Can't add into A's deck or autofill against it; dedupe is per user.
@@ -120,8 +116,8 @@ describe('data isolation between users', () => {
     const word = await a.get(`/words/${activeA}`)
     expect(word.body.word).toMatchObject({ term: 'secret word', translations: ['секрет'], cards: { forward: { id: cardA, suspended: false, reps: 1 } } })
     expect(word.body.logs.map((l: { id: string }) => l.id)).toEqual([logA])
-    expect((await a.get('/inbox')).body.words.map((n: { id: string }) => n.id)).toEqual([inboxA])
-    expect((await a.get('/decks')).body.decks).toMatchObject([{ id: deckA, name: 'English', newPerDay: 15, reverseEnabled: true, counts: { total: 2, inbox: 1 } }])
+    expect((await a.get('/words?tag=claude')).body.words.map((n: { id: string }) => n.id)).toEqual([claudeA])
+    expect((await a.get('/decks')).body.decks).toMatchObject([{ id: deckA, name: 'English', newPerDay: 15, reverseEnabled: true, counts: { total: 2, active: 2 } }])
     expect((await a.get('/vocab-tests')).body.tests.map((t: { id: string }) => t.id)).toEqual([testA])
     // A can still undo their own review.
     expect((await a.call('POST', '/reviews/undo', { id: logA })).status).toBe(200)
@@ -135,11 +131,11 @@ describe('data isolation between users', () => {
     expect(decks.map((d: { name: string }) => d.name)).toEqual(['English'])
     expect(decks[0].id).not.toBe(deckA)
     expect((await callTool(url, tokenB, 'search_words', { query: 'proposal' }))).toEqual({ total: 0, words: [] })
-    expect((await callTool(url, tokenB, 'search_words', { status: 'inbox' })).total).toBe(0)
+    expect((await callTool(url, tokenB, 'search_words', { tag: 'claude' })).total).toBe(0)
     expect(await callTool(url, tokenB, 'get_word', { id: activeA })).toEqual({ error: `word ${activeA} not found` })
     expect((await callTool(url, tokenB, 'update_word', { id: activeA, term: 'pwned' })).error).toMatch(/not found/)
-    for (const action of ['delete', 'approve', 'reject', 'suspend', 'unsuspend']) {
-      const r = await callTool(url, tokenB, 'set_word_status', { ids: [inboxA, activeA], action })
+    for (const action of ['delete', 'drop', 'restore', 'suspend', 'unsuspend']) {
+      const r = await callTool(url, tokenB, 'set_word_status', { ids: [claudeA, activeA], action })
       expect(r.results.map((x: { ok: boolean }) => x.ok)).toEqual([false, false])
     }
     expect((await callTool(url, tokenB, 'review_stats', {})).reviews).toBe(0)
@@ -148,7 +144,7 @@ describe('data isolation between users', () => {
     expect((await callTool(url, tokenA, 'get_leeches', { minLapses: 1 })).map((l: { wordId: string }) => l.wordId)).toEqual([activeA])
     expect((await callTool(url, tokenB, 'add_words', { deck: deckA, words: [{ term: 'x', pos: 'noun', translations: ['y'] }] })).error).toMatch(/no deck/)
     const profileB = await callTool(url, tokenB, 'vocabulary_profile', {})
-    expect(profileB.words).toMatchObject({ total: 1, inbox: 0 })
+    expect(profileB.words).toMatchObject({ total: 1, rejected: 0 })
     expect(profileB.weakest).toEqual([])
 
     // Dedupe is per user: B may propose what A already has.
@@ -159,7 +155,7 @@ describe('data isolation between users', () => {
     // A sees exactly their own words, unchanged.
     const aWords = await callTool(url, tokenA, 'search_words', {})
     expect(aWords.total).toBe(2)
-    expect(aWords.words.map((n: { id: string; status: string }) => [n.id, n.status]).sort()).toEqual([[activeA, 'active'], [inboxA, 'inbox']].sort())
+    expect(aWords.words.map((n: { id: string; status: string }) => [n.id, n.status]).sort()).toEqual([[activeA, 'active'], [claudeA, 'active']].sort())
     const aWord = await callTool(url, tokenA, 'get_word', { id: activeA })
     expect(aWord).toMatchObject({ term: 'secret word', cards: { forward: { suspended: false } }, faces: { reverse: { front: { translations: ['секрет'] } } } })
   })

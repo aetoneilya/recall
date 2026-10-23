@@ -143,6 +143,10 @@ export interface SwipeOptions {
   // A gesture may start here: where it was grabbed, as fractions of the node (0..1).
   onstart?: (fx: number, fy: number) => void
   onmove?: (dx: number, dy: number, axis: Axis) => void
+  // Every move from the press, before the axis locks too (peek's slop).
+  onraw?: (dx: number, dy: number) => void
+  // The press ended, dragged or not (before onend for a drag).
+  onrelease?: (wasDrag: boolean) => void
   // Called on release with the committed direction (or null to snap back)
   // and the release velocity along the axis, px/ms.
   onend?: (dir: SwipeDir | null, dx: number, dy: number, v: number) => void
@@ -167,6 +171,8 @@ export function swipe(node: HTMLElement, initial: SwipeOptions) {
   let kind: 'pointer' | 'touch' = 'pointer'
   let dx = 0
   let dy = 0
+  let x0 = 0
+  let y0 = 0
 
   const scrollState = (): ScrollState | null => {
     const el = opts.scroller?.()
@@ -178,6 +184,8 @@ export function swipe(node: HTMLElement, initial: SwipeOptions) {
     // Code blocks and tables scroll sideways themselves.
     if ((target as Element | null)?.closest?.(IGNORE)) return false
     dx = dy = 0
+    x0 = x
+    y0 = y
     lockedAxis = null
     tracker.start(x, y, t, scrollState())
     if (opts.onstart) {
@@ -188,6 +196,7 @@ export function swipe(node: HTMLElement, initial: SwipeOptions) {
   }
 
   const step = (x: number, y: number, t: number) => {
+    opts.onraw?.(x - x0, y - y0)
     const r = tracker.move(x, y, t)
     if (r.state === 'drag') {
       lockedAxis = r.axis
@@ -201,6 +210,7 @@ export function swipe(node: HTMLElement, initial: SwipeOptions) {
   const finish = (x: number, y: number, cancelled: boolean) => {
     active = null
     const { dir, wasDrag, v } = tracker.end(x, y)
+    opts.onrelease?.(wasDrag)
     if (!wasDrag) return
     // Swallow the click that follows a drag so it doesn't count as a tap.
     node.addEventListener('click', stopOnce, { capture: true, once: true })

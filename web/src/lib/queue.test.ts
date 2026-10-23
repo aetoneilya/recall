@@ -1,6 +1,6 @@
 import { newCardState, type CardState, type Direction, type Fact, type QueueItem, type Word, type WordQueueItem } from '@recall/core'
 import { describe, expect, it } from 'vitest'
-import { applyRating, buildQueue, counts, deckCounts, dropWord, emptyQueue, keepExercises, LEARN_AHEAD_MS, nextItem, patchFact, patchWord, practiceStep, waiting, withSchedules } from './queue.ts'
+import { applyRating, buildQueue, counts, deckCounts, dropWord, emptyQueue, GAP_MS, keepExercises, LEARN_AHEAD_MS, nextItem, patchFact, patchWord, peekNext, practiceStep, rested, upcoming, withSchedules, type QueueState, type Shown } from './queue.ts'
 
 const day = { timeZone: 'Europe/Moscow', startHour: 4 }
 // 13:00 MSK; the study day ends at 04:00 MSK tomorrow.
@@ -136,12 +136,120 @@ describe('nextItem', () => {
     expect(nextItem(q, now)?.card.id).toBe('l1')
     const late = buildQueue([item('l2', 'n2', learningState(min(45)))], {}, {}, now, day)
     expect(nextItem(late, now)).toBeNull()
-    expect(waiting(late, now).count).toBe(1)
+    expect(upcoming(late, now)).toMatchObject({ item: { card: { id: 'l2' } }, at: new Date(min(45).getTime() - LEARN_AHEAD_MS) })
     expect(nextItem(late, new Date(min(45).getTime() - LEARN_AHEAD_MS + 1000))?.card.id).toBe('l2')
   })
 
   it('returns null on an empty queue', () => {
     expect(nextItem(emptyQueue(), now)).toBeNull()
+  })
+})
+
+describe('the minimum gap', () => {
+  const shown = (...xs: [string, number][]): Shown[] => xs.map(([cardId, m]) => ({ cardId, at: min(m).getTime() }))
+
+  it('rests a card until two other cards were rated since, or 60 s passed', () => {
+    const t = now.getTime()
+    expect(rested('a', [], t)).toBe(true)
+    expect(rested('a', shown(['a', 0]), t)).toBe(false)
+    expect(rested('a', shown(['a', 0], ['b', 0]), t)).toBe(false)
+    expect(rested('a', shown(['a', 0], ['b', 0], ['c', 0]), t)).toBe(true)
+    expect(rested('a', shown(['a', 0], ['b', 0]), t + GAP_MS - 1)).toBe(false)
+    expect(rested('a', shown(['a', 0], ['b', 0]), t + GAP_MS)).toBe(true)
+    // Counted from its latest rating.
+    expect(rested('a', shown(['a', -5], ['b', -5], ['c', -5], ['a', 0]), t)).toBe(false)
+  })
+
+  it('never learns ahead the card just rated: the prod loop on a 6-minute Hard step', () => {
+    // "to rumble" rated Hard, back in 6 min; nothing else left.
+    const q: QueueState = { main: [], learning: [item('rumble', 'n1', learningState(min(6)), 1)], buried: {} }
+    const recent = shown(['rumble', 0])
+    expect(nextItem(q, now, recent)).toBeNull()
+    expect(nextItem(q, min(1), recent)).toBeNull()
+    // It waits for its own due (no learn-ahead), then comes by itself.
+    expect(upcoming(q, now, recent)).toMatchObject({ item: { card: { id: 'rumble' } }, at: min(6) })
+    expect(nextItem(q, min(6), recent)?.card.id).toBe('rumble')
+  })
+
+  it('stops two learning cards from alternating every few seconds', () => {
+    const q: QueueState = { main: [], learning: [item('strain', 'n1', learningState(min(6))), item('court', 'n2', learningState(min(6)))], buried: {} }
+    // strain then court were just rated: neither may come back yet.
+    const recent = shown(['strain', 0], ['court', 0.05])
+    expect(nextItem(q, min(0.1), recent)).toBeNull()
+    // strain is rested once 60 s passed since its rating, and is learned ahead then.
+    expect(upcoming(q, min(0.1), recent)).toMatchObject({ item: { card: { id: 'strain' } }, at: min(1) })
+    expect(nextItem(q, min(1), recent)?.card.id).toBe('strain')
+  })
+
+  it('learns ahead a different card that is rested', () => {
+    const q: QueueState = { main: [], learning: [item('a', 'n1', learningState(min(3))), item('b', 'n2', learningState(min(5)))], buried: {} }
+    expect(nextItem(q, now, shown(['b', -2], ['x', -1], ['y', -1], ['a', 0]))?.card.id).toBe('b')
+  })
+
+  it('keeps the gap for a due learning card, showing the main queue meanwhile', () => {
+    const q: QueueState = { main: [item('r1', 'n2', reviewState(min(-60)))], learning: [item('a', 'n1', learningState(min(-1)))], buried: {} }
+    expect(nextItem(q, now, shown(['a', -0.5]))?.card.id).toBe('r1')
+    expect(nextItem(q, now, shown(['a', -0.5], ['b', -0.4], ['c', -0.2]))?.card.id).toBe('a')
+  })
+
+  it('applyRating then nextItem: the card just rated waits while another is showable', () => {
+    let q = buildQueue([item('a', 'n1', newCardState(now)), item('b', 'n2', newCardState(now))], {}, {}, now, day)
+    const recent: Shown[] = []
+    for (const [id, r] of [['a', 1], ['b', 1]] as const) {
+      const cur = nextItem(q, now, recent)!
+      expect(cur.card.id).toBe(id)
+      q = applyRating(q, cur, r, now, day).queue
+      recent.push({ cardId: cur.card.id, at: now.getTime() })
+    }
+    // Both on a 1-minute step, both just rated: a waits for its 60 s, b too.
+    expect(nextItem(q, min(0.2), recent)).toBeNull()
+    expect(nextItem(q, min(1), recent)?.card.id).toBe('a')
+  })
+
+  it('shows nothing upcoming when the day is done', () => {
+    expect(upcoming(emptyQueue(), now)).toBeNull()
+  })
+})
+
+describe('peekNext', () => {
+  it('is the card nextItem shows after the current one is rated', () => {
+    const items = [item('l1', 'n1', learningState(min(4))), item('r1', 'n2', reviewState(min(-60))), item('r2', 'n3', reviewState(min(-30)))]
+    let q = buildQueue(items, {}, {}, now, day)
+    const recent: Shown[] = []
+    for (let i = 0; i < 3; i++) {
+      const cur = nextItem(q, now, recent)!
+      const peek = peekNext(q, cur, now, recent)
+      for (const r of [1, 2, 3, 4] as const) {
+        const after = applyRating(q, cur, r, now, day).queue
+        expect(nextItem(after, now, [...recent, { cardId: cur.card.id, at: now.getTime() }])?.card.id).toBe(peek?.card.id)
+      }
+      q = applyRating(q, cur, 3, now, day).queue
+      recent.push({ cardId: cur.card.id, at: now.getTime() })
+    }
+  })
+
+  it('never names the current card, nor its buried sibling', () => {
+    const q: QueueState = { main: [item('a0', 'nA', reviewState(min(-60))), item('a1', 'nA', newCardState(now), 1)], learning: [], buried: {} }
+    expect(peekNext(q, q.main[0]!, now)).toBeNull()
+    const solo: QueueState = { main: [], learning: [item('l', 'n1', learningState(min(-1)))], buried: {} }
+    expect(peekNext(solo, solo.learning[0]!, now)).toBeNull()
+  })
+})
+
+describe('state-0 cards and cards reviewed today', () => {
+  it('keeps a new card whatever its due, also beyond the day end', () => {
+    const later = { ...newCardState(now), due: new Date(now.getTime() + 3 * 86_400_000).toISOString() }
+    const q = buildQueue([item('superb', 'n1', later)], {}, {}, now, day)
+    expect(ids(q.main)).toEqual(['superb'])
+    expect(counts(q)).toEqual({ new: 1, learning: 0, review: 0 })
+  })
+
+  it('holds a review card rated today until it is due again, counted as learning', () => {
+    const again: CardState = { ...reviewState(min(5 * 60)), lastReview: min(-60).toISOString() }
+    const q = buildQueue([item('r1', 'n1', again), item('r2', 'n2', reviewState(min(-60)))], {}, {}, now, day)
+    expect(ids(q.main)).toEqual(['r2'])
+    expect(ids(q.learning)).toEqual(['r1'])
+    expect(counts(q)).toEqual({ new: 0, learning: 1, review: 1 })
   })
 })
 

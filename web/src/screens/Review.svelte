@@ -20,7 +20,7 @@
   import { session } from '../lib/review.svelte.ts'
   import { navigate } from '../lib/router.svelte.ts'
   import { defaultThreshold, swipe, type Axis, type SwipeDir } from '../lib/swipe.ts'
-  import { BUTTON_SPEED, lift, nextArmed, plan, reducedMotion, snapMs, THROW_EASE, tilt, tiltOrigin } from '../lib/throw.ts'
+  import { BUTTON_SPEED, canArm, dragRise, dragScale, nextArmed, nextPose, PEEK_HOLD_MS, PEEK_SAFE_MS, peekReveals, plan, reducedMotion, releaseOutcome, snapMs, THROW_EASE, tilt, tiltOrigin } from '../lib/throw.ts'
   import { haptic } from '../lib/telegram.ts'
 
   const c = $derived(counts(session.queue))
@@ -241,7 +241,47 @@
   let armed = $state(false)
   // Where a drag starting mid snap-back continues from.
   let base = { x: 0, y: 0 }
-  let stepDelay = $state(0)
+  // The pose the next card steps up from once it is on top: the stacked
+  // pose, or wherever the drag had already eased it to.
+  let stepFrom = $state({ y: 5, scale: 0.97 })
+  const reduced = reducedMotion()
+  // Held down: the card lifts (and its deeper shadow fades in).
+  let pressed = $state(false)
+  // Peek and throw: a plain word or fact card can be picked up before its
+  // reveal; typed answers and exercises keep their own flow.
+  const peekable = $derived(!!item && !typed && !exercises)
+  // Revealed by a press: the reveal plays fast.
+  let peeked = $state(false)
+  // When the answer became visible; swipes arm only PEEK_SAFE_MS later.
+  let revealedAt: number | null = null
+  let armReady = $state(false)
+  let holdTimer: ReturnType<typeof setTimeout> | undefined
+  let armTimer: ReturnType<typeof setTimeout> | undefined
+  $effect(() => {
+    void cardKey
+    const shown = session.revealed
+    untrack(() => {
+      clearTimeout(armTimer)
+      if (!shown) {
+        revealedAt = null
+        armReady = false
+        peeked = false
+        return
+      }
+      revealedAt = Date.now()
+      armReady = false
+      armTimer = setTimeout(() => (armReady = canArm(revealedAt, Date.now())), PEEK_SAFE_MS)
+    })
+    return () => clearTimeout(armTimer)
+  })
+
+  // The card a rating brings next, drawn under the top one.
+  const next = $derived(item ? session.peek : null)
+  const nextExercises = $derived.by(() => {
+    if (next?.kind !== 'fact' || !next.exercises?.length) return null
+    const list = next.exercises.filter((e) => e.type !== 'write' || canGrade)
+    return list.length ? list : null
+  })
   let stageEl: HTMLElement | undefined = $state()
   let stageWidth = $state(390)
   let stageHeight = $state(600)
@@ -293,7 +333,7 @@
     const el = wrap
     if (el && stageEl) {
       const ghost = el.cloneNode(true) as HTMLElement
-      ghost.classList.remove('dragging', 'snapping')
+      ghost.classList.remove('dragging', 'snapping', 'pressed')
       ghost.classList.add('ghost')
       ghost.setAttribute('aria-hidden', 'true')
       ghost.removeAttribute('role')
@@ -301,19 +341,20 @@
       ghost.style.transformOrigin = origin
       stageEl.appendChild(ghost)
       el.style.visibility = 'hidden'
-      const start = `translate3d(${at.x}px, ${at.y}px, 0) rotate(${at.rotate}deg) scale(${axis === 'y' ? lift(pull) : 1})`
+      const start = `translate3d(${at.x}px, ${at.y}px, 0) rotate(${at.rotate}deg) scale(${scale})`
       let anim: Animation
       if (reducedMotion()) {
         anim = ghost.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 120, fill: 'forwards' })
-        stepDelay = 0
       } else {
         const p = plan(d, button ? { x: 0, y: 0, rotate: d === 'right' ? 4.3 : d === 'left' ? -4.3 : 0 } : at, v, { width: stageWidth, height: stageHeight })
         anim = ghost.animate(
           [{ transform: start }, { transform: `translate3d(${p.x}px, ${p.y}px, 0) rotate(${p.rotate}deg) scale(${p.scale})` }],
           { duration: p.ms, easing: THROW_EASE, fill: 'forwards' },
         )
-        // The next card steps up once the throw is 40% along.
-        stepDelay = Math.round(p.ms * 0.4)
+        // The next card is already drawn underneath: it steps up from where
+        // the drag left it, at once (from its place: no motion at all).
+        stepFrom = nextPose(button ? 0 : pull)
+        setTimeout(() => (stepFrom = nextPose(0)), p.ms + 300)
         if (button) {
           const flash = document.createElement('div')
           flash.style.cssText = `position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:var(--${tone[r]});opacity:0`
@@ -362,6 +403,15 @@
     }
   }
 
+  // A press on a hidden card revealed it (past the slop, or held).
+  function peekNow() {
+    clearTimeout(holdTimer)
+    if (!item || session.revealed || !peekable) return
+    peeked = true
+    reveal()
+    if (session.revealed) haptic.select()
+  }
+
   function tapCard() {
     if (exTyping && exTap) {
       if (tap.done) nextItem()
@@ -380,12 +430,22 @@
   const pull = $derived(Math.min(1, Math.abs(dist) / threshold))
   const rotation = $derived(axis === 'x' ? tilt(dx, grabbedLow) : 0)
   const origin = $derived(tiltOrigin(grabbedLow))
+  // The drag pose grows out of the press lift (lib/throw.ts dragScale / dragRise).
+  const scale = $derived(reduced ? 1 : dragScale(pressed, axis, pull))
+  const rise = $derived(reduced ? 0 : dragRise(pressed, pull))
   const transform = $derived(
-    axis === 'y' ? `translate3d(0, ${dy}px, 0) scale(${lift(pull)})` : `translate3d(${dx}px, 0, 0) rotate(${rotation}deg)`,
+    axis === 'y' ? `translate3d(0, ${dy + rise}px, 0) scale(${scale})` : `translate3d(${dx}px, ${rise}px, 0) rotate(${rotation}deg) scale(${scale})`,
   )
+  // The next card eases up with the drag; one style on one element.
+  const np = $derived(nextPose(dragging ? pull : 0, reduced))
 
   function onSwipeStart(_fx: number, fy: number) {
     grabbedLow = fy >= 0.5
+    pressed = true
+    // The preview underneath is worked out for this moment.
+    session.tick()
+    clearTimeout(holdTimer)
+    if (peekable && !session.revealed) holdTimer = setTimeout(peekNow, PEEK_HOLD_MS)
     // Caught mid snap-back: continue from where the card is.
     if (snapping && wrap) {
       const m = new DOMMatrix(getComputedStyle(wrap).transform)
@@ -399,28 +459,46 @@
     axis = a
     dx = base.x + x
     dy = base.y + y
-    const next = nextArmed(armed, a === 'y' ? dy : dx, defaultThreshold(a, stageWidth, stageHeight))
-    if (next && !armed) haptic.select()
-    armed = next
+    // Arms only once the answer has been visible long enough.
+    const on = armReady && nextArmed(armed, a === 'y' ? dy : dx, defaultThreshold(a, stageWidth, stageHeight))
+    if (on && !armed) haptic.select()
+    armed = on
+  }
+
+  // Moves before the axis locks count for the peek's slop.
+  function onSwipeRaw(x: number, y: number) {
+    if (!session.revealed && peekable && peekReveals(Math.hypot(x, y), 0)) peekNow()
+  }
+
+  // Let go without a drag: the lift settles back.
+  function onSwipeRelease(wasDrag: boolean) {
+    clearTimeout(holdTimer)
+    if (wasDrag) return
+    pressed = false
+    snapping = 160
   }
 
   function resetDrag() {
     dragging = false
+    pressed = false
     armed = false
     dx = dy = 0
     axis = null
   }
 
   function onSwipeEnd(d: SwipeDir | null, _x: number, _y: number, v: number) {
-    if (!d || !session.revealed) {
+    // Short of the threshold, or too soon after the answer appeared: back
+    // in place, still revealed.
+    if (!session.revealed || releaseOutcome(d, revealedAt, Date.now()) === 'spring' || !d) {
       snapping = snapMs(dist)
       dragging = false
+      pressed = false
       armed = false
       dx = dy = 0
       return
     }
     usedSwipe()
-    throwCard(d, v, { x: dx, y: dy, rotate: rotation }, byDir[d], false)
+    throwCard(d, v, { x: dx, y: axis === 'y' ? dy + rise : rise, rotate: rotation }, byDir[d], false)
   }
 
   function onKey(e: KeyboardEvent) {
@@ -497,15 +575,32 @@
 
   <div class="stage" bind:this={stageEl} bind:clientWidth={stageWidth} bind:clientHeight={stageHeight}>
     {#if item}
-      <!-- What's left, as card edges under the top one. -->
-      {#each { length: layers } as _, i (i)}<div class="layer l{layers - i}" aria-hidden="true"></div>{/each}
+      <!-- What's left under the top card: the next card itself, readable,
+           when it is known (then a faint edge for the one after), else
+           card edges. -->
+      {#if next}
+        {#if layers >= 2}<div class="layer l2" aria-hidden="true"></div>{/if}
+        <div class="next-card" aria-hidden="true" inert style="transform: translate3d(0, {np.y}px, 0) scale({np.scale})">
+          {#if next.kind === 'fact' && nextExercises}
+            <ExerciseCard item={{ ...next, exercises: nextExercises }} index={0} results={[]} check={null} given="" revealed={false} />
+          {:else if next.kind === 'fact'}
+            <FactCard item={next} revealed={false} />
+          {:else}
+            <WordCard item={next} revealed={false} {langs} />
+          {/if}
+        </div>
+      {:else}
+        {#each { length: layers } as _, i (i)}<div class="layer l{layers - i}" aria-hidden="true"></div>{/each}
+      {/if}
       {#key cardKey}
         <div
           class="card-wrap"
           class:dragging
           class:snapping={!!snapping}
+          class:pressed
+          class:peeked
           bind:this={wrap}
-          style="transform: {transform}; transform-origin: {origin}; --ctx-left: {session.canUndo ? '52px' : '20px'}; --snap: {snapping || 320}ms; --step-delay: {stepDelay}ms"
+          style="transform: {transform}; transform-origin: {origin}; --ctx-left: {session.canUndo ? '52px' : '20px'}; --snap: {snapping || 320}ms; --from-y: {stepFrom.y}px; --from-scale: {stepFrom.scale}"
           role="button"
           tabindex="-1"
           aria-label={session.revealed ? 'Card' : typed || exTyping ? 'Card, type the answer below' : 'Show answer'}
@@ -513,13 +608,16 @@
           onkeydown={() => {}}
           use:swipe={{
             axes: 'xy',
-            enabled: () => session.revealed,
+            enabled: () => session.revealed || peekable,
             scroller: () => wrap?.querySelector<HTMLElement>('.card .body'),
             onstart: onSwipeStart,
             onmove: onSwipeMove,
+            onraw: onSwipeRaw,
+            onrelease: onSwipeRelease,
             onend: onSwipeEnd,
           }}
         >
+          <div class="lift-shadow" aria-hidden="true"></div>
           {#if session.canUndo}
             <!-- Back: the last rating undone, the card it was on returns. -->
             <button class="card-undo" onclick={(e) => (e.stopPropagation(), session.undo())} onmousedown={(e) => e.preventDefault()} aria-label="Undo last rating" title="Undo (Z)">
@@ -548,7 +646,7 @@
           {:else}
             <WordCard {item} revealed={session.revealed} typed={answer} {check} {langs} onedit={() => navigate(`/word/${item.word.id}?from=/`)} ondrop={() => void dropCard('word', item.word.id, item.word.term)} />
           {/if}
-          {#if dir && lean && intervals}
+          {#if dir && lean && intervals && armReady}
             <div class="wash {dir} {tone[lean]}" style="opacity: {pull * 0.6}"></div>
             <div class="swipe-hint {dir} {tone[lean]}" class:armed style="opacity: {0.35 + pull * 0.65}; --pull: {pull}">
               <span class="what"><b>{names[lean]}</b> {intervals[lean]}</span>
@@ -738,6 +836,9 @@
     align-items: center;
     gap: 6px;
     overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior: contain;
+    touch-action: pan-x;
     scrollbar-width: none;
     padding: 2px 8px 2px 2px;
   }
@@ -836,9 +937,9 @@
     touch-action: pan-y;
     /* Let go short of the threshold: settles back like a drawer. */
     transition: transform var(--snap, 320ms) var(--ease-drawer);
-    /* The next card steps up from the first stack edge, once the throw
-       above it is 40% along. */
-    animation: step-up var(--t-base) var(--ease-out) var(--step-delay, 0ms) backwards;
+    /* The next card steps up from where it sat under the thrown one (its
+       preview), at once; from its place there is nothing to animate. */
+    animation: step-up var(--t-base) var(--ease-out) backwards;
     -webkit-user-select: text;
     user-select: text;
     cursor: default;
@@ -857,8 +958,45 @@
   }
   @keyframes step-up {
     from {
-      transform: translate3d(0, 5px, 0) scale(0.97);
+      transform: translate3d(0, var(--from-y, 5px), 0) scale(var(--from-scale, 0.97));
     }
+  }
+  /* Held: lifts 2% and 2px in 120ms; let go, it settles in 160ms (--snap). */
+  .card-wrap.pressed:not(.dragging) {
+    transition: transform 120ms var(--ease-out);
+  }
+  /* Revealed by a press: the same reveal, faster. */
+  .card-wrap.peeked {
+    --t-fast: 110ms;
+    --t-slow: 200ms;
+  }
+  /* The deeper shadow of a lifted card: pre-rendered, only its opacity moves. */
+  .lift-shadow {
+    position: absolute;
+    inset: 0;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lift);
+    opacity: 0;
+    transition: opacity 160ms ease;
+    pointer-events: none;
+  }
+  .card-wrap.pressed .lift-shadow,
+  .card-wrap.dragging .lift-shadow {
+    opacity: 1;
+    transition-duration: 120ms;
+  }
+  /* The next card, readable under the top one; only its transform changes
+     while the top card is dragged. */
+  .next-card {
+    position: absolute;
+    inset: 0;
+    border-radius: var(--radius);
+    pointer-events: none;
+    will-change: transform;
+  }
+  /* Let go short of the threshold: back to its stacked pose with the top card. */
+  .stage:not(:has(.card-wrap.dragging)) .next-card {
+    transition: transform 240ms var(--ease-drawer);
   }
   /* Card edges under the top card: card-coloured, a hairline, no shadow. */
   .layer {

@@ -38,3 +38,49 @@ describe('card motion', () => {
     expect(plan('up', { x: 0, y: 0, rotate: 0 }, 1.6, { width: 375, height: 100 }).ms).toBeCloseTo(175)
   })
 })
+
+describe('press, peek and the next card', () => {
+  it('lifts on press and carries the lift into the drag pose', async () => {
+    const { dragRise, dragScale, PRESS_SCALE } = await import('./throw.ts')
+    expect(dragScale(true, null, 0)).toBe(PRESS_SCALE)
+    expect(dragRise(true, 0)).toBe(-2)
+    // No jump when the drag starts, the drag pose by the threshold.
+    expect(dragScale(true, 'x', 0)).toBe(PRESS_SCALE)
+    expect(dragScale(true, 'x', 0.5)).toBeCloseTo(1.01)
+    expect(dragScale(true, 'x', 1)).toBe(1)
+    expect(dragScale(true, 'y', 1)).toBeCloseTo(0.985)
+    expect(dragScale(true, 'y', 3)).toBeCloseTo(0.985)
+    expect(dragRise(true, 1)).toBeCloseTo(0)
+    // Not pressed (a drag continuing a snap-back): the plain drag pose.
+    expect(dragScale(false, 'y', 0.5)).toBeCloseTo(lift(0.5))
+    expect(dragRise(false, 0)).toBe(0)
+  })
+
+  it('reveals a hidden card past the slop or after the hold', async () => {
+    const { peekReveals } = await import('./throw.ts')
+    expect(peekReveals(0, 0)).toBe(false)
+    expect(peekReveals(7, 149)).toBe(false)
+    expect(peekReveals(8, 0)).toBe(true)
+    expect(peekReveals(0, 150)).toBe(true)
+  })
+
+  it('arms and commits only 300 ms after the answer became visible', async () => {
+    const { canArm, releaseOutcome } = await import('./throw.ts')
+    expect(canArm(null, 1000)).toBe(false)
+    expect(canArm(1000, 1299)).toBe(false)
+    expect(canArm(1000, 1300)).toBe(true)
+    // A flick right after the peek springs back; the same swipe later rates.
+    expect(releaseOutcome('right', 1000, 1200)).toBe('spring')
+    expect(releaseOutcome('right', 1000, 1400)).toBe('commit')
+    // Released near the centre: back in place, still revealed.
+    expect(releaseOutcome(null, 1000, 5000)).toBe('spring')
+  })
+
+  it('eases the next card into place with the drag', async () => {
+    const { nextPose } = await import('./throw.ts')
+    expect(nextPose(0)).toEqual({ y: 5, scale: 0.97 })
+    expect(nextPose(0.5)).toEqual({ y: 2.5, scale: 0.985 })
+    expect(nextPose(2)).toEqual({ y: 0, scale: 1 })
+    expect(nextPose(1, true)).toEqual({ y: 5, scale: 0.97 })
+  })
+})

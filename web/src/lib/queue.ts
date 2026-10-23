@@ -1,7 +1,7 @@
 // Local review queue: what to show next and how a rating changes the queue.
 // Pure functions over immutable state so undo is just "restore the previous
 // state" and the logic is testable without a DOM.
-import { itemOf, nextDayStart, review, type CardState, type DayOptions, type Fact, type QueueItem, type Rating, type Word } from '@recall/core'
+import { dayStart, isLearningState, itemOf, nextDayStart, planToday, review, todaySlot, type CardState, type DayOptions, type Fact, type QueueItem, type Rating, type TodayCard, type Word } from '@recall/core'
 import type { Scheduler } from './fsrs.ts'
 
 export interface QueueState {
@@ -21,10 +21,23 @@ export interface QueueState {
 // FSRS learning steps.
 export const LEARN_AHEAD_MS = 20 * 60_000
 
+// The minimum gap: a card rated is not shown again until GAP_CARDS other
+// cards have been rated since, or GAP_MS have passed, whichever comes first.
+export const GAP_CARDS = 2
+export const GAP_MS = 60_000
+// How much rating history the session keeps for the gap (and more than enough).
+export const RECENT_MAX = 8
+
+// One rating in the session's recent history, oldest first.
+export interface Shown {
+  cardId: string
+  at: number
+}
+
 export const emptyQueue = (): QueueState => ({ main: [], learning: [], buried: {} })
 
 const due = (it: QueueItem) => new Date(it.card.schedule.due).getTime()
-const isLearning = (s: CardState) => s.state === 1 || s.state === 3
+const isLearning = (s: CardState) => isLearningState(s.state)
 
 function insertByDue(list: QueueItem[], item: QueueItem): QueueItem[] {
   const t = due(item)
@@ -38,10 +51,15 @@ function later(a: string | null, b: string | null): boolean {
   return new Date(a).getTime() > new Date(b).getTime()
 }
 
+const bounds = (now: Date, day: DayOptions) => ({ start: dayStart(now, day).getTime(), end: nextDayStart(now, day).getTime() })
+const todayView = (it: QueueItem): TodayCard => ({ id: it.card.id, itemId: itemOf(it).id, state: it.card.schedule.state, due: it.card.schedule.due, lastReview: it.card.schedule.lastReview })
+
 // Builds the queue from server items. `local` holds card states rated on this
 // device today; when newer than what the server sent (a rating not yet
 // uploaded), they win, and a card no longer due today drops out. `keep`
-// filters items out on the spot, e.g. a direction just turned off.
+// filters items out on the spot, e.g. a direction just turned off. Burying
+// and what waits are core.planToday's, the server's own rules; `buried` adds
+// this device's ratings the server may not have yet.
 export function buildQueue(
   items: QueueItem[],
   buried: Record<string, string>,
@@ -50,40 +68,79 @@ export function buildQueue(
   day: DayOptions,
   keep: (item: QueueItem) => boolean = () => true,
 ): QueueState {
-  const dayEnd = nextDayStart(now, day).getTime()
   const seen = new Set<string>()
-  const words = new Set<string>()
-  const q: QueueState = { main: [], learning: [], buried: { ...buried } }
+  const list: QueueItem[] = []
   for (const raw of items) {
     if (seen.has(raw.card.id) || raw.card.suspended || !keep(raw)) continue
     seen.add(raw.card.id)
-    let item = raw
     const l = local[raw.card.id]
-    if (l && later(l.lastReview, raw.card.schedule.lastReview)) item = { ...raw, card: { ...raw.card, schedule: l } }
-    if (due(item) >= dayEnd) continue
-    const owner = itemOf(raw).id
-    const mine = buried[owner]
-    // Learning cards are mid-flight and never buried (same rule as the
-    // server); review and new cards wait for tomorrow when a sibling was
-    // reviewed today or is earlier in this queue.
-    if (!isLearning(item.card.schedule)) {
-      if (mine && mine !== raw.card.id) continue
-      if (words.has(owner)) continue
-    }
-    words.add(owner)
-    if (isLearning(item.card.schedule) || mine) q.learning = insertByDue(q.learning, item)
-    else q.main.push(item)
+    list.push(l && later(l.lastReview, raw.card.schedule.lastReview) ? { ...raw, card: { ...raw.card, schedule: l } } : raw)
+  }
+  const q: QueueState = { main: [], learning: [], buried: { ...buried } }
+  const mine = (itemId: string, cardId: string) => !!buried[itemId] && buried[itemId] !== cardId
+  const view = (it: QueueItem) => ({ ...todayView(it), reviewedToday: buried[itemOf(it).id] === it.card.id })
+  for (const p of planToday(list, view, mine, bounds(now, day))) {
+    if (p.slot === 'later') q.learning = insertByDue(q.learning, p.card)
+    else q.main.push(p.card)
   }
   return q
 }
 
-export function nextItem(q: QueueState, now: Date, learnAheadMs = LEARN_AHEAD_MS): QueueItem | null {
+// Whether a card may be shown again: not rated lately, or GAP_CARDS other
+// cards rated since, or GAP_MS passed since its rating.
+export function rested(cardId: string, recent: readonly Shown[], now: number): boolean {
+  const i = recent.findLastIndex((s) => s.cardId === cardId)
+  if (i < 0) return true
+  return recent.length - 1 - i >= GAP_CARDS || now - recent[i]!.at >= GAP_MS
+}
+
+// The card to show: a learning card that is due, then the main queue, then
+// (nothing else left) a learning card due within the learn-ahead window —
+// never the card just rated, which waits for its own due. Every pick keeps
+// the minimum gap (`rested`).
+export function nextItem(q: QueueState, now: Date, recent: readonly Shown[] = [], learnAheadMs = LEARN_AHEAD_MS): QueueItem | null {
   const t = now.getTime()
-  const l = q.learning[0]
-  if (l && due(l) <= t) return l
-  if (q.main.length) return q.main[0]
-  if (l && due(l) <= t + learnAheadMs) return l
-  return null
+  const ok = (it: QueueItem) => rested(it.card.id, recent, t)
+  const last = recent.at(-1)?.cardId
+  return (
+    q.learning.find((it) => due(it) <= t && ok(it)) ??
+    q.main.find(ok) ??
+    q.learning.find((it) => it.card.id !== last && due(it) <= t + learnAheadMs && ok(it)) ??
+    null
+  )
+}
+
+// Nothing showable now: the card that comes next and when it becomes
+// showable (by the rules of nextItem, with nothing rated meanwhile); null
+// when nothing is left today.
+export function upcoming(q: QueueState, now: Date, recent: readonly Shown[] = [], learnAheadMs = LEARN_AHEAD_MS): { item: QueueItem; at: Date } | null {
+  const t = now.getTime()
+  const last = recent.at(-1)?.cardId
+  const restedAt = (it: QueueItem) => {
+    if (rested(it.card.id, recent, t)) return t
+    return recent.findLast((s) => s.cardId === it.card.id)!.at + GAP_MS
+  }
+  const when = (it: QueueItem, inMain: boolean) =>
+    Math.max(restedAt(it), inMain ? t : it.card.id === last ? due(it) : due(it) - learnAheadMs)
+  let best: { item: QueueItem; at: number } | null = null
+  for (const [list, inMain] of [[q.main, true], [q.learning, false]] as const) {
+    for (const it of list) {
+      const at = when(it, inMain)
+      if (!best || at < best.at) best = { item: it, at }
+    }
+  }
+  return best && { item: best.item, at: new Date(Math.max(t, best.at)) }
+}
+
+// The card nextItem would show once `current` is rated now, so the stack can
+// show it underneath. The rating's outcome doesn't matter: the card just
+// rated is never picked straight away while another one can be.
+export function peekNext(q: QueueState, current: QueueItem, now: Date, recent: readonly Shown[] = [], learnAheadMs = LEARN_AHEAD_MS): QueueItem | null {
+  const id = itemOf(current).id
+  // What a rating leaves: the card and its review/new siblings go; a learning sibling stays.
+  const keep = (x: QueueItem) => itemOf(x).id !== id || (x.card.id !== current.card.id && isLearning(x.card.schedule))
+  const after: QueueState = { ...q, main: q.main.filter(keep), learning: q.learning.filter(keep) }
+  return nextItem(after, now, [...recent, { cardId: current.card.id, at: now.getTime() }], learnAheadMs)
 }
 
 export interface Rated {
@@ -99,7 +156,8 @@ export function applyRating(q: QueueState, item: QueueItem, rating: Rating, now:
   const keep = (x: QueueItem) => itemOf(x).id !== wordId || (x.card.id !== item.card.id && isLearning(x.card.schedule))
   const updated: QueueItem = { ...item, card: { ...item.card, schedule: after } }
   let learning = q.learning.filter(keep)
-  if (new Date(after.due).getTime() < nextDayStart(now, day).getTime()) learning = insertByDue(learning, updated)
+  // Back later today (a learning step) unless core.todaySlot puts it out.
+  if (todaySlot(todayView(updated), false, bounds(now, day)) !== 'out') learning = insertByDue(learning, updated)
   return {
     queue: { main: q.main.filter(keep), learning, buried: { ...q.buried, [wordId]: item.card.id } },
     after,
@@ -118,11 +176,10 @@ export function counts(q: QueueState): Counts {
   let r = 0
   for (const it of q.main) {
     if (it.card.schedule.state === 0) n++
-    else if (isLearning(it.card.schedule)) continue
     else r++
   }
-  const learning = q.learning.length + q.main.filter((it) => isLearning(it.card.schedule)).length
-  return { new: n, learning, review: r }
+  // Waiting cards (learning steps, or due again later today) count as learning, as on the server.
+  return { new: n, learning: q.learning.length, review: r }
 }
 
 // What's left today per deck id, counted like counts().
@@ -130,23 +187,12 @@ export function deckCounts(q: QueueState): Record<string, Counts> {
   const out: Record<string, Counts> = {}
   const of = (it: QueueItem) => (out[itemOf(it).deckId] ??= { new: 0, learning: 0, review: 0 })
   for (const it of q.learning) of(it).learning++
-  for (const it of q.main) {
-    const s = it.card.schedule
-    of(it)[s.state === 0 ? 'new' : isLearning(s) ? 'learning' : 'review']++
-  }
+  for (const it of q.main) of(it)[it.card.schedule.state === 0 ? 'new' : 'review']++
   return out
 }
 
 export function remaining(q: QueueState): number {
   return q.main.length + q.learning.length
-}
-
-// Time-gated cards that aren't showable yet: "3 more due in 14 min".
-export function waiting(q: QueueState, now: Date, learnAheadMs = LEARN_AHEAD_MS): { count: number; next: Date | null } {
-  if (q.main.length) return { count: 0, next: null }
-  const t = now.getTime() + learnAheadMs
-  const rest = q.learning.filter((x) => due(x) > t)
-  return { count: rest.length, next: rest.length ? new Date(due(rest[0])) : null }
 }
 
 // Every item of the queue, for persisting it.

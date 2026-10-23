@@ -1,7 +1,7 @@
 // The review session store with its services faked: what "+5 new" does at
 // the end of a session.
 import { newCardState, type QueueItem, type Word } from '@recall/core'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const h = vi.hoisted(() => ({
   queues: [] as { items: unknown[]; counts: { new: number; learning: number; review: number }; decks: unknown[] }[],
@@ -80,5 +80,81 @@ describe('+5 new at the end of a session', () => {
     await session.moreNew(5)
     ;(api as { queue: unknown }).queue = queue
     expect(h.toasts).toEqual(["Couldn't load the new cards: 500 queue failed"])
+  })
+})
+
+describe('a learning card with nothing else left', () => {
+  beforeEach(() => {
+    h.queues = []
+    h.gate = null
+    h.toasts = []
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  // Each test its own word and a later hour: the store is one for the file
+  // and keeps today's ratings and its input lock.
+  let hour = 0
+  async function lone(id: string) {
+    vi.useFakeTimers({ now: new Date(Date.parse('2026-10-21T06:00:00Z') + ++hour * 3600_000), toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
+    const { session } = await import('./review.svelte.ts')
+    session.deckId = 'dk_en'
+    h.queues.push(page([item(id)]))
+    await session.refresh()
+    expect(session.current?.card.id).toBe(`cd_${id}`)
+    return session
+  }
+  const answer = (session: Awaited<ReturnType<typeof lone>>, rating: 1 | 2 | 3 | 4) => {
+    vi.advanceTimersByTime(300)
+    session.reveal()
+    vi.advanceTimersByTime(300)
+    expect(session.rate(rating)).toBe(true)
+  }
+
+  it('waits for its step instead of showing it again, names it, and Show now brings it once', async () => {
+    const session = await lone('rumble')
+    answer(session, 2) // Hard: back in 6 min
+    expect(session.current).toBeNull()
+    const up = session.upcoming()!
+    expect(up.item.card.id).toBe('cd_rumble')
+    expect(up.at.getTime() - Date.now()).toBe(6 * 60_000)
+    session.showNow()
+    expect(session.current?.card.id).toBe('cd_rumble')
+    answer(session, 2)
+    expect(session.current).toBeNull()
+  })
+
+  it('comes by itself when the step is over', async () => {
+    const session = await lone('strain')
+    answer(session, 1) // Again: back in 1 min
+    expect(session.current).toBeNull()
+    vi.advanceTimersByTime(59_000)
+    expect(session.current).toBeNull()
+    vi.advanceTimersByTime(2_000)
+    expect(session.current?.card.id).toBe('cd_strain')
+  })
+
+  it('undo brings the rated card back at once', async () => {
+    const session = await lone('court')
+    answer(session, 2)
+    expect(session.current).toBeNull()
+    expect(session.undo()).toBe(true)
+    expect(session.current?.card.id).toBe('cd_court')
+    expect(session.revealed).toBe(true)
+    // Rated again after the undo: the gap counts from this rating.
+    vi.advanceTimersByTime(300)
+    expect(session.rate(3)).toBe(true)
+    expect(session.current).toBeNull()
+  })
+
+  it('peeks at the card a rating brings next', async () => {
+    vi.useFakeTimers({ now: new Date('2026-10-21T16:00:00Z'), toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    const { session } = await import('./review.svelte.ts')
+    session.deckId = 'dk_en'
+    h.queues.push(page([item('alpha'), item('bravo')]))
+    await session.refresh()
+    expect(session.current?.card.id).toBe('cd_alpha')
+    expect(session.peek?.card.id).toBe('cd_bravo')
   })
 })

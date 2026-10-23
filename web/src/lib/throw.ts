@@ -57,3 +57,47 @@ export function plan(dir: SwipeDir, at: { x: number; y: number; rotate: number }
 }
 
 export const reducedMotion = () => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
+
+// ---------- press, peek and the next card ----------
+
+// Pressed and held, the card lifts: scale 1.02, 2px up (120ms in, 160ms back).
+export const PRESS_SCALE = 1.02
+export const PRESS_Y = -2
+
+// The drag's scale, starting from the press lift and easing into the drag
+// pose by the threshold (1 sideways, `lift` vertically), so picking the card
+// up and dragging it is one motion. `pull` is the drag's progress, 0..1.
+export function dragScale(pressed: boolean, axis: 'x' | 'y' | null, pull: number): number {
+  const p = clamp(pull, 0, 1)
+  const to = axis === 'y' ? lift(p) : 1
+  return pressed ? PRESS_SCALE + (to - PRESS_SCALE) * p : to
+}
+
+// The press's 2px rise, carried into the drag and gone by the threshold.
+export const dragRise = (pressed: boolean, pull: number) => (pressed ? PRESS_Y * (1 - clamp(pull, 0, 1)) : 0)
+
+// Peek and throw: on a card not revealed yet, a drag past PEEK_SLOP px or a
+// hold of PEEK_HOLD_MS reveals it under the finger. Nothing arms or rates
+// until the answer has been visible PEEK_SAFE_MS, so a flick can't rate blind.
+export const PEEK_SLOP = 8
+export const PEEK_HOLD_MS = 150
+export const PEEK_SAFE_MS = 300
+
+// Whether a press on a hidden card reveals it now: moved `dist` px, held `heldMs`.
+export const peekReveals = (dist: number, heldMs: number) => dist >= PEEK_SLOP || heldMs >= PEEK_HOLD_MS
+
+// Whether a swipe may arm (haptic, pill, commit): the answer visible long enough.
+export const canArm = (revealedAt: number | null, now: number) => revealedAt !== null && now - revealedAt >= PEEK_SAFE_MS
+
+// On release: a direction past the threshold rates once arming is allowed;
+// anything else springs back, staying revealed.
+export function releaseOutcome(dir: SwipeDir | null, revealedAt: number | null, now: number): 'commit' | 'spring' {
+  return dir && canArm(revealedAt, now) ? 'commit' : 'spring'
+}
+
+// The next card under the top one: 5px down at 97%, rising to its place as
+// the drag reaches the threshold (`pull` 0..1); reduced motion keeps it still.
+export function nextPose(pull: number, reduced = false): { y: number; scale: number } {
+  const p = reduced ? 0 : clamp(pull, 0, 1)
+  return { y: 5 * (1 - p), scale: 0.97 + 0.03 * p }
+}

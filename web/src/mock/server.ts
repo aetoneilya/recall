@@ -12,14 +12,17 @@ import {
   cleanWord,
   DEFAULT_WEIGHTS,
   dayKey,
+  dayStart,
   dedupeKey,
   exerciseKey,
   factKey,
   newCardState,
   nextDayStart,
   normalizeTerm,
+  planToday,
   retrievability,
   review,
+  todayCount,
   type Card,
   CLAUDE_TAG,
   type CardState,
@@ -448,50 +451,35 @@ function buildQueue(now: Date, limit: number, deckId?: string, draft?: { deckId:
     .filter((c) => c.schedule.state === 0 && !gated(c))
     .sort((a, b) => owners.get(ownerKey(a))!.createdAt.localeCompare(owners.get(ownerKey(b))!.createdAt) || (a.direction === 'forward' ? -1 : 1))
 
-  const out: Card[] = []
-  const seenWords = new Set<string>()
-  // One card per word per day: skip a card whose sibling was reviewed today
-  // or is earlier in this queue.
-  const ok = (c: Card) => {
-    const r = reviewedToday.get(ownerKey(c))
-    if (r && !r.has(c.id)) return false
-    return !seenWords.has(ownerKey(c))
-  }
-  const push = (c: Card) => {
-    seenWords.add(ownerKey(c))
-    out.push(c)
-  }
-  // Learning cards are mid-flight and never buried.
-  for (const c of learning) push(c)
+  // Burying, what waits and what the budget spends on: core.planToday, as on the server.
+  const placed = planToday(
+    [...learning, ...reviews, ...fresh],
+    (c) => ({ id: c.id, itemId: ownerKey(c), state: c.schedule.state, due: c.schedule.due, lastReview: c.schedule.lastReview }),
+    (itemId, cardId) => [...(reviewedToday.get(itemId) ?? [])].some((id) => id !== cardId),
+    { start: dayStart(now, DAY).getTime(), end: dayEnd },
+    (c) => {
+      const left = budget.get(deckIdOf(c)) ?? 0
+      budget.set(deckIdOf(c), left - 1)
+      return left > 0
+    },
+  )
+  const slot = new Map(placed.map((p) => [p.card.id, p.slot]))
+  const waiting = placed.filter((p) => p.slot === 'later').map((p) => p.card)
+  const due = placed.filter((p) => p.slot === 'now' && p.card.schedule.state !== 0).map((p) => p.card)
+  const news = placed.filter((p) => p.slot === 'now' && p.card.schedule.state === 0).map((p) => p.card)
+  const out: Card[] = [...waiting]
   let ni = 0
-  const nextNew = () => {
-    while (ni < fresh.length) {
-      const c = fresh[ni++]!
-      const d = deckIdOf(c)
-      if (ok(c) && (budget.get(d) ?? 0) > 0) {
-        budget.set(d, budget.get(d)! - 1)
-        return c
-      }
-    }
-    return null
-  }
-  let sinceNew = 0
-  for (const c of reviews) {
-    if (!ok(c)) continue
-    push(c)
-    if (++sinceNew === 4) {
-      sinceNew = 0
-      const n = nextNew()
-      if (n) push(n)
-    }
-  }
-  for (let n = nextNew(); n; n = nextNew()) push(n)
-
-  const tally = (cs: Card[], d: string) => ({
-    new: cs.filter((c) => deckIdOf(c) === d && c.schedule.state === 0).length,
-    learning: cs.filter((c) => deckIdOf(c) === d && (c.schedule.state === 1 || c.schedule.state === 3)).length,
-    review: cs.filter((c) => deckIdOf(c) === d && c.schedule.state === 2).length,
+  due.forEach((c, i) => {
+    out.push(c)
+    if ((i + 1) % 4 === 0 && ni < news.length) out.push(news[ni++]!)
   })
+  while (ni < news.length) out.push(news[ni++]!)
+
+  const tally = (cs: Card[], d?: string) => {
+    const t = { new: 0, learning: 0, review: 0 }
+    for (const c of cs) if (!d || deckIdOf(c) === d) t[todayCount(slot.get(c.id)!, c.schedule.state)]++
+    return t
+  }
   const decks = sortDecks(db.decks).map((d) => ({ id: d.id, name: d.name, hasLanguages: hasLangs(d), counts: tally(out, d.id) }))
   const session = out.filter((c) => !deckId || deckIdOf(c) === deckId)
   const items: QueueItem[] = session.slice(0, limit).map((c): QueueItem => {
@@ -501,13 +489,7 @@ function buildQueue(now: Date, limit: number, deckId?: string, draft?: { deckId:
     const exercises = pickExercises(c.factId)
     return { kind: 'fact', card: c, fact: o as Fact, deckName, ...(exercises ? { exercises } : {}) }
   })
-  const count = (st: number[]) => session.filter((c) => st.includes(c.schedule.state)).length
-  return {
-    out,
-    items,
-    counts: { new: count([0]), learning: count([1, 3]), review: count([2]) },
-    decks,
-  }
+  return { out, items, counts: tally(session), decks }
 }
 
 function deckCounts(deck: MockDeck, now: Date) {

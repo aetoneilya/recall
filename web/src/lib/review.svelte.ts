@@ -5,7 +5,7 @@ import { api, flushNow, kv, outbox, scheduleFlush, status } from './app.svelte.t
 import { AuthError, NetworkError, normalizeItem } from './api.ts'
 import { getDecks } from './decks.ts'
 import { fsrs } from './fsrs.ts'
-import { applyRating, buildQueue, counts, dropWord, emptyQueue, keepExercises, LEARN_AHEAD_MS, nextItem, patchFact, patchWord, waiting, withSchedules, type Counts, type QueueState } from './queue.ts'
+import { applyRating, buildQueue, counts, dropWord, emptyQueue, keepExercises, nextItem, patchFact, patchWord, peekNext, RECENT_MAX, upcoming, withSchedules, type Counts, type QueueState, type Shown } from './queue.ts'
 import type { DeckSettings, DeckWithCounts, FactItem, QueueDeck, WordItem } from './types.ts'
 import { haptic } from './telegram.ts'
 import { errorText, showToast } from './toast.svelte.ts'
@@ -74,6 +74,7 @@ interface UndoEntry {
   local: CardState | undefined
   stats: SessionStats
   missed: Missed[]
+  recent: Shown[]
 }
 
 const MAX_DURATION_MS = 120_000
@@ -82,9 +83,14 @@ const MAX_DURATION_MS = 120_000
 const LOCK_MS = 280
 const STALE_MS = 60_000
 
+// A card in one line: the term, or the question's first line.
+export function itemTitle(it: QueueItem): string {
+  return it.kind === 'word' ? it.word.term : (it.fact.front.replace(/[`*_#>]/g, '').split('\n')[0] ?? '')
+}
+
 function missedOf(it: QueueItem): Missed {
-  if (it.kind === 'word') return { cardId: it.card.id, kind: 'word', id: it.word.id, title: it.word.term, sub: it.word.translations[0] ?? '' }
-  return { cardId: it.card.id, kind: 'fact', id: it.fact.id, title: it.fact.front.replace(/[`*_#>]/g, '').split('\n')[0] ?? '', sub: '' }
+  if (it.kind === 'word') return { cardId: it.card.id, kind: 'word', id: it.word.id, title: itemTitle(it), sub: it.word.translations[0] ?? '' }
+  return { cardId: it.card.id, kind: 'fact', id: it.fact.id, title: itemTitle(it), sub: '' }
 }
 
 class Superseded extends Error {}
@@ -109,6 +115,8 @@ class ReviewSession {
   deckId = $state(readDeck())
   // Changes on a timer so "next card in 4 min" stays current.
   now = $state(Date.now())
+  // The latest ratings, oldest first: the minimum gap before a card comes back.
+  recent = $state.raw<Shown[]>([])
 
   private day = ''
   private items: QueueItem[] = []
@@ -433,7 +441,7 @@ class ReviewSession {
     const exercises = extra.exercises?.length ? ($state.snapshot(extra.exercises) as ExerciseAttempt[]) : undefined
     const now = new Date()
     this.rollDay()
-    const before = { queue: this.queue, current: item, local: this.local[item.card.id], stats: { ...this.stats }, missed: this.missed }
+    const before = { queue: this.queue, current: item, local: this.local[item.card.id], stats: { ...this.stats }, missed: this.missed, recent: this.recent }
     const { queue, after } = applyRating(this.queue, item, rating, now, status.day, fsrs())
     const input = {
       id: uuid(),
@@ -458,11 +466,12 @@ class ReviewSession {
     }
     if (rating === 1 && !this.missed.some((m) => m.cardId === item.card.id)) this.missed = [...this.missed, missedOf(item)]
     this.queue = queue
+    this.recent = [...this.recent, { cardId: item.card.id, at: now.getTime() }].slice(-RECENT_MAX)
     // Light and frequent; Again distinct without feeling like an error.
     haptic.impact(rating === 1 ? 'rigid' : 'light')
     this.pick()
     this.lock()
-    if (!this.current) haptic.notify('success')
+    if (!this.current && !this.upcoming()) haptic.notify('success')
     this.persist()
     if (outbox.pending >= 5 || !this.current) void flushNow()
     else scheduleFlush()
@@ -483,6 +492,7 @@ class ReviewSession {
     this.local = local
     this.stats = last.stats
     this.missed = last.missed
+    this.recent = last.recent ?? []
     // Back on the answer side: undo is usually a mis-tap, so the right
     // rating should be one tap away.
     this.revealed = true
@@ -497,22 +507,46 @@ class ReviewSession {
     return this.history.length > 0
   }
 
-  waiting() {
-    return waiting(this.queue, new Date(this.now))
+  // Nothing to show now: the card that comes next today and when.
+  upcoming() {
+    return this.current ? null : upcoming(this.queue, new Date(this.now), this.recent)
+  }
+
+  // The card under the current one: what a rating would bring next.
+  get peek(): QueueItem | null {
+    return this.current ? peekNext(this.queue, this.current, new Date(this.now), this.recent) : null
+  }
+
+  // Keeps "next card in N min" current while the waiting screen is open.
+  tick() {
+    this.now = Date.now()
+  }
+
+  // The waiting screen's "Show now": the next card early, this once; after
+  // its rating the usual rules apply again.
+  showNow() {
+    const u = this.upcoming()
+    if (!u) return
+    clearTimeout(this.wake)
+    this.current = u.item
+    this.revealed = false
+    this.shownAt = Date.now()
+    this.freshExercises()
   }
 
   private pick() {
     clearTimeout(this.wake)
     const now = new Date()
     this.now = now.getTime()
-    this.current = nextItem(this.queue, now)
+    this.current = nextItem(this.queue, now, this.recent)
     this.revealed = false
     this.shownAt = now.getTime()
     this.freshExercises()
     if (!this.current) {
-      // Wake up when the next learning card becomes showable.
-      const w = waiting(this.queue, now)
-      if (w.next) this.wake = setTimeout(() => this.pick(), Math.max(1000, w.next.getTime() - LEARN_AHEAD_MS - now.getTime() + 500))
+      // Wake up when the next card becomes showable: on the waiting screen
+      // it comes by itself.
+      const u = upcoming(this.queue, now, this.recent)
+      if (u) this.wake = setTimeout(() => this.pick(), Math.max(1000, u.at.getTime() - now.getTime() + 500))
     }
   }
 
@@ -544,6 +578,7 @@ class ReviewSession {
     this.stats = zeroStats()
     this.missed = []
     this.history = []
+    this.recent = []
     this.queue = { ...this.queue, buried: {} }
   }
 

@@ -5,8 +5,8 @@
 // Words' and facts' cards are read alike through the study_cards view
 // (db.ts v6): `c.item_id` is the word or fact, `c.deck_id`/`c.user_id` its own.
 import {
-  cleanReviewFilter, dayKey, dayStart, DIRECTIONS, facetOptions, inReviewFilter, nextDayStart, retrievability, review,
-  type Card, type CardFacts, type CardState, type CardType, type Cefr, type DayOptions, type Direction, type PartOfSpeech, type QueueItem, type Rating,
+  cleanReviewFilter, dayKey, dayStart, DIRECTIONS, facetOptions, inReviewFilter, nextDayStart, planToday, retrievability, review,
+  type Card, type CardFacts, type CardState, type CardType, type Cefr, type DayOptions, type Direction, type FsrsState, type PartOfSpeech, type QueueItem, type Rating,
   type FacetItem, type ReviewFilter, type ReviewInput, type ReviewLog,
 } from '@recall/core'
 import { tx, type Db } from './db.ts'
@@ -173,36 +173,27 @@ function selectQueue(db: Db, userId: string, opts: DayOptions, now: Date, deckId
   const fresh = wanted(db.prepare(`${QUEUE_SELECT} AND c.state = 0 AND ${REVERSE_GATE}${deckFilter} ORDER BY c.item_created_at, c.item_id, c.direction`).all(userId, ...deckArgs) as unknown as QueueRow[])
 
   const touched = reviewedToday(db, userId, day)
-  const queued = new Set<string>()
-  // Sibling burying: one card per word per day. A card's own earlier review
-  // today (learning steps) does not bury it.
-  const buried = (r: QueueRow) => {
-    if (queued.has(r.item_id)) return true
-    const seen = touched.get(r.item_id)
-    return !!seen && [...seen].some((id) => id !== r.id)
-  }
-
-  // Learning cards are mid-flight, so they are never buried.
-  const learningOut = learning.filter((r) => {
-    queued.add(r.item_id)
-    return true
-  })
-  const reviewOut = reviews.filter((r) => {
-    if (buried(r)) return false
-    queued.add(r.item_id)
-    return true
-  })
   const introduced = introducedToday(db, userId, day)
   const extra = extraNewOn(db, userId, day.key)
   const budget = new Map<string, number>()
-  const newOut = fresh.filter((r) => {
+  // The budget is asked only about new cards the session will show: buried
+  // ones (core.planToday) never use it.
+  const admit = (r: QueueRow) => {
     const left = budget.get(r.deck_id) ?? Math.max(0, r.new_per_day + (extra.get(r.deck_id) ?? 0) - (introduced.get(r.deck_id) ?? 0))
-    if (left <= 0 || buried(r)) return false
     budget.set(r.deck_id, left - 1)
-    queued.add(r.item_id)
-    return true
-  })
-  return { learning: learningOut, reviews: reviewOut, fresh: newOut }
+    return left > 0
+  }
+  const placed = planToday(
+    [...learning, ...reviews, ...fresh],
+    (r) => ({ id: r.id, itemId: r.item_id, state: r.state as FsrsState, due: r.due, lastReview: r.last_review }),
+    (itemId, cardId) => [...(touched.get(itemId) ?? [])].some((id) => id !== cardId),
+    { start: day.start.getTime(), end: day.end.getTime() },
+    admit,
+  )
+  // learning: everything that waits for its time today (counted as learning).
+  const out = { learning: [] as QueueRow[], reviews: [] as QueueRow[], fresh: [] as QueueRow[] }
+  for (const p of placed) out[p.slot === 'later' ? 'learning' : p.card.state === 0 ? 'fresh' : 'reviews'].push(p.card)
+  return out
 }
 
 // Today's session: due and new cards of one deck (or of every deck), under

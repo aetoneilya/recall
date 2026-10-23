@@ -358,7 +358,7 @@ function summary(card: Card, now: Date): CardSummary {
   return {
     id: card.id,
     direction: card.direction,
-    enabled: enabled(deck, card.direction),
+    enabled: !!card.factId || enabled(deck, card.direction),
     suspended: card.suspended,
     state: STATE_NAMES[s.state],
     due: s.due,
@@ -439,13 +439,14 @@ function buildQueue(now: Date, limit: number, deckId?: string, draft?: { deckId:
   }
   const budget = new Map(db.decks.map((d) => [d.id, Math.max(0, d.newPerDay + extraToday(d.id, now) - (introduced.get(d.id) ?? 0))]))
   // The reverse gate: a new reverse card waits until its forward card is
-  // out of the new state and stable enough (ignored while forward is off).
+  // out of the new state and stable enough (ignored while forward is off or
+  // its card suspended).
   const gated = (c: Card) => {
     if (c.direction !== 'reverse' || !c.wordId) return false
     const deck = deckOf(deckIdOf(c))
     if (deck.reverseAfterDays === null || !deck.forwardEnabled) return false
     const fwd = cardsOf(c.wordId).find((x) => x.direction === 'forward')
-    return !fwd || fwd.schedule.state === 0 || fwd.schedule.stability < deck.reverseAfterDays
+    return !!fwd && !fwd.suspended && (fwd.schedule.state === 0 || fwd.schedule.stability < deck.reverseAfterDays)
   }
   const fresh = cards
     .filter((c) => c.schedule.state === 0 && !gated(c))
@@ -486,7 +487,7 @@ function buildQueue(now: Date, limit: number, deckId?: string, draft?: { deckId:
     const o = owners.get(ownerKey(c))!
     const deckName = deckOf(o.deckId).name
     if (!c.factId) return { kind: 'word', card: c, word: formsOf(o as Word), deckName }
-    const exercises = pickExercises(c.factId)
+    const exercises = pickExercises(c.factId, new Set(), reviewRand(c, now))
     return { kind: 'fact', card: c, fact: o as Fact, deckName, ...(exercises ? { exercises } : {}) }
   })
   return { out, items, counts: tally(session), decks }
@@ -598,17 +599,31 @@ function factItem(f: Fact, now: Date): FactItem {
   return { ...f, deckName: deckOf(f.deckId).name, card: c ? summary(c, now) : null, ...exercises, ...handbook }
 }
 
+// A 0..1 generator from a string: the same card, day and reps pick the same
+// items on every fetch (the server seeds its pick the same way).
+function seeded(seed: string): () => number {
+  let a = 0x811c9dc5
+  for (let i = 0; i < seed.length; i++) a = Math.imul(a ^ seed.charCodeAt(i), 0x01000193)
+  return () => {
+    a = (a + 0x6d2b79f5) | 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+const reviewRand = (c: Card, now: Date) => seeded(`${c.id}:${today(now)}:${c.schedule.reps}`)
+
 // Three items for a review: least recently shown first, at most two of a type (as the server does).
-function pickExercises(factId: string, avoid: Set<string> = new Set()) {
+function pickExercises(factId: string, avoid: Set<string> = new Set(), rand: () => number = Math.random) {
   const all = db.exercises.filter((e) => e.factId === factId && e.status === 'active')
   const tap = all.filter((e) => e.type !== 'write')
   if (tap.length < 3) return null
-  const shuffle = (xs: ExerciseInfo[]) => xs.map((e) => ({ e, r: Math.random() })).sort((a, b) => Number(avoid.has(a.e.id)) - Number(avoid.has(b.e.id)) || (a.e.lastShownAt ?? '').localeCompare(b.e.lastShownAt ?? '') || a.r - b.r).map((x) => x.e)
+  const shuffle = (xs: ExerciseInfo[]) => xs.map((e) => ({ e, r: rand() })).sort((a, b) => Number(avoid.has(a.e.id)) - Number(avoid.has(b.e.id)) || (a.e.lastShownAt ?? '').localeCompare(b.e.lastShownAt ?? '') || a.r - b.r).map((x) => x.e)
   const order = shuffle(tap)
   const out: ExerciseInfo[] = []
   // At most one written item, only when it can be graded.
   const write = mockControl.autofill ? shuffle(all.filter((e) => e.type === 'write'))[0] : undefined
-  if (write && Math.random() < 0.5) out.push(write)
+  if (write && rand() < 0.5) out.push(write)
   for (const e of order) if (out.length < 3 && out.filter((x) => x.type === e.type).length < 2) out.push(e)
   for (const e of order) if (out.length < 3 && !out.includes(e)) out.push(e)
   return out.map(({ id, type, prompt, answer, accepted, explain, options, wrong, rubric }) => ({ id, type, prompt, answer, accepted, explain, ...(options?.length ? { options, wrong } : {}), ...(type === 'write' ? { rubric: rubric ?? null } : {}) }))
@@ -624,7 +639,7 @@ function practice(now: Date, q: { deckId?: string; factId?: string }, limit = 20
     const o = ownerOf(c)
     const deckName = deckOf(o.deckId).name
     if (!c.factId) return { kind: 'word', card: c, word: formsOf(o as Word), deckName }
-    const exercises = pickExercises(c.factId)
+    const exercises = pickExercises(c.factId, new Set(), reviewRand(c, now))
     return { kind: 'fact', card: c, fact: o as Fact, deckName, ...(exercises ? { exercises } : {}) }
   }
   if (q.factId) {
@@ -1165,9 +1180,13 @@ function patchMe(body: Body) {
 }
 
 const DECK_KEYS = ['name', 'newPerDay', 'forwardEnabled', 'reverseEnabled', 'reverseAfterDays', 'typeAnswer', 'reviewFilter']
+// Settings that only mean something for words (a deck with languages).
+const WORD_SETTINGS = ['forwardEnabled', 'reverseEnabled', 'reverseAfterDays', 'typeAnswer']
 
 function patchDeck(d: MockDeck, body: Body) {
   for (const k of Object.keys(body)) if (!DECK_KEYS.includes(k)) throw new Fail(400, `Unrecognized key: "${k}"`)
+  const wordOnly = WORD_SETTINGS.filter((k) => k in body)
+  if (wordOnly.length && !d.targetLang) throw new Fail(400, `${wordOnly.join(', ')}: only for a deck with languages`)
   if ('name' in body) {
     const name = String(body.name ?? '').replace(/\s+/g, ' ').trim()
     if (!name) throw new Fail(400, 'deck name is empty')
@@ -1176,7 +1195,7 @@ function patchDeck(d: MockDeck, body: Body) {
   }
   if ('reviewFilter' in body) body.reviewFilter = cleanReviewFilter(body.reviewFilter as ReviewFilter | null)
   if ('newPerDay' in body && (!Number.isInteger(body.newPerDay) || (body.newPerDay as number) < 0 || (body.newPerDay as number) > 999)) throw new Fail(400, 'newPerDay must be 0..999')
-  if ('reverseAfterDays' in body && body.reverseAfterDays !== null && (typeof body.reverseAfterDays !== 'number' || body.reverseAfterDays < 1 || body.reverseAfterDays > 365))
+  if ('reverseAfterDays' in body && body.reverseAfterDays !== null && (!Number.isInteger(body.reverseAfterDays) || (body.reverseAfterDays as number) < 1 || (body.reverseAfterDays as number) > 365))
     throw new Fail(400, 'reverseAfterDays must be 1..365 or null')
   if ('typeAnswer' in body && !['off', 'reverse', 'both'].includes(String(body.typeAnswer))) throw new Fail(400, 'typeAnswer must be off, reverse or both')
   const fwd = 'forwardEnabled' in body ? !!body.forwardEnabled : d.forwardEnabled
@@ -1355,7 +1374,9 @@ function handle(method: string, url: URL, body: unknown): unknown {
       const from = String(parts[3] === 'rename' ? B.from ?? '' : B.tag ?? '').trim()
       const to = String(B.to ?? '').trim()
       if (!from || (parts[3] === 'rename' && (!to || to === from))) throw new Fail(400, 'from and to are needed, and must differ')
-      const out = { cards: 0, words: 0, facts: 0 }
+      if (parts[3] === 'rename' && tagMatches(from, to)) throw new Fail(400, `"${to}" is under "${from}": a tag can't move into itself`)
+      const merged = parts[3] === 'rename' && [...db.words, ...db.facts].some((x) => x.deckId === d.id && x.tags.some((t) => tagMatches(to, t)))
+      const out = { cards: 0, words: 0, facts: 0, merged }
       for (const x of [...db.words, ...db.facts]) {
         if (x.deckId !== d.id || !x.tags.some((t) => tagMatches(from, t))) continue
         const next: string[] = []

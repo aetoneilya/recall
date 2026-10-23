@@ -7,7 +7,7 @@ import { dueCounts } from '../src/bot.ts'
 import { createFact, searchFacts } from '../src/facts.ts'
 import { practiceDeck } from '../src/practice.ts'
 import { parseRetagMap, retagByName } from '../src/retag.ts'
-import { createDeck, createWord, getDeck, HttpError, searchWords, updateDeck } from '../src/repo.ts'
+import { createDeck, createWord, getDeck, HttpError, mergeDecks, searchWords, updateDeck } from '../src/repo.ts'
 import { buildQueue, reviewOptions } from '../src/study.ts'
 import { retagDeck } from '../src/tags.ts'
 import { addWord, callTool, deck, listen, makeCtx, rate, send, TZ, type TestCtx } from './helpers.ts'
@@ -85,7 +85,7 @@ describe('renaming, deleting and adding tags in a deck', () => {
     updateDeck(ctx.db, ctx.user.id, en.id, { reviewFilter: { tags: ['Tenses/Past', 'Modals'], types: ['rule'] } })
     ctx.clock.t = new Date(ctx.now().getTime() + 60_000)
     const r = retagDeck(ctx.db, ctx.user.id, en.id, { kind: 'rename', from: 'Tenses', to: 'Grammar/Tenses' }, {}, ctx.now())
-    expect(r).toEqual({ deck: { id: en.id, name: 'English' }, cards: 3, words: 1, facts: 2 })
+    expect(r).toEqual({ deck: { id: en.id, name: 'English' }, cards: 3, words: 1, facts: 2, merged: true })
     expect(tagsOf(ctx, 'words', w.id)).toEqual(['Grammar/Tenses', 'vocab'])
     expect(tagsOf(ctx, 'facts', a.id)).toEqual(['Grammar', 'Grammar/Tenses', 'Grammar/Tenses/Past'])
     // Already had the target: the first occurrence stays.
@@ -132,6 +132,25 @@ describe('renaming, deleting and adding tags in a deck', () => {
     expect(status(() => retagDeck(ctx.db, ctx.user.id, en.id, { kind: 'delete', tag: '  ' }))).toBe(400)
     expect(status(() => retagDeck(ctx.db, ctx.user.id, en.id, { kind: 'add', tag: ' / ' }))).toBe(400)
     expect(status(() => retagDeck(ctx.db, 'us_nobody', en.id, { kind: 'delete', tag: 'vocab' }))).toBe(404)
+    // Into its own subtree: it would rename its own result again.
+    expect(status(() => retagDeck(ctx.db, ctx.user.id, en.id, { kind: 'rename', from: 'Tenses', to: 'Tenses/Past' }))).toBe(400)
+    expect(tagsOf(ctx, 'words', w.id)).toEqual(['Tenses', 'vocab', 'Leon/words'])
+  })
+
+  it('leaves a filter tag alone when a scoped op moves only part of it', () => {
+    const { ctx, en, a } = setup()
+    updateDeck(ctx.db, ctx.user.id, en.id, { reviewFilter: { tags: ['Tenses'] } })
+    // Only the Grammar cards move; the word keeps "Tenses", so the session stays on it.
+    expect(retagDeck(ctx.db, ctx.user.id, en.id, { kind: 'rename', from: 'Tenses', to: 'Grammar/Tenses' }, { onlyWith: 'Grammar' }).facts).toBe(2)
+    expect(getDeck(ctx.db, ctx.user.id, en.id)!.reviewFilter).toEqual({ tags: ['Tenses'] })
+    expect(retagDeck(ctx.db, ctx.user.id, en.id, { kind: 'delete', tag: 'Tenses' }, { onlyWith: 'vocab' }).words).toBe(1)
+    // Nothing carries it any more: the filter follows (and empties).
+    expect(getDeck(ctx.db, ctx.user.id, en.id)!.reviewFilter).toBeNull()
+    // A pure rename (nothing had the target) reports no merge, so it can be renamed back.
+    const r = retagDeck(ctx.db, ctx.user.id, en.id, { kind: 'rename', from: 'Grammar/Tenses', to: 'Times' })
+    expect(r).toMatchObject({ facts: 2, merged: false })
+    retagDeck(ctx.db, ctx.user.id, en.id, { kind: 'rename', from: 'Times', to: 'Grammar/Tenses' })
+    expect(tagsOf(ctx, 'facts', a.id)).toEqual(['Grammar', 'Grammar/Tenses', 'Grammar/Tenses/Past'])
   })
 
   it('renames a tag stored before "/" meant a path, by its exact text', () => {
@@ -141,6 +160,23 @@ describe('renaming, deleting and adding tags in a deck', () => {
     const r = retagDeck(ctx.db, ctx.user.id, en.id, { kind: 'rename', from: 'leon notes (спикинг) — phrases / collocations', to: 'Leon/phrases & collocations' })
     expect(r.words).toBe(1)
     expect(searchWords(ctx.db, ctx.user.id, { tag: 'Leon' }, ctx.now()).words[0]!.tags).toEqual(['Leon/phrases & collocations'])
+  })
+})
+
+describe('merging a deck in as a tag', () => {
+  it('cleans the deck name into a path and matches the tag case-sensitively', () => {
+    const ctx = makeCtx()
+    const prog = createDeck(ctx.db, ctx.user.id, { name: 'Programming' }, ctx.now())
+    const books = createDeck(ctx.db, ctx.user.id, { name: 'Books / Fiction' }, ctx.now())
+    const a = addFact(ctx, books.id, 'Who wrote Dune?', ['books/fiction']).fact
+    addFact(ctx, books.id, 'Who wrote Emma?', ['Books/Fiction'])
+    mergeDecks(ctx.db, ctx.user.id, books.id, prog.id, { tag: true }, ctx.now())
+    expect(tagsOf(ctx, 'facts', a.id)).toEqual(['books/fiction', 'Books/Fiction'])
+    // Both facts share a creation time, so their order is not defined.
+    expect(searchFacts(ctx.db, ctx.user.id, { deck: prog.id }, ctx.now()).facts.map((f) => f.tags).sort((x, y) => y.length - x.length)).toEqual([['books/fiction', 'Books/Fiction'], ['Books/Fiction']])
+    // So a filter on the cleaned path finds them.
+    updateDeck(ctx.db, ctx.user.id, prog.id, { reviewFilter: { tags: ['Books / Fiction'] } })
+    expect(buildQueue(ctx.db, ctx.user.id, TZ, ctx.now(), { deckId: prog.id }).items.length).toBe(2)
   })
 })
 
@@ -166,7 +202,7 @@ describe('tag routes', () => {
     addWord(ctx, 'bone', { tags: ['wuthering heights'] })
     addFact(ctx, en.id, 'Rule', ['Grammar', 'Tenses'])
     expect(await api(`/decks/${en.id}/tags/rename`, { from: 'wuthering heights', to: 'Books/wuthering heights' }))
-      .toEqual({ status: 200, body: { deck: { id: en.id, name: 'English' }, cards: 1, words: 1, facts: 0 } })
+      .toEqual({ status: 200, body: { deck: { id: en.id, name: 'English' }, cards: 1, words: 1, facts: 0, merged: false } })
     expect((await api(`/decks/${en.id}/tags/rename`, { from: 'Tenses', to: 'Grammar/Tenses', onlyWith: 'Grammar' })).body).toMatchObject({ cards: 1, facts: 1 })
     expect((await api(`/decks/${en.id}/tags/add`, { tag: 'Grammar/My rules', onlyWith: 'Grammar' })).body).toMatchObject({ facts: 1 })
     expect((await api(`/decks/${en.id}/tags/delete`, { tag: 'Grammar/My rules' })).body).toMatchObject({ cards: 1 })

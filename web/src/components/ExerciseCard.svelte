@@ -73,9 +73,11 @@
 </script>
 
 <article class="card" class:revealed>
-  <div class="context">
+  <!-- While answering, one line: the title and a tag cut short, the steps
+       at the end; the summary has room for both tags. -->
+  <div class="context" class:one={!revealed}>
     <span class="deck">{item.fact.front}</span>
-    <CardTags tags={item.fact.tags} max={2} />
+    <CardTags tags={item.fact.tags} max={revealed ? 2 : 1} />
     {#if !revealed}
       <span class="steps" aria-label="Item {index + 1} of {items.length}">
         {#each items as _, i (i)}<i class:done={i < index || (i === index && answered)} class:now={i === index} class:bad={results[i] && !results[i]!.correct && !results[i]!.bad}></i>{/each}
@@ -251,6 +253,24 @@
     font-weight: 600;
     letter-spacing: 0.01em;
   }
+  .context.one {
+    flex-wrap: nowrap;
+  }
+  .context.one .deck {
+    flex: 0 1 auto;
+    min-width: 3em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* The tag gives way before the title does. */
+  .context.one :global(.tag) {
+    flex: 0 3 auto;
+    min-width: 0;
+  }
+  .context.one .steps {
+    flex: none;
+  }
   .steps {
     display: inline-flex;
     align-items: center;
@@ -287,9 +307,11 @@
     flex-direction: column;
     padding: 14px 22px 44px;
   }
+  /* The space above the item never gives way: a verdict growing below it
+     scrolls instead of lifting the sentence (the No-Jump rule). */
   .body::before {
     content: '';
-    flex: 0 1 12%;
+    flex: 0 0 12%;
   }
   p {
     margin: 0;
@@ -405,6 +427,20 @@
     transition:
       background-color var(--t-fast) ease,
       color var(--t-fast) ease;
+  }
+  /* A short word ("of", "my") is still a thumb's target: the hit area
+     reaches past the text without moving it. */
+  .tok {
+    position: relative;
+  }
+  .tok::after {
+    content: '';
+    position: absolute;
+    top: -8px;
+    bottom: -8px;
+    left: 50%;
+    width: max(100% + 8px, 44px);
+    translate: -50% 0;
   }
   .tok:active:not(:disabled) {
     background: var(--accent-soft);

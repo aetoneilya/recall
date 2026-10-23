@@ -27,25 +27,34 @@ import { createApiToken, deleteApiToken, listApiTokens } from './tokens.ts'
 import { allowedUser, isOwner, ownerUser, updateUserSettings, userDayOptions, type User } from './users.ts'
 import { answerVocabTest, createVocabTest, listVocabTests } from './vocab.ts'
 
+// Per review: attempts kept and the answer text stored.
+const MAX_ATTEMPTS = 10
+const GIVEN_MAX = 500
+
 const tuple = <T extends string>(xs: readonly T[]) => xs as unknown as [T, ...T[]]
 export const posSchema = z.enum(tuple<PartOfSpeech>(PARTS_OF_SPEECH))
 export const cefrSchema = z.enum(tuple<Cefr>(CEFR_LEVELS))
 const statusSchema = z.enum(tuple<WordStatus>(WORD_STATUSES))
 const sortSchema = z.enum(tuple<WordSort>(WORD_SORTS))
 
+// One odd field of one review mustn't refuse the whole upload (the outbox
+// would resend it forever): what can be cut to size is, per item. Only what
+// the rating can't do without (ids, card, rating, time) is strict.
 const ReviewsBody = z.array(z.object({
   id: z.string().min(1).max(100),
   cardId: z.string().min(1),
   rating: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
-  reviewedAt: z.iso.datetime({ offset: true }),
-  durationMs: z.number().int().min(0).optional(),
+  // Stored and sorted as UTC, whatever offset it came with.
+  reviewedAt: z.iso.datetime({ offset: true }).transform((s) => new Date(s).toISOString()),
+  durationMs: z.number().transform((n) => Math.max(0, Math.round(n))).optional(),
   exercises: z.array(z.object({
-    id: z.string().min(1).max(100),
-    given: z.string().max(500),
+    // A longer id matches no item; recordAttempts skips it.
+    id: z.string(),
+    given: z.string().transform((s) => s.slice(0, GIVEN_MAX)),
     correct: z.boolean(),
     overridden: z.boolean().optional(),
     bad: z.boolean().optional(),
-  })).max(10).optional(),
+  })).transform((xs) => xs.slice(0, MAX_ATTEMPTS)).optional(),
 })).max(5000)
 
 const ExampleBody = z.object({ text: z.string(), translation: z.string().nullable().optional() })

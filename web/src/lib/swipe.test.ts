@@ -74,6 +74,18 @@ describe('createTracker', () => {
     expect(r.end.dir).toBe('right')
   })
 
+  it('takes no flick from a drag held still before the release', () => {
+    const t = createTracker({ axes: 'x', threshold: () => 100 })
+    t.start(0, 0, 0, null)
+    for (let i = 1; i <= 6; i++) t.move(i * 10, 0, i * 8)
+    // Released at once: a flick.
+    expect(t.end(60, 0, 52).dir).toBe('right')
+    t.start(0, 0, 0, null)
+    for (let i = 1; i <= 6; i++) t.move(i * 10, 0, i * 8)
+    // Held for 2 s first: short of the threshold, so back.
+    expect(t.end(60, 0, 2048)).toMatchObject({ dir: null, v: 0 })
+  })
+
   it('keeps the first locked axis even if the finger changes course', () => {
     const t = createTracker({ axes: 'xy', threshold: () => 100 })
     t.start(0, 0, 0, null)

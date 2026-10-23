@@ -25,6 +25,9 @@ export interface RetagResult {
   cards: number
   words: number
   facts: number
+  // A rename landed on a tag some card of the deck already had (it or one
+  // under it): a merge, which renaming back can't undo.
+  merged: boolean
 }
 
 // A tag name from the outside, non-empty and within the limit. A new tag
@@ -42,6 +45,9 @@ export function cleanOp(op: TagOp): TagOp {
     const from = tagArg('from', op.from, true)
     const to = tagArg('to', op.to)
     if (from === to) throw new HttpError(400, 'from and to are the same tag')
+    // "Grammar" → "Grammar/Tenses" would rewrite its own result again
+    // ("Grammar/Tenses" → "Grammar/Tenses/Tenses").
+    if (tagMatches(from, to)) throw new HttpError(400, `"${to}" is under "${from}": a tag can't move into itself`)
     return { kind: 'rename', from, to }
   }
   return op.kind === 'delete' ? { kind: 'delete', tag: tagArg('tag', op.tag, true), exact: !!op.exact } : { kind: 'add', tag: tagArg('tag', op.tag) }
@@ -58,10 +64,13 @@ export function applyOp(op: TagOp, tags: string[]): string[] {
 }
 
 // The review filter follows renames and deletes (an exact delete leaves it:
-// the filter's tag still takes what is under it); adds don't touch it.
-function filterAfter(op: TagOp, f: ReviewFilter | null): ReviewFilter | null {
+// the filter's tag still takes what is under it); adds don't touch it. A
+// filter tag some card still matches afterwards stays as it is: a scoped op
+// (onlyWith, source) moved only part of it, and rewriting it would widen or
+// re-aim the session at every card.
+export function filterAfter(op: TagOp, f: ReviewFilter | null, stillUsed: (tag: string) => boolean = () => false): ReviewFilter | null {
   if (!f?.tags || op.kind === 'add' || (op.kind === 'delete' && op.exact)) return f
-  return cleanReviewFilter({ ...f, tags: applyOp(op, f.tags) })
+  return cleanReviewFilter({ ...f, tags: f.tags.flatMap((t) => (stillUsed(t) ? [t] : applyOp(op, [t]))) })
 }
 
 const same = (a: string[], b: string[]) => a.length === b.length && a.every((t, i) => t === b[i])
@@ -72,23 +81,26 @@ export function retagDeck(db: Db, userId: string, deckId: string, op: TagOp, sco
   return tx(db, () => {
     const deck = getDeck(db, userId, deckId)
     if (!deck) throw new HttpError(404, 'deck not found')
-    const out: RetagResult = { deck: { id: deck.id, name: deck.name }, cards: 0, words: 0, facts: 0 }
+    const out: RetagResult = { deck: { id: deck.id, name: deck.name }, cards: 0, words: 0, facts: 0, merged: false }
     const at = now.toISOString()
+    // Every tag of the deck once the op is done, for the filter.
+    const after = new Set<string>()
     for (const table of ['words', 'facts'] as const) {
       const rows = db.prepare(`SELECT id, tags, import_ref FROM ${table} WHERE user_id = ? AND deck_id = ?`).all(userId, deck.id) as { id: string; tags: string; import_ref: string | null }[]
       const update = db.prepare(`UPDATE ${table} SET tags = ?, updated_at = ? WHERE id = ? AND user_id = ?`)
       for (const r of rows) {
         const tags = JSON.parse(r.tags) as string[]
-        if (onlyWith && !tags.some((t) => tagMatches(onlyWith, t))) continue
-        if (scope.source && (r.import_ref?.startsWith('pack:') ? 'pack' : 'own') !== scope.source) continue
-        const next = applyOp(clean, tags)
+        if (clean.kind === 'rename' && tags.some((t) => tagMatches(clean.to, t))) out.merged = true
+        const inScope = !(onlyWith && !tags.some((t) => tagMatches(onlyWith, t))) && !(scope.source && (r.import_ref?.startsWith('pack:') ? 'pack' : 'own') !== scope.source)
+        const next = inScope ? applyOp(clean, tags) : tags
+        for (const t of next) after.add(t)
         if (same(tags, next)) continue
         update.run(JSON.stringify(next), at, r.id, userId)
         out[table]++
       }
     }
     out.cards = out.words + out.facts
-    const filter = filterAfter(clean, deck.reviewFilter)
+    const filter = filterAfter(clean, deck.reviewFilter, (f) => [...after].some((t) => tagMatches(f, t)))
     if (JSON.stringify(filter) !== JSON.stringify(deck.reviewFilter)) {
       db.prepare('UPDATE decks SET review_filter = ? WHERE id = ? AND user_id = ?').run(filter ? JSON.stringify(filter) : null, deck.id, userId)
     }

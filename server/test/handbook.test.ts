@@ -126,7 +126,7 @@ describe('adding the handbook', () => {
       ['Напиши предложение, где нужно правило «Third person -s (invented test topic)».', 'Используй правило «Third person -s (invented test topic)» правильно.'],
     ])
     expect(ctx.db.prepare('SELECT import_ref FROM fact_exercises WHERE fact_id = ? ORDER BY rowid').all(facts[4]!.id)).toEqual(
-      ['ex:0', 'ex:1', 'ex:2', 'write:0', 'write:1'].map((x) => ({ import_ref: `pack:grammar-handbook:past-simple-ed:${x}` })),
+      ['ex:0', 'ex:1', 'ex:2', 'write:generic:0', 'write:generic:1'].map((x) => ({ import_ref: `pack:grammar-handbook:past-simple-ed:${x}` })),
     )
     expect(listExercises(ctx.db, ctx.user.id, facts[4]!.id).filter((e) => e.type === 'write').map((e) => e.prompt)).toEqual([
       'Напиши предложение, где нужно правило «Past simple -ed (invented test topic)».', 'Напиши вопрос или отрицание, где нужно правило «Past simple -ed (invented test topic)».',
@@ -159,12 +159,50 @@ describe('adding the handbook', () => {
     expect(addPack(ctx.db, ctx.user.id, 'grammar-handbook', ctx.now())).toMatchObject({ added: 0, exercises: 0 })
   })
 
+  it('adds a write item the file gained for an old topic', () => {
+    const ctx = makeCtx()
+    load()
+    deck(ctx)
+    addPack(ctx.db, ctx.user.id, 'grammar-handbook', ctx.now())
+    // past-simple-ed had only the two generic tasks; now the file has one of its own.
+    const d = raw()
+    d.items[1]!.write = [{ prompt: 'Напиши тестовое предложение о вчерашнем дне.', rubric: 'Past simple.' }]
+    load(d)
+    expect(listPacks(ctx.db, ctx.user.id)[0]).toMatchObject({ missing: 0, missingExercises: 1 })
+    expect(addPack(ctx.db, ctx.user.id, 'grammar-handbook', ctx.now())).toMatchObject({ exercises: 1 })
+    const rule = searchFacts(ctx.db, ctx.user.id, { q: 'Past simple -ed' }, ctx.now()).facts.find((f) => f.handbook?.role === 'rule')!
+    expect(listExercises(ctx.db, ctx.user.id, rule.id).filter((e) => e.type === 'write').map((e) => e.prompt)).toEqual([
+      'Напиши предложение, где нужно правило «Past simple -ed (invented test topic)».', 'Напиши вопрос или отрицание, где нужно правило «Past simple -ed (invented test topic)».',
+      'Напиши тестовое предложение о вчерашнем дне.',
+    ])
+    expect(listPacks(ctx.db, ctx.user.id)[0]).toMatchObject({ missingExercises: 0 })
+  })
+
+  it('counts questions the deck already has as there, so it never offers to add them', () => {
+    const ctx = makeCtx()
+    const p = load()
+    const en = deck(ctx)
+    const card = p.facts.find((f) => f.key.includes(':card:'))!
+    createFact(ctx.db, ctx.user.id, { deckId: en.id, fact: { front: card.front, back: 'mine' }, status: 'active', createdBy: 'user' }, ctx.now())
+    expect(listPacks(ctx.db, ctx.user.id)[0]).toMatchObject({ missing: 7 })
+    expect(addPack(ctx.db, ctx.user.id, 'grammar-handbook', ctx.now())).toMatchObject({ added: 7, duplicates: 1 })
+    expect(listPacks(ctx.db, ctx.user.id)[0]).toMatchObject({ missing: 0, missingExercises: 0 })
+  })
+
+  it('shows the deck it would go to for a user with no English deck', () => {
+    const ctx = makeCtx()
+    load()
+    const de = createDeck(ctx.db, ctx.user.id, { name: 'German', targetLang: 'de', nativeLang: 'ru' }, ctx.now())
+    expect(listPacks(ctx.db, ctx.user.id)[0]).toMatchObject({ deckId: de.id, deckName: 'German' })
+    expect(addPack(ctx.db, ctx.user.id, 'grammar-handbook', ctx.now()).deck.id).toBe(de.id)
+  })
+
   it('tops write items up to two, keeping the file\'s', () => {
     const p = load()
     const t = { ...p.topics![0]!, write: [...p.topics![0]!.write, p.topics![0]!.write[0]!, p.topics![0]!.write[0]!] }
     expect(topicExercises('grammar-handbook', t).filter((e) => e.type === 'write')).toHaveLength(3)
     expect(topicExercises('grammar-handbook', { ...t, write: [] }).filter((e) => e.type === 'write').map((e) => e.importRef)).toEqual([
-      'pack:grammar-handbook:third-person-s:write:0', 'pack:grammar-handbook:third-person-s:write:1',
+      'pack:grammar-handbook:third-person-s:write:generic:0', 'pack:grammar-handbook:third-person-s:write:generic:1',
     ])
   })
 })

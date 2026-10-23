@@ -31,6 +31,13 @@ describe('tag tree', () => {
     expect(toggleTag(sel, 'Grammar/Tenses')).toEqual(['claude'])
   })
 
+  it('widens to a mixed parent when it is tapped', () => {
+    const sel = toggleTag(['Grammar/Tenses', 'claude'], 'Grammar')
+    expect(sel).toEqual(['claude', 'Grammar'])
+    expect(tagState(sel, 'Grammar')).toBe('on')
+    expect(tagState(sel, 'Grammar/Tenses')).toBe('off')
+  })
+
   it("takes a parent path's own count as exact", () => {
     const t = tagTree([{ value: 'Grammar', n: 7 }, { value: 'Grammar/Tenses', n: 6 }, { value: 'Grammar/Modals', n: 3 }])
     expect(t.map((x) => [x.path, x.n])).toEqual([['Grammar', 7]])

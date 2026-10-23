@@ -1,7 +1,7 @@
 // Local review queue: what to show next and how a rating changes the queue.
 // Pure functions over immutable state so undo is just "restore the previous
 // state" and the logic is testable without a DOM.
-import { dayStart, isLearningState, itemOf, nextDayStart, planToday, review, todaySlot, type CardState, type DayOptions, type Fact, type QueueItem, type Rating, type TodayCard, type Word } from '@recall/core'
+import { dayStart, isLearningState, itemOf, nextDayStart, planToday, review, todaySlot, type CardFacts, type CardState, type DayOptions, type Fact, type QueueItem, type Rating, type TodayCard, type Word } from '@recall/core'
 import type { Scheduler } from './fsrs.ts'
 
 export interface QueueState {
@@ -230,6 +230,13 @@ export function dropWord(list: QueueItem[], id: string): QueueItem[] {
 // refresh brings a newly picked set for it.
 export function keepExercises(cur: QueueItem, fresh: QueueItem): QueueItem {
   return cur.kind === 'fact' && fresh.kind === 'fact' && cur.exercises ? { ...fresh, exercises: cur.exercises } : fresh
+}
+
+// What the review filter looks at, for a queue item (a fact served with
+// exercises is a rule).
+export function itemFacts(it: QueueItem): CardFacts {
+  if (it.kind === 'fact') return { type: it.exercises?.length ? 'rule' : 'fact', tags: it.fact.tags }
+  return { type: 'word', tags: it.word.tags, pos: it.word.pos, cefr: it.word.cefr, direction: it.card.direction }
 }
 
 // Items with these cards' schedules put in.

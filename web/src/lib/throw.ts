@@ -1,6 +1,6 @@
 // Card motion numbers (web/DESIGN.md "Motion"): the drag's rotation, the
 // snap-back, and a throw whose start speed matches the finger's.
-import type { SwipeDir } from './swipe.ts'
+import type { Axis, SwipeDir } from './swipe.ts'
 
 export const THROW_EASE = 'cubic-bezier(0.3, 0.6, 0.5, 1)'
 // Button commits throw as if released at this speed.
@@ -30,6 +30,16 @@ export const snapMs = (d: number) => clamp(180 + Math.abs(d) * 0.8, 200, 320)
 // haptic doesn't chatter at the boundary.
 export function nextArmed(armed: boolean, d: number, threshold: number): boolean {
   return armed ? Math.abs(d) >= threshold * 0.85 : Math.abs(d) > threshold
+}
+
+// The direction a release commits to. An armed swipe (the pill lit) commits
+// its way even if pulled back between 85% and 100% of the threshold — what
+// the pill says is what happens; otherwise the tracker's verdict (past the
+// threshold, or a flick).
+export function releaseDir(tracked: SwipeDir | null, armed: boolean, axis: Axis | null, d: number): SwipeDir | null {
+  if (!armed || !axis || d === 0) return tracked
+  if (axis === 'x') return d > 0 ? 'right' : 'left'
+  return d > 0 ? 'down' : 'up'
 }
 
 export interface Throw {

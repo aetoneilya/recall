@@ -3,6 +3,7 @@
   import { cubicOut, quintOut } from 'svelte/easing'
   import { fade, fly } from 'svelte/transition'
   import { canDrag, dismisses, dismissMs, sheetOffset, springBackMs } from '../lib/sheetDrag.ts'
+  import { liveVelocity } from '../lib/swipe.ts'
 
   // A bottom sheet over a dimmed screen. It closes only from its own
   // buttons: what it shows (a one-time secret) shouldn't vanish on a stray tap.
@@ -49,14 +50,16 @@
     return true
   }
 
-  function end(y: number) {
+  function end(y: number, t: number) {
     const d = drag
     drag = null
     if (!d?.on || !sheet) return
     const dy = y - d.y0
-    if (dismisses(dy, d.v, d.h)) {
+    // Held still before letting go: no flick, only the distance counts.
+    const v = liveVelocity(d.v, d.lastT, t)
+    if (dismisses(dy, v, d.h)) {
       swiped = true
-      const ms = still ? 0 : dismissMs(dy, d.v, d.h)
+      const ms = still ? 0 : dismissMs(dy, v, d.h)
       sheet.style.transition = `transform ${ms}ms cubic-bezier(0.3, 0.6, 0.5, 1)`
       sheet.style.transform = `translate3d(0, ${d.h + 24}px, 0)`
       if (scrim) {
@@ -81,10 +84,10 @@
       const t = e.touches[0]
       if (t && move(t.clientX, t.clientY, e.timeStamp) && e.cancelable) e.preventDefault()
     }
-    const te = (e: TouchEvent) => end(e.changedTouches[0]?.clientY ?? 0)
+    const te = (e: TouchEvent) => end(e.changedTouches[0]?.clientY ?? 0, e.timeStamp)
     const pd = (e: PointerEvent) => e.pointerType !== 'touch' && e.button === 0 && start(e.clientX, e.clientY, e.timeStamp, e.target)
     const pm = (e: PointerEvent) => e.pointerType !== 'touch' && move(e.clientX, e.clientY, e.timeStamp)
-    const pu = (e: PointerEvent) => e.pointerType !== 'touch' && end(e.clientY)
+    const pu = (e: PointerEvent) => e.pointerType !== 'touch' && end(e.clientY, e.timeStamp)
     node.addEventListener('touchstart', ts, { passive: true })
     node.addEventListener('touchmove', tm, { passive: false })
     node.addEventListener('touchend', te)

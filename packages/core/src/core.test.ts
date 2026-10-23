@@ -118,6 +118,26 @@ describe('day', () => {
     // Exactly at the boundary: the new day.
     expect(dayStart(new Date('2026-10-21T22:30:00Z'), india).toISOString()).toBe('2026-10-21T22:30:00.000Z')
   })
+  it('starts at 4 a.m. local on DST days too', () => {
+    const berlin = { timeZone: 'Europe/Berlin', startHour: 4 }
+    // 29 Mar: clocks go 02:00 → 03:00; 04:00 CEST = 02:00 UTC.
+    expect(dayStart(new Date('2026-03-29T10:00:00Z'), berlin).toISOString()).toBe('2026-03-29T02:00:00.000Z')
+    expect(dayKey(new Date('2026-03-29T02:30:00Z'), berlin)).toBe('2026-03-29') // 04:30 CEST
+    expect(dayKey(new Date('2026-03-29T01:30:00Z'), berlin)).toBe('2026-03-28') // 03:30 CEST
+    // 25 Oct: 03:00 → 02:00; 04:00 CET = 03:00 UTC, and the day before is 25 hours long.
+    expect(dayStart(new Date('2026-10-25T10:00:00Z'), berlin).toISOString()).toBe('2026-10-25T03:00:00.000Z')
+    expect(nextDayStart(new Date('2026-10-24T10:00:00Z'), berlin).toISOString()).toBe('2026-10-25T03:00:00.000Z')
+    expect(dayKey(new Date('2026-10-25T02:30:00Z'), berlin)).toBe('2026-10-24') // 03:30 CET
+    const ny = { timeZone: 'America/New_York', startHour: 4 }
+    // 8 Mar 2026: 04:00 EDT = 08:00 UTC; 1 Nov 2026: 04:00 EST = 09:00 UTC.
+    expect(nextDayStart(new Date('2026-03-07T20:00:00Z'), ny).toISOString()).toBe('2026-03-08T08:00:00.000Z')
+    expect(nextDayStart(new Date('2026-10-31T20:00:00Z'), ny).toISOString()).toBe('2026-11-01T09:00:00.000Z')
+    expect(dayKey(new Date('2026-11-01T08:30:00Z'), ny)).toBe('2026-10-31') // 03:30 EST
+  })
+  it('rolls back across month and year ends', () => {
+    expect(dayKey(new Date('2026-12-31T22:00:00Z'), opts)).toBe('2026-12-31') // 01:00 MSK on 1 Jan
+    expect(dayKey(new Date('2026-02-28T23:00:00Z'), opts)).toBe('2026-02-28') // 02:00 MSK on 1 Mar
+  })
 })
 
 describe('review filter', () => {

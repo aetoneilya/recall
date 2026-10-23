@@ -170,6 +170,11 @@
   .topic {
     gap: 10px;
   }
+  /* The title takes the row, so the level and chevron sit at the right edge on one line too. */
+  .topic .grow {
+    flex: 1;
+    min-width: 0;
+  }
   .level {
     flex: none;
     font-variant-numeric: tabular-nums;

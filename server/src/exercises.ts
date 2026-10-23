@@ -195,7 +195,7 @@ export function poolCounts(db: Db, factIds: string[]): Map<string, PoolCounts> {
 }
 
 // PER_REVIEW items from a pool: least recently shown first (never shown
-// before anything), random among equals, at most SAME_TYPE of one type
+// before anything), `rand` order among equals, at most SAME_TYPE of one type
 // unless the pool has nothing else — and never more than WRITE_PER_REVIEW
 // write items, whatever the pool.
 export function pickExercises<T extends { type: string; last_shown_at: string | null }>(pool: T[], n = PER_REVIEW, rand: () => number = Math.random): T[] {
@@ -231,6 +231,13 @@ export function servablePool<T extends { type: string; last_shown_at: string | n
   return pool
 }
 
+// The active items a fact's reviews can ever get: servablePool's choice
+// plus the write items (pickForReview decides whether to use those).
+function servedOf<T extends { type: string; last_shown_at: string | null }>(all: T[]): T[] {
+  const writes = all.filter((x) => isWriteType(x.type as ExerciseType))
+  return [...servablePool(all.filter((x) => !writes.includes(x))), ...writes]
+}
+
 // One review's items from a fact's active pool. Write items join the tap
 // ones only with `grading` (at most one, by the same least-recently-shown
 // order); typed legacy items only fill up a pool short of tap ones.
@@ -257,22 +264,48 @@ function activePools(db: Db, factIds: string[]): Map<string, ExerciseRow[]> {
   return byFact
 }
 
-// This review's items for every fact given that has a pool to review from.
+// The dedupe key an item would get in a pool (null: it would be refused).
+export function exerciseKeyOf(input: ExerciseInput): string | null {
+  const r = cleanExercise(input)
+  return 'error' in r ? null : exerciseKey(r.item.prompt, r.item.type)
+}
+
+// A deterministic 0..1 generator from a string (FNV-1a into mulberry32): the
+// same seed gives the same picks.
+export function seededRandom(seed: string): () => number {
+  let h = 0x811c9dc5
+  for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 0x01000193)
+  let a = h >>> 0
+  return () => {
+    a = (a + 0x6d2b79f5) | 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+// This review's items for every fact given (fact id → seed) that has a pool
+// to review from. The seed (card, study day, reps: `reviewSeed`) makes the
+// pick stable: a refetch shows the same items until the card is rated.
 // `grading`: write items can be graded on this server (Claude configured).
-export function exercisesForQueue(db: Db, factIds: string[], grading = false, rand: () => number = Math.random): Map<string, ExerciseItem[]> {
+export function exercisesForQueue(db: Db, seeds: Map<string, string>, grading = false): Map<string, ExerciseItem[]> {
   const out = new Map<string, ExerciseItem[]>()
-  for (const [factId, all] of activePools(db, factIds)) {
-    const picked = pickForReview(all, grading, PER_REVIEW, rand)
+  for (const [factId, all] of activePools(db, [...seeds.keys()])) {
+    const picked = pickForReview(all, grading, PER_REVIEW, seededRandom(seeds.get(factId)!))
     if (picked.length) out.set(factId, picked.map(toItem))
   }
   return out
 }
 
+export const reviewSeed = (cardId: string, day: string, reps: number) => `${cardId}:${day}:${reps}`
+
 // Up to `sets` reviews' worth of items for one rule, as disjoint as the pool
 // allows: each set is picked as for the queue, from the items the earlier
 // sets haven't used (topped up from the used ones once those run out).
 export function exerciseSets(db: Db, factId: string, sets: number, grading = false, rand: () => number = Math.random): ExerciseItem[][] {
-  const all = activePools(db, [factId]).get(factId) ?? []
+  // Tap-only or not is the whole pool's call, as for a review: a set drawn
+  // from a few unused tap items mustn't fall back to typed ones.
+  const all = servedOf(activePools(db, [factId]).get(factId) ?? [])
   const out: ExerciseItem[][] = []
   const used = new Set<string>()
   for (let i = 0; i < sets; i++) {

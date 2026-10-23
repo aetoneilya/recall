@@ -10,7 +10,7 @@ import {
   type FacetItem, type ReviewFilter, type ReviewInput, type ReviewLog,
 } from '@recall/core'
 import { tx, type Db } from './db.ts'
-import { exercisesForQueue, MIN_POOL, recordAttempts, revertAttempts, SERVABLE } from './exercises.ts'
+import { exercisesForQueue, MIN_POOL, recordAttempts, reviewSeed, revertAttempts, SERVABLE } from './exercises.ts'
 import { toFact, type FactRow } from './facts.ts'
 import { userScheduler } from './fsrs.ts'
 import {
@@ -30,9 +30,11 @@ export function studyDay(now: Date, opts: DayOptions): StudyDay {
 }
 
 // A new reverse card waits until the word's forward card is stable enough
-// (deck.reverseAfterDays), unless the gate is off or forward is disabled.
+// (deck.reverseAfterDays), unless the gate is off, forward is disabled or the
+// forward card is suspended (it would never get stable: reverse is all
+// that's studied of the word).
 const REVERSE_GATE = `(c.direction = 'forward' OR d.reverse_after_days IS NULL OR d.forward_enabled = 0 OR EXISTS (
-  SELECT 1 FROM cards f WHERE f.word_id = c.word_id AND f.direction = 'forward' AND f.state > 0 AND f.stability >= d.reverse_after_days))`
+  SELECT 1 FROM cards f WHERE f.word_id = c.word_id AND f.direction = 'forward' AND (f.suspended = 1 OR (f.state > 0 AND f.stability >= d.reverse_after_days))))`
 
 export interface QueueRow extends CardRow {
   kind: 'word' | 'fact'
@@ -228,15 +230,16 @@ export function buildQueue(db: Db, userId: string, opts: DayOptions, now: Date, 
 
   const limit = Math.min(Math.max(q.limit ?? 200, 1), 2000)
   return {
-    items: queueItems(db, ordered.slice(0, limit), q.grading ?? false),
+    items: queueItems(db, ordered.slice(0, limit), q.grading ?? false, studyDay(now, opts).key),
     counts: { new: fresh.length, learning: learning.length, review: reviews.length },
     decks,
   }
 }
 
 // Queue rows as the review screen gets them, with their words and facts, and
-// for rules this review's exercise items (picked now).
-export function queueItems(db: Db, page: QueueRow[], grading: boolean): QueueItem[] {
+// for rules this review's exercise items (picked now, the same all `day`
+// until the card is rated).
+export function queueItems(db: Db, page: QueueRow[], grading: boolean, day: string): QueueItem[] {
   const words = new Map<string, WordRow>()
   const facts = new Map<string, FactRow>()
   for (const [table, map] of [['words', words], ['facts', facts]] as const) {
@@ -247,7 +250,8 @@ export function queueItems(db: Db, page: QueueRow[], grading: boolean): QueueIte
     }
   }
   // Rules with an exercise pool: this review's items, picked now.
-  const exercises = exercisesForQueue(db, [...facts.keys()], grading)
+  const seeds = new Map(page.filter((r) => r.kind === 'fact').map((r) => [r.item_id, reviewSeed(r.id, day, r.reps)]))
+  const exercises = exercisesForQueue(db, seeds, grading)
   return page.map((r): QueueItem => r.kind === 'fact'
     ? { kind: 'fact', card: toCard(r), fact: toFact(facts.get(r.item_id)!), deckName: r.deck_name, ...(exercises.has(r.item_id) ? { exercises: exercises.get(r.item_id)! } : {}) }
     : { kind: 'word', card: toCard(r), word: toWord(words.get(r.item_id)!), deckName: r.deck_name })
@@ -316,11 +320,15 @@ function toLog(r: LogRow): ReviewLog {
 }
 
 // Uploads from the offline outbox may repeat or arrive out of order: apply
-// in reviewedAt order and skip ids we already have (and unknown cards, which
-// includes other users' cards). Scheduled with the user's own FSRS weights
-// and target retention.
+// in reviewedAt order (as instants, whatever the offset) and skip ids we
+// already have (and unknown cards, which includes other users' cards).
+// Scheduled with the user's own FSRS weights and target retention.
+// A rating older than ones the card already has (another device uploaded
+// first) goes into its place in the history: the later ratings are replayed
+// on top of it, so the card and every log's before/after read as if they had
+// come in order, and undo of the latest one stays exact.
 export function applyReviews(db: Db, userId: string, inputs: ReviewInput[]): ApplyResult {
-  const sorted = [...inputs].sort((a, b) => a.reviewedAt.localeCompare(b.reviewedAt) || a.id.localeCompare(b.id))
+  const sorted = [...inputs].sort((a, b) => Date.parse(a.reviewedAt) - Date.parse(b.reviewedAt) || a.id.localeCompare(b.id))
   let applied = 0
   let skipped = 0
   const touched = new Map<string, Card>()
@@ -330,6 +338,8 @@ export function applyReviews(db: Db, userId: string, inputs: ReviewInput[]): App
     const getCard = db.prepare('SELECT * FROM study_cards WHERE id = ? AND user_id = ?')
     const update = db.prepare(`UPDATE cards SET ${STATE_COLUMNS} WHERE id = ?`)
     const insert = db.prepare('INSERT INTO review_logs(id, card_id, rating, reviewed_at, duration_ms, "before", "after") VALUES (?, ?, ?, ?, ?, ?, ?)')
+    const laterLogs = db.prepare('SELECT id, rating, reviewed_at, "before" FROM review_logs WHERE card_id = ? AND reviewed_at > ? ORDER BY reviewed_at, rowid')
+    const rewrite = db.prepare('UPDATE review_logs SET "before" = ?, "after" = ? WHERE id = ?')
     for (const r of sorted) {
       const row = getCard.get(r.cardId, userId) as CardRow | undefined
       if (exists.get(r.id) || !row) {
@@ -337,9 +347,17 @@ export function applyReviews(db: Db, userId: string, inputs: ReviewInput[]): App
         continue
       }
       const at = new Date(r.reviewedAt)
-      const before = toCard(row).schedule
+      const later = laterLogs.all(r.cardId, at.toISOString()) as { id: string; rating: Rating; reviewed_at: string; before: string }[]
+      // The state as it was at `at`: before the first later rating, if any.
+      const before = later.length ? (JSON.parse(later[0]!.before) as CardState) : toCard(row).schedule
       const after = review(before, r.rating, at, f)
-      update.run(...stateValues(after), r.cardId)
+      let state = after
+      for (const l of later) {
+        const next = review(state, l.rating, new Date(l.reviewed_at), f)
+        rewrite.run(JSON.stringify(state), JSON.stringify(next), l.id)
+        state = next
+      }
+      update.run(...stateValues(state), r.cardId)
       insert.run(r.id, r.cardId, r.rating, at.toISOString(), r.durationMs ?? null, JSON.stringify(before), JSON.stringify(after))
       if (r.exercises?.length && row.fact_id) recordAttempts(db, r.id, row.fact_id, r.exercises, at.toISOString())
       touched.set(r.cardId, toCard(getCard.get(r.cardId, userId) as unknown as CardRow))

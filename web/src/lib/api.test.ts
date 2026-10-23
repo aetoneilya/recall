@@ -107,6 +107,14 @@ describe('api client', () => {
     expect(onNetwork).toHaveBeenLastCalledWith(true)
   })
 
+  it('a connection that drops while the body streams in is offline too, not a raw TypeError', async () => {
+    const onNetwork = vi.fn()
+    const broken = { status: 200, ok: true, text: () => Promise.reject(new TypeError('network error')) } as unknown as Response
+    const api = createApi({ fetch: (async () => broken) as typeof fetch, onNetwork })
+    await expect(api.me()).rejects.toBeInstanceOf(NetworkError)
+    expect(onNetwork).toHaveBeenLastCalledWith(false)
+  })
+
   it('defaults deck fields an older server leaves out', async () => {
     const { f } = recorder(() => json({ decks: [{ id: 'dk_1', name: 'English', counts: { total: 3, due: 1, new: 2 } }] }))
     const [d] = await createApi({ fetch: f }).decks()

@@ -17,14 +17,15 @@
   import { dropCard } from '../lib/drop.ts'
   import { fsrs } from '../lib/fsrs.ts'
   import { counts, remaining } from '../lib/queue.ts'
-  import { session } from '../lib/review.svelte.ts'
+  import { session, type ExerciseProgress } from '../lib/review.svelte.ts'
   import { navigate } from '../lib/router.svelte.ts'
   import { defaultThreshold, swipe, type Axis, type SwipeDir } from '../lib/swipe.ts'
-  import { BUTTON_SPEED, canArm, dragRise, dragScale, nextArmed, nextPose, PEEK_HOLD_MS, PEEK_SAFE_MS, peekReveals, plan, reducedMotion, releaseOutcome, snapMs, THROW_EASE, tilt, tiltOrigin } from '../lib/throw.ts'
+  import { BUTTON_SPEED, canArm, dragRise, dragScale, nextArmed, nextPose, PEEK_HOLD_MS, PEEK_SAFE_MS, peekReveals, plan, reducedMotion, releaseDir, releaseOutcome, snapMs, THROW_EASE, tilt, tiltOrigin } from '../lib/throw.ts'
   import { haptic } from '../lib/telegram.ts'
 
   const c = $derived(counts(session.queue))
-  const done = $derived(session.stats.reviewed)
+  // The deck's own progress: ratings in other decks aren't part of this queue.
+  const done = $derived(session.doneHere)
   // Stack edges: two with three or more cards left, one with two, none on the last.
   const layers = $derived(Math.min(2, Math.max(0, remaining(session.queue) - 1)))
   const progress = $derived(done + remaining(session.queue) ? done / (done + remaining(session.queue)) : 0)
@@ -96,9 +97,20 @@
     writeGrade = null
     skipped = []
     tap = { pick: null, token: null, done: false }
-    exResults = untrack(() => {
+    // Back from the theory (or any screen) to a rule half answered: where it
+    // was; on its summary, with the results it was answered with.
+    untrack(() => {
       const cur = session.current
-      return cur && session.revealed ? [...(session.exerciseResults[cur.card.id] ?? [])] : []
+      const p = cur?.kind === 'fact' && progressFits(session.exerciseProgress[cur.card.id], cur.exercises) ? session.exerciseProgress[cur.card.id] : undefined
+      exResults = cur && session.revealed ? [...(session.exerciseResults[cur.card.id] ?? p?.results ?? [])] : []
+      if (!p || session.revealed) return
+      exIndex = p.index
+      exResults = [...p.results]
+      tap = { ...p.tap }
+      exCheck = p.check
+      exAnswer = p.answer
+      skipped = [...p.skipped]
+      writeGrade = p.grade
     })
     untrack(() => {
       const cur = session.current
@@ -107,6 +119,22 @@
         answer = t.answer
         check = t.check
       }
+    })
+  })
+
+  // Whether saved progress is of the items the card shows now.
+  function progressFits(p: ExerciseProgress | undefined, list: { id: string }[] | undefined): p is ExerciseProgress {
+    return !!p && p.ids.join() === (list ?? []).map((e) => e.id).join()
+  }
+
+  // Kept in the session as it goes, so leaving the card doesn't lose it.
+  $effect(() => {
+    const cur = item
+    if (cur?.kind !== 'fact' || !exercises) return
+    const started = exIndex > 0 || exResults.length > 0 || tap.token !== null || exAnswer !== ''
+    const p = { ids: (cur.exercises ?? []).map((e) => e.id), index: exIndex, results: $state.snapshot(exResults), tap: $state.snapshot(tap), check: $state.snapshot(exCheck), answer: exAnswer, skipped: [...skipped], grade: $state.snapshot(writeGrade) }
+    untrack(() => {
+      if (started) session.exerciseProgress[cur.card.id] = p as ExerciseProgress
     })
   })
 
@@ -486,7 +514,8 @@
     axis = null
   }
 
-  function onSwipeEnd(d: SwipeDir | null, _x: number, _y: number, v: number) {
+  function onSwipeEnd(tracked: SwipeDir | null, _x: number, _y: number, v: number) {
+    const d = releaseDir(tracked, armed, axis, dist)
     // Short of the threshold, or too soon after the answer appeared: back
     // in place, still revealed.
     if (!session.revealed || releaseOutcome(d, revealedAt, Date.now()) === 'spring' || !d) {
@@ -599,6 +628,7 @@
           class:snapping={!!snapping}
           class:pressed
           class:peeked
+          class:legend-on={session.revealed && hintsLeft > 0}
           bind:this={wrap}
           style="transform: {transform}; transform-origin: {origin}; --ctx-left: {session.canUndo ? '52px' : '20px'}; --snap: {snapping || 320}ms; --from-y: {stepFrom.y}px; --from-scale: {stepFrom.scale}"
           role="button"
@@ -840,7 +870,10 @@
     overscroll-behavior: contain;
     touch-action: pan-x;
     scrollbar-width: none;
-    padding: 2px 8px 2px 2px;
+    /* Room for the 44px hit areas below (the scroller clips them), taken
+       back by the margin so the row keeps its height. */
+    padding: 6px 8px 6px 2px;
+    margin: -4px 0;
   }
   .fchips::-webkit-scrollbar {
     display: none;
@@ -866,7 +899,7 @@
   .fchip .x {
     position: relative;
     height: 100%;
-    padding: 0 10px 0 4px;
+    padding: 0 11px 0 5px;
     display: flex;
     align-items: center;
     color: inherit;
@@ -877,7 +910,11 @@
   .fchip .body::after {
     content: '';
     position: absolute;
-    inset: -4px 0;
+    inset: -6px 0;
+  }
+  /* ✕ reaches into the gap and over the label's edge: about 41px wide. */
+  .fchip .x::after {
+    inset: -6px -6px -6px -6px;
   }
   .fchip .body {
     position: relative;
@@ -904,7 +941,7 @@
   .filter-btn::after {
     content: '';
     position: absolute;
-    inset: -4px 0;
+    inset: -6px -4px;
   }
   .filter-btn.on {
     color: var(--accent);
@@ -1130,6 +1167,11 @@
     transform: scaleX(var(--pull));
   }
 
+  /* The legend gets its own strip under the card's content: the content
+     scrolls above it instead of under it. */
+  .card-wrap.legend-on :global(.card > .body) {
+    margin-bottom: 34px;
+  }
   .legend {
     position: absolute;
     left: 50%;

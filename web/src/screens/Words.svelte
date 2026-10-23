@@ -9,7 +9,7 @@
   import Icon from '../components/Icon.svelte'
   import { status } from '../lib/app.svelte.ts'
   import { facts } from '../lib/facts.svelte.ts'
-  import { deckContents, libraryFacets, libraryRows, type LibrarySort } from '../lib/library.ts'
+  import { deckContents, deckTotal, libraryFacets, libraryRows, type LibrarySort } from '../lib/library.ts'
   import { renderInline } from '../lib/markdown.ts'
   import { session } from '../lib/review.svelte.ts'
   import { TYPE_NAMES } from '../lib/reviewFilter.ts'
@@ -45,7 +45,7 @@
   const loaded = $derived(!!words.all && !!facts.all)
   const rows = $derived(loaded ? libraryRows(words.all!, facts.all!, deckId, f) : null)
   const contents = $derived(deckContents(words.all ?? [], facts.all ?? [], deckId))
-  const total = $derived(contents.types.word + contents.types.fact + contents.types.rule)
+  const total = $derived(loaded ? deckTotal(words.all!, facts.all!, deckId, f.status) : 0)
   const presentTypes = $derived((['word', 'fact', 'rule'] as CardType[]).filter((t) => contents.types[t] > 0))
   // Switcher: what each deck holds.
   const choices = $derived(
@@ -463,18 +463,21 @@
   .switcher {
     margin: -2px 0 10px;
   }
+  /* Padded vertically (and pulled back by the margin) so the chips' 44px hit
+     areas fit inside the scroller, which clips. */
   .types {
     display: flex;
     gap: 6px;
     overflow-x: auto;
-    margin: 0 -16px 8px;
-    padding: 0 16px;
+    margin: -7px -16px 1px;
+    padding: 7px 16px;
     scrollbar-width: none;
   }
   .types::-webkit-scrollbar {
     display: none;
   }
   .types button {
+    position: relative;
     flex: none;
     height: 30px;
     padding: 0 12px;
@@ -484,6 +487,11 @@
     color: var(--muted);
     box-shadow: inset 0 0 0 1px var(--hairline);
     font-variant-numeric: tabular-nums;
+  }
+  .types button::after {
+    content: '';
+    position: absolute;
+    inset: -7px -3px;
   }
   .types button b {
     font-weight: 600;

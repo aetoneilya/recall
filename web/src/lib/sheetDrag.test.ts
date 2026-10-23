@@ -14,6 +14,8 @@ describe('sheet swipe-down', () => {
     expect(dismisses(110, 0.1, 400)).toBe(false)
     expect(dismisses(40, 0.6, 400)).toBe(true)
     expect(dismisses(-40, 2, 400)).toBe(false)
+    // Pulled 40% down, then flicked back up: it stays.
+    expect(dismisses(400, -1.5, 1000)).toBe(false)
     expect(dismisses(0, 2, 400)).toBe(false)
   })
 

@@ -1,52 +1,81 @@
 <script lang="ts">
+  import { tagMatches } from '@recall/core'
   import { api, status } from '../lib/app.svelte.ts'
   import { getDecks } from '../lib/decks.ts'
   import { session } from '../lib/review.svelte.ts'
-  import { tagTree, type TagNode } from '../lib/tagTree.ts'
-  import { errorText, showToast } from '../lib/toast.svelte.ts'
+  import { filterTree, tagTree, type TagNode } from '../lib/tagTree.ts'
+  import { errorText, showToast, type ToastAction } from '../lib/toast.svelte.ts'
   import ConfirmButton from './ConfirmButton.svelte'
   import Icon from './Icon.svelte'
   import Sheet from './Sheet.svelte'
 
   // A deck's tags as a tree with counts. Tap one: rename it (with
   // everything under it: "a/x" → "b/x"; into an existing tag it merges) or
-  // take it off every card.
+  // take it off every card. A plain rename has Undo (renaming back); a merge
+  // can't be undone that way, so it asks first.
   let { deckId, deckName, tags, onclose }: { deckId: string; deckName: string; tags: { tag: string; n: number }[]; onclose: () => void } = $props()
 
-  let list = $state.raw((() => tags)())
-  const tree = $derived(tagTree(list.map((t) => ({ value: t.tag, n: t.n }))))
+  // The deck's flat tags until the filter options arrive: those also hold
+  // every parent path with its exact count (a card with two Grammar/… tags
+  // is one card), as the filter sheet shows them.
+  let list = $state.raw((() => tags.map((t) => ({ value: t.tag, n: t.n })))())
+  const tree = $derived(tagTree(list))
+  let q = $state('')
+  const searching = $derived(!!q.trim())
+  const shown = $derived(filterTree(tree, q))
   let open = $state<Record<string, boolean>>({})
   let editing = $state<string | null>(null)
   let to = $state('')
   let busy = $state(false)
+
+  // As the server cleans a new tag: segments trimmed, empty ones dropped.
+  const target = $derived(to.split('/').map((s) => s.replace(/\s+/g, ' ').trim()).filter(Boolean).join('/'))
+  const intoItself = (from: string) => target !== from && tagMatches(from, target)
+  const merges = (from: string) => target !== from && list.some((t) => tagMatches(target, t.value))
+
+  async function load() {
+    const o = await api.reviewOptions(deckId, null).catch(() => null)
+    if (o) list = o.tags
+  }
+  void load()
 
   function edit(path: string) {
     editing = editing === path ? null : path
     to = path
   }
 
-  async function after(text: string) {
-    showToast(text)
+  async function after(text: string, action?: ToastAction) {
+    showToast(text, { action })
     status.wordsVersion++
     status.factsVersion++
-    const ds = await getDecks(true).catch(() => null)
-    const d = ds?.find((x) => x.id === deckId)
-    if (d) list = d.tags
+    void getDecks(true).catch(() => null)
+    await load()
     editing = null
     void session.refresh()
   }
 
+  const cards = (n: number) => `${n} ${n === 1 ? 'card' : 'cards'}`
+
   async function rename(from: string) {
-    const target = to.split('/').map((s) => s.replace(/\s+/g, ' ').trim()).filter(Boolean).join('/')
-    if (!target || target === from || busy) return
+    const into = target
+    if (!into || into === from || intoItself(from) || busy) return
     busy = true
     try {
-      const r = await api.renameTag(deckId, from, target)
-      await after(`Renamed on ${r.cards} ${r.cards === 1 ? 'card' : 'cards'}`)
+      const r = await api.renameTag(deckId, from, into)
+      await after(`Renamed on ${cards(r.cards)}`, r.merged ? undefined : { label: 'Undo', run: () => void renameBack(into, from) })
     } catch (e) {
       showToast(`Not renamed: ${errorText(e)}`)
     } finally {
       busy = false
+    }
+  }
+
+  async function renameBack(from: string, into: string) {
+    try {
+      await api.renameTag(deckId, from, into)
+      await after(`Back to “${into}”`)
+    } catch (e) {
+      showToast(`Not undone: ${errorText(e)}`)
     }
   }
 
@@ -65,9 +94,10 @@
 
 {#snippet rows(nodes: TagNode[], depth: number)}
   {#each nodes as t (t.path)}
+    {@const expanded = searching || !!open[t.path]}
     <div class="node" style="--depth: {depth}">
       {#if t.children.length}
-        <button class="chev" class:on={open[t.path]} onclick={() => (open = { ...open, [t.path]: !open[t.path] })} aria-label="{open[t.path] ? 'Hide' : 'Show'} the tags under {t.name}" aria-expanded={!!open[t.path]}>
+        <button class="chev" class:on={expanded} onclick={() => (open = { ...open, [t.path]: !open[t.path] })} aria-label="{expanded ? 'Hide' : 'Show'} the tags under {t.name}" aria-expanded={expanded}>
           <Icon name="chevron" size={14} stroke={2.2} />
         </button>
       {:else}
@@ -78,25 +108,38 @@
       </button>
     </div>
     {#if editing === t.path}
-      <form class="edit" style="--depth: {depth}" onsubmit={(e) => { e.preventDefault(); void rename(t.path) }}>
+      <form class="edit" style="--depth: {depth}" onsubmit={(e) => { e.preventDefault(); if (!merges(t.path)) void rename(t.path) }}>
         <!-- svelte-ignore a11y_autofocus -->
         <input bind:value={to} autofocus aria-label="New name for {t.path}" autocomplete="off" autocapitalize="off" maxlength="100" />
         <div class="edit-row">
-          <button class="btn small primary" type="submit" disabled={busy || !to.trim() || to.trim() === t.path}>Rename</button>
+          {#if merges(t.path) && !intoItself(t.path)}
+            <ConfirmButton class="btn small primary" onconfirm={() => void rename(t.path)} confirmLabel="Merge into {target}" disabled={busy}>Merge</ConfirmButton>
+          {:else}
+            <button class="btn small primary" type="submit" disabled={busy || !target || target === t.path || intoItself(t.path)}>Rename</button>
+          {/if}
           <ConfirmButton class="btn small danger" onconfirm={() => void remove(t.path)} confirmLabel="Remove from {t.n} {t.n === 1 ? 'card' : 'cards'}" disabled={busy}>
             <Icon name="trash" size={15} /> Remove
           </ConfirmButton>
         </div>
-        <p class="hint">{t.children.length ? 'The tags under it follow. ' : ''}A name that exists merges into it; "a/b" nests.</p>
+        <p class="hint">{#if intoItself(t.path)}A tag can't move under itself.{:else}{t.children.length ? 'The tags under it follow. ' : ''}A name that exists merges into it; "a/b" nests.{/if}</p>
       </form>
     {/if}
-    {#if t.children.length && open[t.path]}{@render rows(t.children, depth + 1)}{/if}
+    {#if t.children.length && expanded}{@render rows(t.children, depth + 1)}{/if}
   {/each}
 {/snippet}
 
 <Sheet title="Tags in {deckName}" {onclose}>
   {#if tree.length}
-    <div class="tree">{@render rows(tree, 0)}</div>
+    {#if list.length > 8}
+      <div class="search">
+        <Icon name="search" size={16} />
+        <input type="search" bind:value={q} placeholder="Find a tag" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Find a tag" />
+      </div>
+    {/if}
+    <div class="tree">
+      {@render rows(shown, 0)}
+      {#if searching && !shown.length}<p class="hint none">No tag has “{q.trim()}”.</p>{/if}
+    </div>
   {:else}
     <p class="hint">No tags here yet.</p>
   {/if}
@@ -104,6 +147,30 @@
 </Sheet>
 
 <style>
+  .search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 40px;
+    padding: 0 12px;
+    margin-bottom: 6px;
+    border-radius: 12px;
+    background: var(--surface);
+    color: var(--faint);
+  }
+  .search input {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    border: 0;
+    padding: 0;
+    background: none;
+    box-shadow: none;
+    font-size: 15px;
+  }
+  .none {
+    padding: 12px 14px;
+  }
   .tree {
     border-radius: 14px;
     background: var(--surface);

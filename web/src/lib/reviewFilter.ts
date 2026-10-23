@@ -1,4 +1,4 @@
-// The review filter's labels and one-line summary ("Phrasal verbs, idioms · B2+").
+// The review filter's labels and one-line summary ("Phrasal verbs · B2").
 import { CEFR_LEVELS, cleanReviewFilter, type CardType, type Cefr, type Direction, type PartOfSpeech, type ReviewFilter } from '@recall/core'
 import { POS_NAMES } from './wordForm.ts'
 
@@ -15,13 +15,10 @@ export function directionName(d: Direction, langs: [string | null, string | null
   return d === 'forward' ? `${t} → ${n}` : `${n} → ${t}`
 }
 
-// "B2+" when the levels run from one up to C2; else listed.
+// The levels in order. Never "B2+": the filter drills down, so several
+// levels select the cards that have all of them (none), not a range.
 export function cefrLabel(levels: Cefr[]): string {
-  const idx = levels.map((l) => CEFR_LEVELS.indexOf(l)).sort((a, b) => a - b)
-  const top = CEFR_LEVELS.length - 1
-  const contiguous = idx.every((v, i) => i === 0 || v === idx[i - 1]! + 1)
-  if (idx.length > 1 && contiguous && idx.at(-1) === top) return `${CEFR_LEVELS[idx[0]!]}+`
-  return idx.map((i) => CEFR_LEVELS[i]).join(', ')
+  return [...levels].sort((a, b) => CEFR_LEVELS.indexOf(a) - CEFR_LEVELS.indexOf(b)).join(', ')
 }
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
@@ -56,7 +53,7 @@ export interface FilterChip {
 }
 
 // The active filter as removable chips: one per type, tag, part of speech and
-// direction; the levels as one ("B2+").
+// direction; the levels as one ("B2, C1").
 export function filterChips(f: ReviewFilter | null | undefined, langs?: [string | null, string | null]): FilterChip[] {
   if (!f) return []
   const out: FilterChip[] = []

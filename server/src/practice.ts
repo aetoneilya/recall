@@ -39,7 +39,7 @@ export function practiceDeck(db: Db, userId: string, deckId: string, opts: DayOp
     seen.add(x.item_id)
     page.push(x)
   }
-  return queueItems(db, page, grading)
+  return queueItems(db, page, grading, day.key)
 }
 
 // One rule, a few rounds: up to RULE_SETS items, each with its own set of

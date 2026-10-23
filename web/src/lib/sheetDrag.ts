@@ -8,9 +8,10 @@ export function sheetOffset(dy: number): number {
   return dy >= 0 ? dy : -12 * Math.log1p(-dy / 12)
 }
 
-// Let go past 30% of the sheet's height, or flicked down faster than 0.5 px/ms.
+// Let go past 30% of the sheet's height, or flicked down faster than 0.5 px/ms;
+// flicked back up as fast, it stays, however far down it was.
 export function dismisses(dy: number, v: number, height: number): boolean {
-  if (dy <= 0) return false
+  if (dy <= 0 || v < -0.5) return false
   return dy > height * 0.3 || v > 0.5
 }
 

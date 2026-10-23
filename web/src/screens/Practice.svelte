@@ -5,7 +5,7 @@
   import Header from '../components/Header.svelte'
   import Icon from '../components/Icon.svelte'
   import WordCard from '../components/WordCard.svelte'
-  import { api } from '../lib/app.svelte.ts'
+  import { api, flushNow } from '../lib/app.svelte.ts'
   import { practiceStep } from '../lib/queue.ts'
   import { session } from '../lib/review.svelte.ts'
   import { back, router } from '../lib/router.svelte.ts'
@@ -19,6 +19,9 @@
   const q = router.route.query
   const factId = q.get('fact')
   const deckId = q.get('deck') ?? session.deckId
+  // "Go over them once more": just the cards missed today, which the server
+  // lists first (once this device's ratings are up); else the usual 20.
+  const missed = Number(q.get('missed')) || 0
   const title = q.get('title') ?? (factId ? 'Practice' : `Practice · ${session.decks[deckId]?.name ?? ''}`)
 
   let queue = $state.raw<QueueItem[]>([])
@@ -32,7 +35,8 @@
   async function load() {
     error = ''
     try {
-      const items = await api.practice(factId ? { fact: factId } : { deck: deckId })
+      if (missed) await flushNow()
+      const items = await api.practice(factId ? { fact: factId } : { deck: deckId }, missed ? Math.min(50, missed) : undefined)
       // Written items need grading: practice stays tap-only.
       queue = items.map((it) => (it.kind === 'fact' && it.exercises ? { ...it, exercises: it.exercises.filter((e) => isTapType(e.type)) } : it))
       loaded = true

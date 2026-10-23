@@ -35,8 +35,11 @@ describe('decks', () => {
     expect(addFact(ctx, en.id, 'What is the past of begin?').fact.deckId).toBe(en.id)
     addWord(ctx, 'bone')
     expect(decksWithCounts(ctx.db, ctx.user.id, TZ, ctx.now()).map((d) => [d.name, d.counts.total])).toEqual([['English', 2], ['Programming', 0]])
-    // Word settings live on every deck and matter only for words.
-    expect(updateDeck(ctx.db, ctx.user.id, prog.id, { typeAnswer: 'both', newPerDay: 3, name: 'Code' })).toMatchObject({ typeAnswer: 'both', newPerDay: 3, name: 'Code' })
+    // Word settings are only for a deck with languages; the rest is for any deck.
+    for (const patch of [{ typeAnswer: 'both' as const }, { reverseAfterDays: 5 }, { forwardEnabled: false }, { reverseEnabled: false }])
+      expect(() => updateDeck(ctx.db, ctx.user.id, prog.id, patch)).toThrow(/only for a deck with languages/)
+    expect(updateDeck(ctx.db, ctx.user.id, prog.id, { newPerDay: 3, name: 'Code' })).toMatchObject({ typeAnswer: 'off', forwardEnabled: true, newPerDay: 3, name: 'Code' })
+    expect(updateDeck(ctx.db, ctx.user.id, en.id, { typeAnswer: 'both' })).toMatchObject({ typeAnswer: 'both' })
   })
 
   it('deletes a deck, with its cards only when asked', () => {

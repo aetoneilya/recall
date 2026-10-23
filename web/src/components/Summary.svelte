@@ -54,6 +54,8 @@
   // What's left to do elsewhere, and what this session missed.
   const others = $derived(session.choices.filter((d) => d.id !== deckId && d.left > 0))
   const missed = $derived(session.missed)
+  // The ones of this deck: what "Go over them once more" practises, no more.
+  const missedHere = $derived(missed.filter((m) => !m.deckId || m.deckId === deckId).length)
   let showAll = $state(false)
   const extra = $derived(session.decks[deckId]?.extraNewToday ?? 0)
   // Cards not started yet in this deck (unknown on older caches: offer it).
@@ -165,9 +167,9 @@
       {/if}
 
       <div class="next-steps group">
-        <button class="row" onclick={() => navigate(`/practice?deck=${deckId}&from=/`)}>
+        <button class="row" onclick={() => navigate(`/practice?deck=${deckId}${missedHere ? `&missed=${missedHere}` : ''}&from=/`)}>
           <Icon name="refresh" size={20} />
-          <span>{missed.length ? 'Go over them once more' : 'Practice hard cards'}<small>Doesn't change the schedule</small></span>
+          <span>{missedHere ? 'Go over them once more' : 'Practice hard cards'}<small>Doesn't change the schedule</small></span>
           <Icon name="chevron" size={18} />
         </button>
         {#if unseen > 0}

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { getDeck, setWordSuspended, updateDeck } from '../src/repo.ts'
+import { createFact, factCard } from '../src/facts.ts'
+import { cardSummary, getDeck, setWordSuspended, updateDeck } from '../src/repo.ts'
 import { buildQueue, decksWithCounts, reviewedOn, stats, studyDay, wordLogs } from '../src/study.ts'
 import { addWord, cardsOf, deck, makeCtx, otherDeck, rate, TZ, wordOf } from './helpers.ts'
 
@@ -152,5 +153,31 @@ describe('direction settings', () => {
     updateDeck(ctx.db, ctx.user.id, d.id, { forwardEnabled: false })
     expect(buildQueue(ctx.db, ctx.user.id, TZ, ctx.now()).items.map((i) => i.card.id)).toEqual([rev!.id])
     expect(() => updateDeck(ctx.db, ctx.user.id, d.id, { reverseAfterDays: 0 })).toThrow(/reverseAfterDays/)
+    expect(() => updateDeck(ctx.db, ctx.user.id, d.id, { reverseAfterDays: 1.5 })).toThrow(/reverseAfterDays/)
+  })
+
+  it('lets a reverse card through the gate when its forward card is suspended', () => {
+    const ctx = makeCtx()
+    const d = deck(ctx)
+    updateDeck(ctx.db, ctx.user.id, d.id, { reverseAfterDays: 10 })
+    const w = addWord(ctx, 'frown')
+    const [fwd, rev] = cardsOf(ctx, w.id)
+    expect(buildQueue(ctx.db, ctx.user.id, TZ, ctx.now()).items.map((i) => i.card.id)).toEqual([fwd!.id])
+    // Forward suspended while new: it will never get stable, so reverse is what's studied.
+    ctx.db.prepare('UPDATE cards SET suspended = 1 WHERE id = ?').run(fwd!.id)
+    expect(buildQueue(ctx.db, ctx.user.id, TZ, ctx.now()).items.map((i) => i.card.id)).toEqual([rev!.id])
+  })
+
+  it('applies directions to word cards only: facts and rules stay in the session', () => {
+    const ctx = makeCtx()
+    const d = deck(ctx)
+    addWord(ctx, 'frown')
+    const { fact } = createFact(ctx.db, ctx.user.id, { deckId: d.id, fact: { front: 'Why?', back: 'Because.' }, status: 'active', createdBy: 'user', createdAt: ctx.now() }, ctx.now())
+    updateDeck(ctx.db, ctx.user.id, d.id, { forwardEnabled: false })
+    const q = buildQueue(ctx.db, ctx.user.id, TZ, ctx.now())
+    expect(q.items.map((i) => `${i.kind} ${i.card.direction}`).sort()).toEqual(['fact forward', 'word reverse'])
+    expect(decksWithCounts(ctx.db, ctx.user.id, TZ, ctx.now())[0]!.counts).toMatchObject({ new: 2, newTotal: 2 })
+    expect(stats(ctx.db, ctx.user.id, TZ, ctx.now()).cardsByState).toMatchObject({ new: 2 })
+    expect(cardSummary(factCard(ctx.db, ctx.user.id, fact.id)!, getDeck(ctx.db, ctx.user.id, d.id)!, ctx.now()).enabled).toBe(true)
   })
 })

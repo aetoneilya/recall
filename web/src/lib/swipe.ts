@@ -43,6 +43,15 @@ export function verticalAllowed(dy: number, s: ScrollState | null): boolean {
   return false
 }
 
+// A finger held still before letting go isn't flicking any more: the speed
+// measured on the last move counts only if that move was this recent.
+export const FLICK_WINDOW_MS = 80
+
+// The release speed: the last measured one, or 0 after a pause.
+export function liveVelocity(v: number, lastMoveT: number, releaseT: number): number {
+  return releaseT - lastMoveT > FLICK_WINDOW_MS ? 0 : v
+}
+
 // The committed direction on release: past the threshold, or a fast flick.
 export function release(axis: Axis, dx: number, dy: number, vx: number, vy: number, threshold: number): SwipeDir | null {
   const d = axis === 'x' ? dx : dy
@@ -121,11 +130,14 @@ export function createTracker(opts: { axes: 'x' | 'xy'; threshold: () => number 
       }
       return along(dx, dy)
     },
-    // `v`: the release velocity along the locked axis, px/ms.
-    end(x: number, y: number): { dir: SwipeDir | null; wasDrag: boolean; v: number } {
+    // `v`: the release velocity along the locked axis, px/ms; `t`: the
+    // release time (without it, the last move's speed is taken as is).
+    end(x: number, y: number, t = lastT): { dir: SwipeDir | null; wasDrag: boolean; v: number } {
       const wasDrag = state === 'drag'
-      const dir = wasDrag && axis ? release(axis, x - x0, y - y0, vx, vy, opts.threshold()) : null
-      const v = axis === 'x' ? vx : axis === 'y' ? vy : 0
+      const ux = liveVelocity(vx, lastT, t)
+      const uy = liveVelocity(vy, lastT, t)
+      const dir = wasDrag && axis ? release(axis, x - x0, y - y0, ux, uy, opts.threshold()) : null
+      const v = axis === 'x' ? ux : axis === 'y' ? uy : 0
       state = 'pending'
       axis = null
       return { dir, wasDrag, v }
@@ -207,9 +219,9 @@ export function swipe(node: HTMLElement, initial: SwipeOptions) {
     return r
   }
 
-  const finish = (x: number, y: number, cancelled: boolean) => {
+  const finish = (x: number, y: number, t: number, cancelled: boolean) => {
     active = null
-    const { dir, wasDrag, v } = tracker.end(x, y)
+    const { dir, wasDrag, v } = tracker.end(x, y, t)
     opts.onrelease?.(wasDrag)
     if (!wasDrag) return
     // Swallow the click that follows a drag so it doesn't count as a tap.
@@ -243,7 +255,7 @@ export function swipe(node: HTMLElement, initial: SwipeOptions) {
   }
   const pup = (e: PointerEvent) => {
     if (kind !== 'pointer' || e.pointerId !== active) return
-    finish(e.clientX, e.clientY, e.type === 'pointercancel')
+    finish(e.clientX, e.clientY, e.timeStamp, e.type === 'pointercancel')
   }
 
   // Touch.
@@ -254,7 +266,7 @@ export function swipe(node: HTMLElement, initial: SwipeOptions) {
   const tstart = (e: TouchEvent) => {
     if (active !== null) {
       // A second finger: end the gesture cleanly rather than jump to it.
-      if (kind === 'touch') finish(0, 0, true)
+      if (kind === 'touch') finish(0, 0, e.timeStamp, true)
       return
     }
     if (e.touches.length > 1) return
@@ -274,10 +286,10 @@ export function swipe(node: HTMLElement, initial: SwipeOptions) {
     if (kind !== 'touch' || active === null) return
     const t = find(e.changedTouches)
     if (!t) return
-    finish(t.clientX, t.clientY, e.type === 'touchcancel')
+    finish(t.clientX, t.clientY, e.timeStamp, e.type === 'touchcancel')
   }
   const blur = () => {
-    if (active !== null) finish(0, 0, true)
+    if (active !== null) finish(0, 0, performance.now(), true)
   }
 
   node.addEventListener('pointerdown', pdown)

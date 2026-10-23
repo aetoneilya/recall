@@ -5,10 +5,10 @@
 import { tagMatches, type ExerciseInput } from '@recall/core'
 import type { Db } from './db.ts'
 import { tx } from './db.ts'
-import { addExercises } from './exercises.ts'
+import { addExercises, exerciseKeyOf } from './exercises.ts'
 import { createFact, findDuplicateFact, HANDBOOK_REF, type FactRow } from './facts.ts'
 import { currentPacks, GRAMMAR_TAG, type HandbookTopic, type Pack } from './pack-data.ts'
-import { createDeck, defaultDeck, findDeckByName, getDeck, HttpError, resolveDeck, type DeckInfo } from './repo.ts'
+import { createDeck, defaultDeck, findDeckByName, findDefaultDeck, getDeck, HttpError, resolveDeck, type DeckInfo } from './repo.ts'
 
 export interface PackInfo {
   id: string
@@ -46,11 +46,13 @@ function imported(db: Db, userId: string, p: Pack): { refs: Set<string>; deckId:
   return { refs: new Set(rows.map((r) => r.import_ref)), deckId: rows[0]?.deck_id ?? null }
 }
 
+// Missing counts what an add would bring: a question the target deck
+// already has from elsewhere is skipped by addPack, so it isn't missing.
 export function listPacks(db: Db, userId: string, now = new Date()): PackInfo[] {
   return currentPacks().map((p) => {
     const { refs, deckId } = imported(db, userId, p)
-    const missing = p.facts.filter((f) => !refs.has(ref(p, f.key))).length
     const deck = (deckId ? getDeck(db, userId, deckId) : null) ?? defaultPackDeck(db, userId, p, now, false)
+    const missing = p.facts.filter((f) => !refs.has(ref(p, f.key)) && !(deck && findDuplicateFact(db, userId, deck.id, f.front))).length
     return {
       id: p.id, name: p.name, description: p.description, count: p.facts.length, added: refs.size > 0, missing,
       ...(p.topics ? { missingExercises: missingExercises(db, userId, p) } : {}),
@@ -65,19 +67,19 @@ export function listPacks(db: Db, userId: string, now = new Date()): PackInfo[] 
 export const HANDBOOK_WRITE = 2
 
 // A topic's exercise items with their import refs: the tap items
-// (…:ex:<n>), then the write items, topped up to HANDBOOK_WRITE with
-// generic tasks naming the rule (…:write:<n>).
+// (…:ex:<n>), then the file's write items (…:write:<n>), topped up to
+// HANDBOOK_WRITE with generic tasks naming the rule (…:write:generic:<n>).
 export function topicExercises(packId: string, t: HandbookTopic): (ExerciseInput & { importRef: string })[] {
   const base = `pack:${packId}:${t.id}`
   const generic = [`Напиши предложение, где нужно правило «${t.title}».`, `Напиши вопрос или отрицание, где нужно правило «${t.title}».`]
-  const write: ExerciseInput[] = t.write.map((w) => ({ type: 'write', prompt: w.prompt, rubric: w.rubric }))
-  for (const prompt of generic) {
+  const write = t.write.map((w, n): ExerciseInput & { importRef: string } => ({ type: 'write', prompt: w.prompt, rubric: w.rubric, importRef: `${base}:write:${n}` }))
+  for (const [n, prompt] of generic.entries()) {
     if (write.length >= HANDBOOK_WRITE) break
-    write.push({ type: 'write', prompt, rubric: `Используй правило «${t.title}» правильно.` })
+    write.push({ type: 'write', prompt, rubric: `Используй правило «${t.title}» правильно.`, importRef: `${base}:write:generic:${n}` })
   }
   return [
     ...t.exercises.map((e, n) => ({ type: e.type, prompt: e.prompt, answer: e.answer, options: e.options, wrong: e.wrong, explain: e.explain, importRef: `${base}:ex:${n}` })),
-    ...write.map((w, n) => ({ ...w, importRef: `${base}:write:${n}` })),
+    ...write,
   ]
 }
 
@@ -92,26 +94,35 @@ function ruleFacts(db: Db, userId: string, p: Pack): Map<string, FactRow> {
   return out
 }
 
-function haveRefs(db: Db, factId: string): Set<string> {
-  return new Set((db.prepare('SELECT import_ref FROM fact_exercises WHERE fact_id = ? AND import_ref IS NOT NULL').all(factId) as { import_ref: string }[]).map((r) => r.import_ref))
+// A rule's items not in its pool yet. A tap item is there by its import ref
+// (a flagged one stays out, a deleted one comes back) or by its text; a
+// write item by its text only — write refs are positions in a list the
+// file can grow, so a ref already held says nothing about a new item. An
+// item that would be refused counts as there (adding it never succeeds).
+function missingTopicItems(db: Db, factId: string, items: ReturnType<typeof topicExercises>) {
+  const rows = db.prepare('SELECT import_ref, dedupe_key FROM fact_exercises WHERE fact_id = ?').all(factId) as { import_ref: string | null; dedupe_key: string }[]
+  const refs = new Set(rows.map((r) => r.import_ref))
+  const keys = new Set(rows.map((r) => r.dedupe_key))
+  return items.filter((e) => {
+    const key = exerciseKeyOf(e)
+    if (key === null || keys.has(key)) return false
+    return e.type === 'write' || !refs.has(e.importRef)
+  })
 }
+
+const topicItems = (p: Pack, topicId: string) => topicExercises(p.id, p.topics!.find((t) => t.id === topicId)!)
 
 function missingExercises(db: Db, userId: string, p: Pack): number {
   let n = 0
-  for (const [topicId, fact] of ruleFacts(db, userId, p)) {
-    const have = haveRefs(db, fact.id)
-    n += topicExercises(p.id, p.topics!.find((t) => t.id === topicId)!).filter((e) => !have.has(e.importRef)).length
-  }
+  for (const [topicId, fact] of ruleFacts(db, userId, p)) n += missingTopicItems(db, fact.id, topicItems(p, topicId)).length
   return n
 }
 
-// Adds each rule's missing items (by import ref; a text the pool already has
-// counts as there), a millisecond apart in file order.
+// Adds each rule's missing items, a millisecond apart in file order.
 function addTopicExercises(db: Db, userId: string, p: Pack, now: Date): number {
   let added = 0
   for (const [topicId, fact] of ruleFacts(db, userId, p)) {
-    const have = haveRefs(db, fact.id)
-    const fresh = topicExercises(p.id, p.topics!.find((t) => t.id === topicId)!).filter((e) => !have.has(e.importRef))
+    const fresh = missingTopicItems(db, fact.id, topicItems(p, topicId))
     if (fresh.length) added += addExercises(db, userId, fact.id, fresh, 'import', now).created.length
   }
   return added
@@ -186,7 +197,7 @@ export function handbook(db: Db, userId: string, deckId: string): { topics: Hand
 // grammar handbook into the user's English deck, other packs into a deck
 // named after them (made when it is added).
 export function defaultPackDeck(db: Db, userId: string, p: Pack, now: Date, create = true): DeckInfo | null {
-  if (p.format === 'irregular-verbs' || p.format === 'grammar-handbook') return create ? defaultDeck(db, userId, now) : resolveDeck(db, userId, 'en')
+  if (p.format === 'irregular-verbs' || p.format === 'grammar-handbook') return create ? defaultDeck(db, userId, now) : findDefaultDeck(db, userId)
   return findDeckByName(db, userId, p.name) ?? (create ? createDeck(db, userId, { name: p.name }, now) : null)
 }
 

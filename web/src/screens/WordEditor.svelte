@@ -71,6 +71,7 @@
     saving = true
     try {
       const w = await api.updateWord(id, input)
+      editOutbox.supersede('word', id, input)
       if (!gone) adopt(w)
       else saved = JSON.stringify(input)
       words.upsert(w)

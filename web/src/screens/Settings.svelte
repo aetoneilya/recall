@@ -872,9 +872,11 @@
     inset: 0;
     opacity: 0;
   }
+  /* A 40px target, like every control. */
   .into select {
     margin-left: 4px;
-    padding: 2px 6px;
+    min-height: 40px;
+    padding: 0 8px;
     font-size: 13px;
     width: auto;
     max-width: 60%;

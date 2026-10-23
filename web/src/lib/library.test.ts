@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deckContents, emptyLibraryFilter, libraryFacets, libraryRows, type LibraryFilter } from './library.ts'
+import { deckContents, deckTotal, emptyLibraryFilter, libraryFacets, libraryRows, type LibraryFilter } from './library.ts'
 import type { CardSummary, FactItem, WordItem } from './types.ts'
 
 const card = (p: Partial<CardSummary> = {}): CardSummary => ({
@@ -35,6 +35,12 @@ describe('the Cards list', () => {
     expect(ids({ q: 'deadlock' })).toEqual(['fact:f5'])
     expect(ids({ pos: 'phrasal_verb' })).toEqual(['word:w1'])
     expect(ids({ cefr: 'B1' })).toEqual(['word:w1'])
+  })
+
+  it('the header total follows the status picked, so Dropped is never "1 of" the active count', () => {
+    expect(deckTotal(words, facts, 'dk_en', '')).toBe(4)
+    expect(deckTotal(words, facts, 'dk_en', 'rejected')).toBe(1)
+    expect(deckTotal(words, facts, 'dk_en', 'all')).toBe(5)
   })
 
   it('counts what a deck has for the chips', () => {

@@ -62,7 +62,9 @@
   let filledFor = ''
   let seq = 0
   // 503 (not configured) or 429 (daily limit): don't ask again this visit.
-  let autofillOff = false
+  let autofillOff = $state(false)
+  // No Claude on this server (/api/me.grading is the same key): the lead line doesn't promise autofill.
+  const noClaude = $derived(autofillOff || status.me?.grading === false)
   let edited = false
   // Enter came before the draft: add it the moment it arrives.
   let addWhenFilled = $state(false)
@@ -440,7 +442,11 @@
         <WordFields bind:form bind:translationInput tags={((session.decks[deckId ?? session.deckId] as Partial<DeckWithCounts> | undefined)?.tags ?? []).map((t) => t.tag)} showTerm={false} onsubmit={() => void submit()} onedit={() => (edited = true)} />
       </div>
     {:else}
-      <p class="lead"><Icon name="sparkle" size={16} /> Type a word: Claude fills in translations, pronunciation and examples. Enter adds it, and the next one can follow straight away.</p>
+      {#if noClaude}
+        <p class="lead">Type a word, then its translation and an example. Enter adds it, and the next one can follow straight away.</p>
+      {:else}
+        <p class="lead"><Icon name="sparkle" size={16} /> Type a word: Claude fills in translations, pronunciation and examples. Enter adds it, and the next one can follow straight away.</p>
+      {/if}
       {#if added.length}
         <div class="section-label">Just added</div>
         <div class="group">

@@ -40,7 +40,7 @@ describe('exercise pools', () => {
     expect(() => updateExercise(ctx.db, ctx.user.id, e.id, { prompt: 'Sentence 1 ___ here. (hint)' })).toThrow(/already has/)
   })
 
-  it('picks the least recently shown, at most two of a type, randomly among equals', () => {
+  it('picks the least recently shown, at most two of a type, in rand order among equals', () => {
     const pool = [
       { id: 'a', type: 'gap', last_shown_at: '2026-10-01' }, { id: 'b', type: 'gap', last_shown_at: null }, { id: 'c', type: 'gap', last_shown_at: null },
       { id: 'd', type: 'gap', last_shown_at: null }, { id: 'e', type: 'fix', last_shown_at: '2026-10-05' }, { id: 'f', type: 'fix', last_shown_at: '2026-09-01' },
@@ -60,6 +60,23 @@ describe('exercise pools', () => {
 })
 
 describe('exercise reviews', () => {
+  it('picks the same items on every fetch of the day until the card is rated', () => {
+    const ctx = makeCtx()
+    const big = rule(ctx, Array.from({ length: 12 }, (_, i) => gap(i)))
+    const picked = (now = ctx.now()) => {
+      const item = buildQueue(ctx.db, ctx.user.id, TZ, now).items.find((i) => i.kind === 'fact' && i.fact.id === big.fact.id)
+      return (item as { exercises?: { id: string }[] } | undefined)?.exercises?.map((e) => e.id)
+    }
+    const first = picked()!
+    expect(first).toHaveLength(3)
+    for (let i = 0; i < 10; i++) expect(picked()).toEqual(first)
+    // Another day (or a rating, which bumps reps) is a new draw; a new draw
+    // over 12 equal items differs from the first one for most seeds, so
+    // check over a few days rather than one.
+    const days = Array.from({ length: 5 }, (_, i) => picked(new Date(ctx.now().getTime() + (i + 1) * 86400_000))!.join())
+    expect(days.some((d) => d !== first.join())).toBe(true)
+  })
+
   it('puts three items in the queue item of a rule with a pool, and none with fewer than three', () => {
     const ctx = makeCtx()
     const small = rule(ctx, [gap(1), gap(2)])
@@ -198,6 +215,24 @@ describe('exercise routes and tools', () => {
       ['Sentence 1', 'flagged', 'user'], ['He go ther', 'active', 'user'], ['Sentence 2', 'active', 'claude'], ['Sentence 3', 'active', 'claude'],
     ])
     expect((await callTool(url, 'static-mcp-token', 'list_exercises', { factId: 'ft_nope' })).error).toMatch(/not found/)
+  })
+
+  it('cuts odd per-review fields to size instead of refusing the batch', async () => {
+    const { fact, cardId } = rule(ctx, [gap(1), gap(2), gap(3)])
+    const [ex] = listExercises(ctx.db, ctx.user.id, fact.id)
+    const other = rule(ctx).cardId
+    const at = (min: number) => new Date(ctx.now().getTime() + min * 60_000)
+    const r = await send(`${url}/api/reviews`, 'POST', [
+      { id: 'rv-long', cardId, rating: 3, reviewedAt: at(1).toISOString(), durationMs: -3.6,
+        exercises: [{ id: ex!.id, given: 'x'.repeat(501), correct: true }, ...Array.from({ length: 11 }, () => ({ id: 'ex_' + 'y'.repeat(200), given: '', correct: false }))] },
+      // An offset is read as the instant it names.
+      { id: 'rv-offset', cardId: other, rating: 3, reviewedAt: '2026-10-21T15:00:00+03:00', durationMs: 1200.4 },
+    ])
+    expect(r.status).toBe(200)
+    expect(await r.json()).toMatchObject({ applied: 2 })
+    expect(ctx.db.prepare("SELECT length(given) AS n FROM exercise_attempts WHERE review_log_id = 'rv-long'").all()).toEqual([{ n: 500 }])
+    expect(ctx.db.prepare("SELECT id, reviewed_at, duration_ms FROM review_logs WHERE id IN ('rv-long', 'rv-offset') ORDER BY id").all())
+      .toEqual([{ id: 'rv-long', reviewed_at: at(1).toISOString(), duration_ms: 0 }, { id: 'rv-offset', reviewed_at: '2026-10-21T12:00:00.000Z', duration_ms: 1200 }])
   })
 })
 

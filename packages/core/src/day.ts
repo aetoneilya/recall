@@ -10,13 +10,20 @@ export interface DayOptions {
 const formats = new Map<string, Intl.DateTimeFormat>()
 const format = (timeZone: string) => {
   let f = formats.get(timeZone)
-  if (!f) formats.set(timeZone, (f = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' })))
+  if (!f) formats.set(timeZone, (f = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23' })))
   return f
 }
 
-// "2026-10-21" for the study day containing `at`.
+// "2026-10-21" for the study day containing `at`. Read from the local wall
+// clock (date and hour), not by shifting the instant: on a DST day the day
+// still starts at startHour local, not an hour early or late.
 export function dayKey(at: Date, { timeZone, startHour }: DayOptions): string {
-  return format(timeZone).format(new Date(at.getTime() - startHour * 3600_000))
+  const parts = format(timeZone).formatToParts(at)
+  const get = (t: string) => Number(parts.find((p) => p.type === t)!.value)
+  const [y, m, d] = [get('year'), get('month'), get('day')]
+  // Before the start hour it is still the previous calendar date's study day.
+  const date = new Date(Date.UTC(y, m - 1, get('hour') % 24 < startHour ? d - 1 : d))
+  return date.toISOString().slice(0, 10)
 }
 
 const H = 3600_000

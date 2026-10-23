@@ -2,7 +2,7 @@
 // acting user's id and only ever sees that user's rows: someone else's id
 // behaves as if it didn't exist.
 import {
-  CLAUDE_TAG, cleanReviewFilter, cleanWord, dedupeKey, DIRECTIONS, LIMITS, newCardState, retrievability, WORD_STATUSES,
+  CLAUDE_TAG, cleanReviewFilter, cleanTag, cleanWord, dedupeKey, DIRECTIONS, LIMITS, newCardState, retrievability, WORD_STATUSES,
   type Author, type Card, type CardState, type Cefr, type CleanWord, type Deck, type Direction, type FsrsState, type ReviewFilter,
   type PartOfSpeech, type VerbForms, type Word, type WordInput, type WordStatus,
 } from '@recall/core'
@@ -180,8 +180,10 @@ export function stateValues(s: CardState) {
   return [s.due, s.stability, s.difficulty, s.elapsedDays, s.scheduledDays, s.learningSteps, s.reps, s.lapses, s.state, s.lastReview] as const
 }
 
-// SQL over `c` (cards) and `d` (decks): the card's direction is enabled in its deck.
-export const ENABLED_DIRECTION = "((c.direction = 'forward' AND d.forward_enabled = 1) OR (c.direction = 'reverse' AND d.reverse_enabled = 1))"
+// SQL over `c` (cards) and `d` (decks): the card's direction is enabled in its
+// deck. Directions are a word setting: a fact card is always on.
+export const ENABLED_DIRECTION =
+  "(c.fact_id IS NOT NULL OR (c.direction = 'forward' AND d.forward_enabled = 1) OR (c.direction = 'reverse' AND d.reverse_enabled = 1))"
 
 // ---------- decks ----------
 
@@ -289,9 +291,14 @@ export function deleteDeck(db: Db, userId: string, id: string, { withCards = fal
 // The user's English deck (en → ru), created on first use; else their first
 // deck with languages. This is where words go by default.
 export function defaultDeck(db: Db, userId: string, now: Date): DeckInfo {
+  return findDefaultDeck(db, userId) ?? createDeck(db, userId, { targetLang: 'en', nativeLang: 'ru' }, now)
+}
+
+// defaultDeck without creating one: null when the user has no deck with languages.
+export function findDefaultDeck(db: Db, userId: string): DeckInfo | null {
   const en = db.prepare("SELECT * FROM decks WHERE user_id = ? AND target_lang = 'en'").get(userId) as DeckRow | undefined
   if (en) return toDeck(en)
-  return listDecks(db, userId).find(hasLanguages) ?? createDeck(db, userId, { targetLang: 'en', nativeLang: 'ru' }, now)
+  return listDecks(db, userId).find(hasLanguages) ?? null
 }
 
 export interface DeckPatch {
@@ -304,11 +311,18 @@ export interface DeckPatch {
   reviewFilter?: ReviewFilter | null
 }
 
+// Settings that only mean something for words.
+const WORD_SETTINGS = ['forwardEnabled', 'reverseEnabled', 'reverseAfterDays', 'typeAnswer'] as const
+
 // Turning a direction off keeps its cards and history; they are just not
 // studied or counted until it is turned back on.
 export function updateDeck(db: Db, userId: string, id: string, patch: DeckPatch, today?: string): DeckInfo {
   const deck = getDeck(db, userId, id, today)
   if (!deck) throw new HttpError(404, 'deck not found')
+  // A deck without languages has no words: its direction settings would only
+  // hide its facts' cards from nobody, or (forward off) everything.
+  const wordOnly = WORD_SETTINGS.filter((k) => patch[k] !== undefined)
+  if (wordOnly.length && !hasLanguages(deck)) throw new HttpError(400, `${wordOnly.join(', ')}: only for a deck with languages`)
   if (patch.name !== undefined) deck.name = checkDeckName(db, userId, patch.name, id)
   if (patch.newPerDay !== undefined) deck.newPerDay = checkNewPerDay(patch.newPerDay)
   if (patch.forwardEnabled !== undefined) deck.forwardEnabled = patch.forwardEnabled
@@ -316,7 +330,7 @@ export function updateDeck(db: Db, userId: string, id: string, patch: DeckPatch,
   if (!deck.forwardEnabled && !deck.reverseEnabled) throw new HttpError(400, 'at least one direction must stay enabled')
   if (patch.reverseAfterDays !== undefined) {
     const d = patch.reverseAfterDays
-    if (d !== null && (!Number.isFinite(d) || d < 1 || d > 365)) throw new HttpError(400, 'reverseAfterDays must be 1..365 days or null')
+    if (d !== null && (!Number.isInteger(d) || d < 1 || d > 365)) throw new HttpError(400, 'reverseAfterDays must be a whole 1..365 days or null')
     deck.reverseAfterDays = d
   }
   if (patch.typeAnswer !== undefined) deck.typeAnswer = checkTypeAnswer(patch.typeAnswer)
@@ -363,9 +377,13 @@ export function mergeDecks(db: Db, userId: string, fromId: string, intoId: strin
     const facts = db.prepare('SELECT id, front, tags, dedupe_key FROM facts WHERE deck_id = ? AND user_id = ? ORDER BY created_at, id').all(from.id, userId) as { id: string; front: string; tags: string; dedupe_key: string }[]
     const out: MergeResult = { from: { id: from.id, name: from.name, deleted: false }, into: { id: into.id, name: into.name }, moved: { words: 0, facts: 0 }, skipped: [] }
     const at = now.toISOString()
+    // Cleaned like any new tag: a deck named "Books / Fiction" becomes the
+    // path "Books/Fiction" rather than a tag no filter can name. Tags are
+    // case-sensitive, so "concurrency" doesn't stand for "Concurrency".
+    const name = cleanTag(from.name, LIMITS.tag)
     const withTag = (json: string) => {
       const tags = JSON.parse(json) as string[]
-      if (tag && !tags.some((t) => t.toLowerCase() === from.name.toLowerCase()) && tags.length < LIMITS.tags) tags.push(from.name.slice(0, LIMITS.tag))
+      if (tag && name && !tags.includes(name) && tags.length < LIMITS.tags) tags.push(name)
       return JSON.stringify(tags)
     }
     for (const [table, rows, kind] of [['words', words, 'word'], ['facts', facts, 'fact']] as const) {
@@ -584,7 +602,7 @@ export function cardSummary(card: Card, deck: Pick<Deck, 'forwardEnabled' | 'rev
   return {
     id: card.id,
     direction: card.direction,
-    enabled: card.direction === 'forward' ? deck.forwardEnabled : deck.reverseEnabled,
+    enabled: card.factId !== null || (card.direction === 'forward' ? deck.forwardEnabled : deck.reverseEnabled),
     suspended: card.suspended,
     state: STATE_NAMES[s.state]!,
     due: s.due,

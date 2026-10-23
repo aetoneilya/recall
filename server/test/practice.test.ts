@@ -127,6 +127,19 @@ describe('practice', () => {
     expect(() => practiceRule(ctx.db, 'us_other', make(3))).toThrow(/not found/)
   })
 
+  it('never serves typed items of a tap rule, even once the unused tap items run short', () => {
+    const ctx = makeCtx()
+    const d = deck(ctx)
+    const { fact } = createFact(ctx.db, ctx.user.id, { deckId: d.id, fact: { front: 'Invented rule', back: 'Text' }, status: 'active', createdBy: 'user' }, ctx.now())
+    addExercises(ctx.db, ctx.user.id, fact.id, [choose(1), choose(2), choose(3), choose(4),
+      ...Array.from({ length: 4 }, (_, i) => ({ type: 'gap' as const, prompt: `Typed ${i} ___ here. (hint)`, answer: 'x' }))], 'user', ctx.now())
+    for (let i = 0; i < 10; i++) {
+      const sets = practiceRule(ctx.db, ctx.user.id, fact.id)
+      expect(sets.map((s) => s.exercises!.length)).toEqual([3, 3, 3])
+      expect(sets.flatMap((s) => s.exercises!.map((e) => e.type)).every((t) => t === 'choose')).toBe(true)
+    }
+  })
+
   it('is a route', async () => {
     const ctx = makeCtx({ DEV: '1', OWNER_TELEGRAM_ID: '1001' })
     const s = await listen(ctx)

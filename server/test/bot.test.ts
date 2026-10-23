@@ -41,6 +41,30 @@ describe('reminders', () => {
     expect(decideReminder(msk('20:30'), { ...cfg, eveningReminderTime: null }, sent, { due: 4, reviewedToday: false })).toBeNull()
   })
 
+  it('keeps an evening reminder after midnight in its own study day', () => {
+    const late = { ...cfg, eveningReminderTime: '00:30' }
+    const info = { due: 4, reviewedToday: false }
+    // 04:00 starts the new day: nothing yet, and the morning isn't swallowed.
+    expect(decideReminder(msk('04:00', '2026-10-22'), late, { morningSentDay: '2026-10-21', eveningSentDay: '2026-10-21' }, info)).toBeNull()
+    expect(decideReminder(msk('09:00', '2026-10-22'), late, { morningSentDay: '2026-10-21', eveningSentDay: '2026-10-21' }, info))
+      .toEqual({ kind: 'morning', day: '2026-10-22', send: true })
+    // 23:59 is still before the nudge; 00:30 the next calendar day is the nudge of the 22nd.
+    const morningDone = { morningSentDay: '2026-10-22', eveningSentDay: '2026-10-21' }
+    expect(decideReminder(msk('23:59', '2026-10-22'), late, morningDone, info)).toBeNull()
+    expect(decideReminder(msk('00:30', '2026-10-23'), late, morningDone, info)).toEqual({ kind: 'evening', day: '2026-10-22', send: true })
+    expect(decideReminder(msk('03:59', '2026-10-23'), late, { morningSentDay: '2026-10-22', eveningSentDay: '2026-10-22' }, info)).toBeNull()
+    // A missed 20:30 nudge isn't caught up after midnight.
+    expect(decideReminder(msk('01:00', '2026-10-22'), cfg, { morningSentDay: '2026-10-21', eveningSentDay: '2026-10-20' }, info)).toBeNull()
+  })
+
+  it('sends a reminder set before the day start at that time, at the end of its study day', () => {
+    const early = { ...cfg, reminderTime: '02:00', eveningReminderTime: null }
+    const info = { due: 4, reviewedToday: false }
+    expect(decideReminder(msk('04:00', '2026-10-22'), early, { morningSentDay: '2026-10-21', eveningSentDay: null }, info)).toBeNull()
+    expect(decideReminder(msk('12:00', '2026-10-22'), early, { morningSentDay: '2026-10-21', eveningSentDay: null }, info)).toBeNull()
+    expect(decideReminder(msk('02:00', '2026-10-23'), early, { morningSentDay: '2026-10-21', eveningSentDay: null }, info)).toEqual({ kind: 'morning', day: '2026-10-22', send: true })
+  })
+
   it('counts due cards from the queue', () => {
     const ctx = makeCtx()
     deck(ctx, 2)

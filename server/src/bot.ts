@@ -144,14 +144,30 @@ export function reminderSettings(cfg: Pick<Config, 'dayStartHour'>, user: User):
 // Which reminder slot is due now. `send: false` means the slot is consumed
 // without a message (nothing due, or something was already reviewed), so it
 // isn't re-checked every minute. The stored day survives restarts.
+// Clock times are compared within the study day: minutes since its start, so
+// 00:30 with a 4 a.m. day start is late in the day it belongs to (sent-day
+// keys are study days), not early in the next one.
+export function dayMinutes(hhmmMinutes: number, dayStartHour: number): number {
+  return (hhmmMinutes - dayStartHour * 60 + 1440) % 1440
+}
+
+// A slot is open from its time on; a late start catches it up, but not past
+// local midnight (no messages at night for a slot of the evening before),
+// unless the slot itself is after midnight.
+function slotOpen(minutes: number, hhmm: string, dayStartHour: number): boolean {
+  const slot = dayMinutes(toMinutes(hhmm), dayStartHour)
+  const midnight = dayMinutes(0, dayStartHour)
+  return minutes >= slot && (minutes < midnight || slot >= midnight)
+}
+
 export function decideReminder(now: Date, cfg: ReminderSettings, state: ReminderState, info: { due: number; reviewedToday: boolean }): ReminderDecision {
   const day = studyDay(now, { timeZone: cfg.timeZone, startHour: cfg.dayStartHour }).key
-  const minutes = localMinutes(now, cfg.timeZone)
-  if (cfg.eveningReminderTime && minutes >= toMinutes(cfg.eveningReminderTime) && state.eveningSentDay !== day) {
+  const minutes = dayMinutes(localMinutes(now, cfg.timeZone), cfg.dayStartHour)
+  if (cfg.eveningReminderTime && slotOpen(minutes, cfg.eveningReminderTime, cfg.dayStartHour) && state.eveningSentDay !== day) {
     // A late start shouldn't fire the morning message right before the evening one.
     return { kind: 'evening', day, send: info.due > 0 && !info.reviewedToday }
   }
-  if (minutes >= toMinutes(cfg.reminderTime) && state.morningSentDay !== day) {
+  if (slotOpen(minutes, cfg.reminderTime, cfg.dayStartHour) && state.morningSentDay !== day) {
     return { kind: 'morning', day, send: info.due > 0 }
   }
   return null

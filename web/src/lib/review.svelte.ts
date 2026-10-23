@@ -1,11 +1,11 @@
 // The review session: cached queue, current card, ratings applied locally
 // and queued for upload, undo.
-import { dayKey, itemOf, type AnswerCheck, type Card, type CardState, type ExerciseAttempt, type Fact, type QueueItem, type Rating, type ReviewFilter, type Word } from '@recall/core'
+import { dayKey, inReviewFilter, isLearningState, itemOf, type AnswerCheck, type Card, type CardState, type ExerciseAttempt, type ExerciseCheck, type Fact, type QueueItem, type Rating, type ReviewFilter, type Word, type WriteGrade } from '@recall/core'
 import { api, flushNow, kv, outbox, scheduleFlush, status } from './app.svelte.ts'
 import { AuthError, NetworkError, normalizeItem } from './api.ts'
 import { getDecks } from './decks.ts'
 import { fsrs } from './fsrs.ts'
-import { applyRating, buildQueue, counts, dropWord, emptyQueue, keepExercises, nextItem, patchFact, patchWord, peekNext, RECENT_MAX, upcoming, withSchedules, type Counts, type QueueState, type Shown } from './queue.ts'
+import { applyRating, buildQueue, counts, dropWord, emptyQueue, itemFacts, keepExercises, nextItem, patchFact, patchWord, peekNext, RECENT_MAX, upcoming, withSchedules, type Counts, type QueueState, type Shown } from './queue.ts'
 import type { DeckSettings, DeckWithCounts, FactItem, QueueDeck, WordItem } from './types.ts'
 import { haptic } from './telegram.ts'
 import { errorText, showToast } from './toast.svelte.ts'
@@ -20,6 +20,8 @@ interface SessionStats {
   ms: number
   // New cards seen for the first time.
   fresh?: number
+  // Ratings per deck id: the progress bar is the deck's, not the session's.
+  perDeck?: Record<string, number>
 }
 
 // A card rated Again this session, for the summary's "you missed" list.
@@ -27,6 +29,8 @@ export interface Missed {
   cardId: string
   kind: 'word' | 'fact'
   id: string
+  // Absent on entries cached by older versions.
+  deckId?: string
   title: string
   sub: string
 }
@@ -67,14 +71,31 @@ const readDeck = () => {
   }
 }
 
+// What a rating changed, to take back only that: the card's state, its
+// burying and the session's tally — not the queue, which may have been
+// refiltered since (a filter, a direction turned off).
 interface UndoEntry {
   id: string
-  queue: QueueState
   current: QueueItem
   local: CardState | undefined
+  // The word's (or fact's) entry in `buried` before the rating.
+  buried: string | undefined
   stats: SessionStats
   missed: Missed[]
   recent: Shown[]
+}
+
+// A rule's exercises half answered, kept while the card is left (⋯ → Read
+// the theory) so coming back to it resumes where it was.
+export interface ExerciseProgress {
+  ids: string[]
+  index: number
+  results: ExerciseAttempt[]
+  tap: { pick: string | null; token: number | null; done: boolean }
+  check: ExerciseCheck | null
+  answer: string
+  skipped: string[]
+  grade: WriteGrade | null
 }
 
 const MAX_DURATION_MS = 120_000
@@ -89,8 +110,8 @@ export function itemTitle(it: QueueItem): string {
 }
 
 function missedOf(it: QueueItem): Missed {
-  if (it.kind === 'word') return { cardId: it.card.id, kind: 'word', id: it.word.id, title: itemTitle(it), sub: it.word.translations[0] ?? '' }
-  return { cardId: it.card.id, kind: 'fact', id: it.fact.id, title: itemTitle(it), sub: '' }
+  if (it.kind === 'word') return { cardId: it.card.id, kind: 'word', id: it.word.id, deckId: it.word.deckId, title: itemTitle(it), sub: it.word.translations[0] ?? '' }
+  return { cardId: it.card.id, kind: 'fact', id: it.fact.id, deckId: it.fact.deckId, title: itemTitle(it), sub: '' }
 }
 
 class Superseded extends Error {}
@@ -155,6 +176,8 @@ class ReviewSession {
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
         this.now = Date.now()
+        // Resumed on a new day: today's queue at once, offline too.
+        this.turnDay()
         if (Date.now() - this.fetchedAt > STALE_MS) void this.refresh()
         else if (!this.current) this.pick()
       }
@@ -262,6 +285,11 @@ class ReviewSession {
     return this.decks[itemOf(it).deckId]
   }
 
+  // Cards rated today in the deck under review.
+  get doneHere(): number {
+    return this.stats.perDeck?.[this.deckId] ?? 0
+  }
+
   // The deck switcher: every deck the server listed, in its order. The deck
   // under review counts down as cards are rated here; the others show the
   // server's numbers.
@@ -277,6 +305,8 @@ class ReviewSession {
   // Undo doesn't reach across decks.
   selectDeck(id: string) {
     if (id === this.deckId) return
+    // This deck's items as they are now (drops, edits), for coming back offline.
+    if (this.deckId) this.byDeck = { ...this.byDeck, [this.deckId]: { items: this.items, fetchedAt: this.fetchedAt } }
     this.choose(id)
     const cached = this.byDeck[id]
     this.items = cached?.items ?? []
@@ -347,6 +377,8 @@ class ReviewSession {
 
   private replaceItems(fix: (list: QueueItem[]) => QueueItem[]) {
     this.items = fix(this.items)
+    // Every deck's cached queue too: switching back offline mustn't bring it back.
+    this.byDeck = Object.fromEntries(Object.entries(this.byDeck).map(([id, d]) => [id, { ...d, items: fix(d.items) }]))
     this.queue = { ...this.queue, main: fix(this.queue.main), learning: fix(this.queue.learning) }
     const cur = this.current
     if (cur) {
@@ -433,6 +465,8 @@ class ReviewSession {
   exerciseResults: Record<string, ExerciseAttempt[]> = {}
   // The same for a typed answer and its verdict.
   typedAnswers: Record<string, { answer: string; check: AnswerCheck }> = {}
+  // Exercises half answered, by card (see ExerciseProgress); gone with the rating.
+  exerciseProgress: Record<string, ExerciseProgress> = {}
 
   rate(rating: Rating, extra: { exercises?: ExerciseAttempt[] } = {}): boolean {
     const item = this.current
@@ -440,8 +474,10 @@ class ReviewSession {
     // Plain data: a $state proxy can't be stored (structured clone).
     const exercises = extra.exercises?.length ? ($state.snapshot(extra.exercises) as ExerciseAttempt[]) : undefined
     const now = new Date()
-    this.rollDay()
-    const before = { queue: this.queue, current: item, local: this.local[item.card.id], stats: { ...this.stats }, missed: this.missed, recent: this.recent }
+    // Rated on a new day: today's burying first, so this rating lands in it.
+    if (this.rollDay()) this.queue = this.build(this.queue.buried)
+    delete this.exerciseProgress[item.card.id]
+    const before = { current: item, local: this.local[item.card.id], buried: this.queue.buried[itemOf(item).id], stats: $state.snapshot(this.stats), missed: this.missed, recent: this.recent }
     const { queue, after } = applyRating(this.queue, item, rating, now, status.day, fsrs())
     const input = {
       id: uuid(),
@@ -463,6 +499,7 @@ class ReviewSession {
       maturedAgain: this.stats.maturedAgain + (matured && rating === 1 ? 1 : 0),
       ms: this.stats.ms + input.durationMs,
       fresh: (this.stats.fresh ?? 0) + (item.card.schedule.state === 0 ? 1 : 0),
+      perDeck: { ...this.stats.perDeck, [itemOf(item).deckId]: (this.stats.perDeck?.[itemOf(item).deckId] ?? 0) + 1 },
     }
     if (rating === 1 && !this.missed.some((m) => m.cardId === item.card.id)) this.missed = [...this.missed, missedOf(item)]
     this.queue = queue
@@ -484,15 +521,33 @@ class ReviewSession {
     this.history = this.history.slice(0, -1)
     haptic.impact('soft')
     outbox.undo(last.id)
-    this.queue = last.queue
-    this.current = last.current
+    const cur = last.current
     const local = { ...this.local }
-    if (last.local) local[last.current.card.id] = last.local
-    else delete local[last.current.card.id]
+    if (last.local) local[cur.card.id] = last.local
+    else delete local[cur.card.id]
     this.local = local
+    // The cached copy may already hold the server's state after the rating;
+    // the undo takes the server back to the state before it too.
+    this.items = withSchedules(this.items, { [cur.card.id]: cur.card.schedule })
+    const buried = { ...this.queue.buried }
+    const itemId = itemOf(cur).id
+    if (last.buried) buried[itemId] = last.buried
+    else delete buried[itemId]
+    // Today's queue under today's settings, with the card back on top —
+    // unless what changed since (a filter, a direction) leaves it out.
+    const q = this.build(buried)
+    const back = this.studied(cur) && inReviewFilter(this.filter, itemFacts(cur))
+    this.queue = back ? putFirst(q, cur) : q
+    this.current = back ? cur : null
     this.stats = last.stats
     this.missed = last.missed
     this.recent = last.recent ?? []
+    if (!this.current) {
+      this.pick()
+      this.persist()
+      scheduleFlush()
+      return true
+    }
     // Back on the answer side: undo is usually a mis-tap, so the right
     // rating should be one tap away.
     this.revealed = true
@@ -520,6 +575,13 @@ class ReviewSession {
   // Keeps "next card in N min" current while the waiting screen is open.
   tick() {
     this.now = Date.now()
+    this.turnDay()
+  }
+
+  // The study day turned while the app stayed open (or was resumed): the
+  // queue is rebuilt without yesterday's burying, online or not.
+  private turnDay() {
+    if (this.started && this.rollDay()) this.rebuild()
   }
 
   // The waiting screen's "Show now": the next card early, this once; after
@@ -566,20 +628,24 @@ class ReviewSession {
 
   // A new study day: yesterday's burying and stats no longer apply. Ratings
   // made here since the last fetch stay applied: they move into the cached
-  // queues (offline, nothing newer will come).
-  private rollDay() {
+  // queues (offline, nothing newer will come). Those not uploaded yet stay
+  // in `local` as well: a queue fetched meanwhile doesn't have them. True
+  // when the day changed.
+  private rollDay(): boolean {
     const today = dayKey(new Date(), status.day)
-    if (today === this.day) return
+    if (today === this.day) return false
     this.day = today
     const fold = (list: QueueItem[]) => withSchedules(list, this.local)
     this.items = fold(this.items)
     this.byDeck = Object.fromEntries(Object.entries(this.byDeck).map(([id, d]) => [id, { ...d, items: fold(d.items) }]))
-    this.local = {}
+    this.local = Object.fromEntries(Object.entries(this.local).filter(([id]) => outbox.pendingFor(id)))
+    this.exerciseProgress = {}
     this.stats = zeroStats()
     this.missed = []
     this.history = []
     this.recent = []
     this.queue = { ...this.queue, buried: {} }
+    return true
   }
 
   // The server's view after an upload; normally identical (same scheduler,
@@ -623,6 +689,17 @@ class ReviewSession {
       void kv.set('review', cache)
     })
   }
+}
+
+// The undone card on top of the queue (of its own list, so the counts stay
+// right); its review or new sibling goes, as the rating's own burying would
+// have it (a learning one stays).
+export function putFirst(q: QueueState, cur: QueueItem): QueueState {
+  const id = itemOf(cur).id
+  const keep = (x: QueueItem) => x.card.id !== cur.card.id && (itemOf(x).id !== id || isLearningState(x.card.schedule.state))
+  const main = q.main.filter(keep)
+  const learning = q.learning.filter(keep)
+  return isLearningState(cur.card.schedule.state) ? { ...q, main, learning: [cur, ...learning] } : { ...q, main: [cur, ...main], learning }
 }
 
 export const session = new ReviewSession()

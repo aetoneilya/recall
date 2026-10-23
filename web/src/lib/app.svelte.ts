@@ -91,6 +91,8 @@ export async function boot(): Promise<void> {
 // Any 401. Inside Telegram there is no other way in, so even a bare
 // 'unauthorized' (stale initData) lands on the denied screen.
 export function onUnauthorized(e: AuthError): void {
+  // Whoever signs in next may be another account: its uploads wait for /api/me.
+  kv?.lost()
   if (e instanceof NotAllowedError) {
     status.auth = 'denied'
     status.deniedId = e.telegramId
@@ -117,8 +119,9 @@ export async function setMe(me: Me): Promise<void> {
   const was = kv.confirmed
   const r = await kv.claim(me.user.id)
   if (r === 'switched') {
-    // Another account on this device: start over under its own caches.
-    await outbox.persisted()
+    // Another account on this device: start over under its own caches
+    // (what the last one has pending stays under its id, for its next sign-in).
+    await Promise.all([outbox.persisted(), wordOutbox.persisted(), editOutbox.persisted()])
     location.reload()
     return
   }
@@ -135,7 +138,7 @@ export async function setMe(me: Me): Promise<void> {
 // Signed out on this device: the account's caches go (uploads still pending
 // stay for its next sign-in) and the app starts over.
 export async function signOutLocally(): Promise<void> {
-  await outbox.persisted()
+  await Promise.all([outbox.persisted(), wordOutbox.persisted(), editOutbox.persisted()])
   await kv.clear([...(outbox.size ? ['outbox'] : []), ...(wordOutbox.size ? ['wordOutbox'] : []), ...(editOutbox.size ? ['editOutbox'] : [])])
   location.reload()
 }
@@ -148,9 +151,29 @@ export function scheduleFlush(delayMs = 4000): void {
   timer = setTimeout(() => void flushNow(), delayMs)
 }
 
-// Uploads the outbox; on failure retries with backoff (10 s → 5 min).
-export async function flushNow(): Promise<boolean> {
+let flushing: Promise<boolean> | null = null
+let flushAgain = false
+
+// Uploads the outbox; on failure retries with backoff (10 s → 5 min). One
+// upload at a time: a call during one runs it once more afterwards.
+export function flushNow(): Promise<boolean> {
   clearTimeout(timer)
+  if (flushing) {
+    flushAgain = true
+    return flushing
+  }
+  flushing = (async () => {
+    let ok: boolean
+    do {
+      flushAgain = false
+      ok = await flushOnce()
+    } while (flushAgain)
+    return ok
+  })().finally(() => (flushing = null))
+  return flushing
+}
+
+async function flushOnce(): Promise<boolean> {
   // Pending ratings belong to the cache owner: never sent under another
   // account's session. Until the signed-in account is known, nothing goes.
   if (!kv?.confirmed) {
@@ -183,8 +206,17 @@ export function signedIn(): void {
   void flushNow()
 }
 
-// Uploads edits made offline; a refused one is said.
-async function flushEdits(): Promise<void> {
+let editsRun: Promise<void> | null = null
+let wordsRun: Promise<void> | null = null
+
+// Uploads edits made offline; a refused one is said. Once per upload, so the
+// toast and the version bump don't repeat for a second caller.
+function flushEdits(): Promise<void> {
+  editsRun ??= sendEdits().finally(() => (editsRun = null))
+  return editsRun
+}
+
+async function sendEdits(): Promise<void> {
   const r = await editOutbox.flush()
   if (!r.sent && !r.failed.length) return
   status.wordsVersion++
@@ -192,8 +224,13 @@ async function flushEdits(): Promise<void> {
   if (r.failed.length) showToast(`${r.failed.length === 1 ? 'An edit' : `${r.failed.length} edits`} made offline not saved: ${r.failed[0]!.error}`, { ms: 4000 })
 }
 
+function flushWords(): Promise<void> {
+  wordsRun ??= sendWords().finally(() => (wordsRun = null))
+  return wordsRun
+}
+
 // Uploads words added offline and says what happened to them.
-async function flushWords(): Promise<void> {
+async function sendWords(): Promise<void> {
   const r = await wordOutbox.flush()
   if (!r.added.length && !r.duplicates.length && !r.failed.length) return
   status.wordsVersion++

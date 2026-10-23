@@ -72,6 +72,12 @@ export function libraryRows(words: WordItem[], facts: FactItem[], deckId: string
 }
 
 // What a deck has, for the type chips and the tag picker.
+// The header's "n of total": the deck's cards under the status picked alone
+// (Dropped counts dropped ones), so the rows shown are always part of it.
+export function deckTotal(words: WordItem[], facts: FactItem[], deckId: string, status: LibraryFilter['status']): number {
+  return libraryRows(words, facts, deckId, { ...emptyLibraryFilter(), status }).length
+}
+
 export function deckContents(words: WordItem[], facts: FactItem[], deckId: string): { types: Record<CardType, number>; tags: { tag: string; n: number }[] } {
   const types: Record<CardType, number> = { word: 0, fact: 0, rule: 0 }
   const tags = new Map<string, number>()

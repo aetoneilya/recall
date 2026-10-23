@@ -59,6 +59,16 @@ export class EditOutbox {
     this.changed()
   }
 
+  // Saved online: what that save sent supersedes the same fields waiting
+  // here, so a later flush can't put an older offline value back.
+  supersede(kind: EditKind, id: string, sent: object): void {
+    const cur = this.edits.find((x) => x.kind === kind && x.id === id)
+    if (!cur) return
+    for (const k of Object.keys(sent)) delete cur.patch[k]
+    if (!Object.keys(cur.patch).length) this.edits = this.edits.filter((x) => x !== cur)
+    this.changed()
+  }
+
   private merge(e: PendingEdit) {
     const cur = this.edits.find((x) => x.kind === e.kind && x.id === e.id)
     if (cur) cur.patch = { ...cur.patch, ...e.patch }

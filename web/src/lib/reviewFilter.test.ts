@@ -4,14 +4,14 @@ import { cefrLabel, filterChips, filterSummary, toggleIn } from './reviewFilter.
 describe('review filter labels', () => {
   it('summarises a filter on one line', () => {
     expect(filterSummary(null)).toBe('')
-    expect(filterSummary({ pos: ['phrasal_verb', 'idiom'], cefr: ['B2', 'C1', 'C2'] })).toBe('Phrasal verbs, idioms · B2+')
+    expect(filterSummary({ pos: ['phrasal_verb', 'idiom'], cefr: ['B2', 'C1', 'C2'] })).toBe('Phrasal verbs, idioms · B2, C1, C2')
     expect(filterSummary({ types: ['rule'], tags: ['Grammar'] })).toBe('Grammar · Grammar')
     expect(filterSummary({ types: ['word', 'fact'], directions: ['reverse'] }, ['en', 'ru'])).toBe('Words, Q&A · RU → EN')
     expect(filterSummary({ directions: ['forward', 'reverse'] })).toBe('')
   })
 
-  it('reads CEFR ranges', () => {
-    expect(cefrLabel(['C2', 'B2', 'C1'])).toBe('B2+')
+  it('lists CEFR levels in order, never as a range (drill-down: several select none)', () => {
+    expect(cefrLabel(['C2', 'B2', 'C1'])).toBe('B2, C1, C2')
     expect(cefrLabel(['A2', 'B2'])).toBe('A2, B2')
     expect(cefrLabel(['C2'])).toBe('C2')
   })
@@ -35,7 +35,7 @@ describe('filter chips', () => {
   it('lists each active value, removable on its own', () => {
     const f = { types: ['word' as const], tags: ['Grammar/Articles & nouns'], pos: ['phrasal_verb' as const], cefr: ['B2' as const, 'C1' as const, 'C2' as const], directions: ['reverse' as const] }
     const chips = filterChips(f)
-    expect(chips.map((c) => c.label)).toEqual(['Words', 'Grammar › Articles & nouns', 'Phrasal verb', 'B2+', 'RU → EN'])
+    expect(chips.map((c) => c.label)).toEqual(['Words', 'Grammar › Articles & nouns', 'Phrasal verb', 'B2, C1, C2', 'RU → EN'])
     expect(chips[1]!.without).toEqual({ types: ['word'], pos: ['phrasal_verb'], cefr: ['B2', 'C1', 'C2'], directions: ['reverse'] })
     expect(chips[3]!.without?.cefr).toBeUndefined()
     expect(filterChips({ tags: ['claude'] })[0]!.without).toBeNull()

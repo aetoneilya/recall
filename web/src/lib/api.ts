@@ -99,9 +99,16 @@ export function createApi(opts: ApiOptions = {}) {
       opts.onNetwork?.(false)
       throw new NetworkError(e instanceof Error ? e.message : String(e))
     }
+    // The connection can still drop while the body streams in: offline too.
+    let text: string
+    try {
+      text = await res.text()
+    } catch (e) {
+      opts.onNetwork?.(false)
+      throw new NetworkError(e instanceof Error ? e.message : String(e))
+    }
     opts.onNetwork?.(true)
 
-    const text = await res.text()
     let data: unknown = null
     if (text) {
       try {
@@ -227,8 +234,9 @@ export function createApi(opts: ApiOptions = {}) {
     // A written sentence graded by Claude (online only).
     grade: (exerciseId: string, text: string) => post<WriteGrade>(`/api/exercises/${enc(exerciseId)}/grade`, { text }),
     // A tag and everything under it, across a deck's words and facts.
+    // merged: the target was already in use, so renaming back can't undo it.
     renameTag: (deckId: string, from: string, to: string) =>
-      post<{ cards: number; words: number; facts: number }>(`/api/decks/${enc(deckId)}/tags/rename`, { from, to }),
+      post<{ cards: number; words: number; facts: number; merged?: boolean }>(`/api/decks/${enc(deckId)}/tags/rename`, { from, to }),
     deleteTag: (deckId: string, tag: string) => post<{ cards: number; words: number; facts: number }>(`/api/decks/${enc(deckId)}/tags/delete`, { tag }),
     handbook: (deckId: string) => get<Handbook>(`/api/handbook?deck=${enc(deckId)}`),
     startVocabTest: () => post<VocabTestStart>('/api/vocab-test'),

@@ -212,8 +212,9 @@
           <div class="row topic">
             <span class="tmain">
               <span class="tname">{d.name}</span>
-              <span class="tsub">{fmt(shown)} {shown === 1 ? 'card' : 'cards'} · {fmt(c.known)} known · {fmt(c.learning)} learning · {fmt(c.newTotal)} new</span>
-              {#if d.tags?.length}<span class="ttags">{d.tags.slice(0, 4).map((t) => `${t.tag} ${t.n}`).join(' · ')}{d.tags.length > 4 ? ` · +${d.tags.length - 4}` : ''}</span>{/if}
+              <!-- Words and questions vs their cards (a word has two): new and learning count cards. -->
+              <span class="tsub">{fmt(shown)} {shown === 1 ? 'item' : 'items'} · {fmt(c.known)} known · cards: {fmt(c.learning)} learning, {fmt(c.newTotal)} new</span>
+              {#if d.tags?.length}<span class="ttags">{d.tags.slice(0, 4).map((t) => `${t.tag.split('/').join(' › ')} ${t.n}`).join(' · ')}{d.tags.length > 4 ? ` · +${d.tags.length - 4}` : ''}</span>{/if}
             </span>
             <span class="today" aria-label="{c.due + c.new} due today"><b>{fmt(c.due + c.new)}</b> today</span>
           </div>

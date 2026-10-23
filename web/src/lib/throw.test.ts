@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { lift, nextArmed, plan, snapMs, tilt, tiltOrigin } from './throw.ts'
+import { lift, nextArmed, plan, releaseDir, snapMs, tilt, tiltOrigin } from './throw.ts'
 
 describe('card motion', () => {
   it('tilts 0.06°/px up to 8°, around the thumb or a point above', () => {
@@ -82,5 +82,16 @@ describe('press, peek and the next card', () => {
     expect(nextPose(0.5)).toEqual({ y: 2.5, scale: 0.985 })
     expect(nextPose(2)).toEqual({ y: 0, scale: 1 })
     expect(nextPose(1, true)).toEqual({ y: 5, scale: 0.97 })
+  })
+
+  it('commits the way the pill says: armed and pulled back to 90 of 98 px still rates', () => {
+    // Dragged to 120, back to 90: still armed (above 85%), the tracker says snap back.
+    const armed = nextArmed(nextArmed(false, 120, 98), 90, 98)
+    expect(armed).toBe(true)
+    expect(releaseDir(null, armed, 'x', 90)).toBe('right')
+    expect(releaseDir(null, true, 'y', -70)).toBe('up')
+    // Not armed: the tracker's verdict (a flick, or nothing).
+    expect(releaseDir(null, false, 'x', 90)).toBeNull()
+    expect(releaseDir('left', false, 'x', -50)).toBe('left')
   })
 })

@@ -179,6 +179,9 @@
   void facts.restore()
 
   const dirty = $derived(!!form && key(form) !== saved)
+  // A new card's empty answer is said only once the answer box was left (or
+  // Add tapped): not in red before anything was typed there.
+  let answerLeft = $state(false)
   const problem = $derived.by(() => {
     if (!form) return ''
     if (isNew && !form.front.trim() && !form.back.trim()) return ''
@@ -220,6 +223,7 @@
     saving = true
     try {
       const f = await api.updateFact(id, patch)
+      editOutbox.supersede('fact', id, patch)
       if (!gone) adopt(f)
       else saved = snapshot
       after(f)
@@ -251,6 +255,7 @@
   // (deck and tags stay), cursor back in the question. A new grammar rule
   // opens in its editor instead, at the exercise pool.
   async function add() {
+    answerLeft = true
     if (!form || saving || problem || dup || !form.front.trim()) return
     const input = { deckId: form.deckId, ...toInput(form) }
     saving = true
@@ -442,7 +447,7 @@
               {#if form.back.trim()}<Markdown source={form.back} />{:else}<p class="faint">Nothing to preview yet.</p>{/if}
             </div>
           {:else}
-            <textarea class="answer" bind:value={form.back} maxlength="20000" use:autogrow={form.back} rows="5" spellcheck="false" placeholder={asRule ? 'The rule in a few lines, with an example' : '**Key point** first; - lists, `code`, ``` blocks'}></textarea>
+            <textarea class="answer" onblur={() => (answerLeft = true)} bind:value={form.back} maxlength="20000" use:autogrow={form.back} rows="5" spellcheck="false" placeholder={asRule ? 'The rule in a few lines, with an example' : '**Key point** first; - lists, `code`, ``` blocks'}></textarea>
           {/if}
         </div>
         <label class="f">
@@ -544,7 +549,7 @@
   </div>
   {#if form && (fact || (isNew && decks.length))}
     <div class="bar">
-      {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
+      {#if problem && !(isNew && !answerLeft && !form.back.trim())}<p class="problem" role="alert">{problem}</p>{/if}
       <div class="bar-row">
         {#if isNew}
           <button class="btn primary grow" onclick={add} disabled={!form.front.trim() || !!problem || !!dup || saving}>{saving ? 'Adding…' : `Add to ${deckName(form.deckId)}`}</button>

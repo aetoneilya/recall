@@ -52,10 +52,11 @@ export function tagState(selected: readonly string[], path: string): TagState {
 }
 
 // Tap: off → on, on → off. A selected ancestor says nothing more once a tag
-// under it is picked (AND), so it gives way.
+// under it is picked (AND), so it gives way; tapping a mixed parent widens
+// to all of it, so the picks under it give way too.
 export function toggleTag(selected: readonly string[], path: string): string[] {
   if (selected.includes(path)) return selected.filter((s) => s !== path)
-  return [...selected.filter((s) => !tagMatches(s, path)), path]
+  return [...selected.filter((s) => !tagMatches(s, path) && !tagMatches(path, s)), path]
 }
 
 // The tree narrowed to tags whose name or path contains the query (and their

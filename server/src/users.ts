@@ -1,5 +1,6 @@
-// Users are Telegram accounts. Who may get in is configuration
-// (OWNER_TELEGRAM_ID + ALLOW_USER_IDS); a row is created on first sign-in.
+// Users are Telegram accounts. Who may get in: the owner (OWNER_TELEGRAM_ID),
+// ALLOW_USER_IDS, and accounts the owner let in from the bot (allowed_users);
+// a row is created on first sign-in.
 import type { DayOptions } from '@recall/core'
 import type { Config } from './config.ts'
 import { newId, type Db, type MigrationEnv } from './db.ts'
@@ -28,6 +29,9 @@ export interface User {
   fsrsTrainedAt: string | null
   fsrsReviewsUsed: number | null
   fsrsAttemptedAt: string | null
+  // Went through (or skipped) the first-run wizard; saw the gesture coach.
+  onboarded: boolean
+  coachSeen: boolean
   createdAt: string
 }
 
@@ -57,6 +61,8 @@ interface UserRow {
   fsrs_trained_at: string | null
   fsrs_reviews_used: number | null
   fsrs_attempted_at: string | null
+  onboarded: number
+  coach_seen: number
   created_at: string
 }
 
@@ -84,6 +90,8 @@ function toUser(r: UserRow): User {
     fsrsTrainedAt: r.fsrs_trained_at,
     fsrsReviewsUsed: r.fsrs_reviews_used,
     fsrsAttemptedAt: r.fsrs_attempted_at,
+    onboarded: r.onboarded === 1,
+    coachSeen: r.coach_seen === 1,
     createdAt: r.created_at,
   }
 }
@@ -133,8 +141,20 @@ export function isOwner(cfg: Pick<Config, 'dev' | 'ownerTelegramId'>, user: Pick
   return user.telegramId === ownerTelegramId(cfg)
 }
 
-export function isAllowed(cfg: Pick<Config, 'dev' | 'ownerTelegramId' | 'allowUserIds'>, telegramId: number): boolean {
-  return cfg.dev || telegramId === cfg.ownerTelegramId || cfg.allowUserIds.includes(telegramId)
+// How an account gets in, or null: every access check goes through this
+// (Mini App, sessions, tokens, OAuth, the bot, reminders), so taking an
+// account off the list — ALLOW_USER_IDS or the bot's allowlist — cuts it
+// everywhere at once.
+export type Access = 'owner' | 'config' | 'bot'
+
+export function accessOf(db: Db, cfg: Pick<Config, 'dev' | 'ownerTelegramId' | 'allowUserIds'>, telegramId: number): Access | null {
+  if (cfg.dev || telegramId === cfg.ownerTelegramId) return 'owner'
+  if (cfg.allowUserIds.includes(telegramId)) return 'config'
+  return db.prepare('SELECT 1 FROM allowed_users WHERE telegram_id = ?').get(telegramId) ? 'bot' : null
+}
+
+export function isAllowed(db: Db, cfg: Pick<Config, 'dev' | 'ownerTelegramId' | 'allowUserIds'>, telegramId: number): boolean {
+  return accessOf(db, cfg, telegramId) !== null
 }
 
 // The owner user, created if missing; null when no owner is configured.
@@ -147,7 +167,7 @@ export function ownerUser(db: Db, cfg: Config, now: Date): User | null {
 export function allowedUser(db: Db, cfg: Config, id: unknown): User | null {
   if (typeof id !== 'string') return null
   const user = getUser(db, id)
-  return user && isAllowed(cfg, user.telegramId) ? user : null
+  return user && isAllowed(db, cfg, user.telegramId) ? user : null
 }
 
 export function userDayOptions(cfg: Pick<Config, 'dayStartHour'>, user: Pick<User, 'timeZone'>): DayOptions {
@@ -162,12 +182,15 @@ export interface UserSettingsPatch {
   weeklyReportDay?: number
   weeklyReportTime?: string
   requestRetention?: number
+  onboarded?: boolean
+  coachSeen?: boolean
 }
 
 export function updateUserSettings(db: Db, id: string, patch: UserSettingsPatch): User {
   const columns = {
     timeZone: 'time_zone', reminderTime: 'reminder_time', eveningReminderTime: 'evening_reminder_time',
     weeklyReport: 'weekly_report', weeklyReportDay: 'weekly_report_day', weeklyReportTime: 'weekly_report_time', requestRetention: 'request_retention',
+    onboarded: 'onboarded', coachSeen: 'coach_seen',
   } as const
   const set = (Object.keys(columns) as (keyof typeof columns)[]).filter((k) => patch[k] !== undefined)
   const value = (v: UserSettingsPatch[keyof UserSettingsPatch]) => (typeof v === 'boolean' ? (v ? 1 : 0) : v ?? null)

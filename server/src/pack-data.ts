@@ -10,13 +10,19 @@
 //                      cards: [{front, back}], exercises: [choose | spot],
 //                      write?: [{prompt, rubric?}]}: per topic a rule fact
 //                      (title → summary) with its exercise pool, plus the
-//                      theory cards as plain facts (packs.ts).
+//                      theory cards as plain facts (packs.ts);
+//   'words'            a starter word set for one CEFR `level`: items are
+//                      words {term, pos, translations, ipa, examples:
+//                      [{text, translation}], cefr, note, rank} (verbs as
+//                      "to X"), added as words with both cards (packs.ts).
 // Items are in the order cards should be introduced (most frequent first).
 // No database access here: repo.ts uses verbForms for word items, packs.ts
 // adds packs to a user's collection.
 import fs from 'node:fs'
 import path from 'node:path'
-import { CEFR_LEVELS, cleanExercise, exerciseKey, formsLine, normalizeTerm, type Cefr, type CleanExercise, type PartOfSpeech, type VerbForms } from '@recall/core'
+import {
+  CEFR_LEVELS, cleanExercise, cleanWord, dedupeKey, exerciseKey, formsLine, normalizeTerm, type Cefr, type CleanExercise, type CleanWord, type PartOfSpeech, type VerbForms,
+} from '@recall/core'
 import { DEFAULT_DATA_DIR } from './config.ts'
 
 export interface PackFact {
@@ -53,22 +59,34 @@ export interface HandbookTopic {
   write: CleanExercise[]
 }
 
+// One word of a starter set, cleaned (core.cleanWord); `rank` is the
+// source's frequency rank, kept for reference.
+export interface PackWord {
+  word: CleanWord
+  rank: number | null
+}
+
 export interface Pack {
   id: string
   name: string
   description: string
   kind: 'topic'
-  format: 'facts' | 'irregular-verbs' | 'grammar-handbook'
+  format: 'facts' | 'irregular-verbs' | 'grammar-handbook' | 'words'
+  // format 'words' only: the CEFR level the set is for.
+  level: Cefr | null
   // Every fact the pack adds, in introduction order. For the handbook, per
   // topic: the rule (key = topic id) then its cards (key <topic>:card:<n>).
+  // Empty for a words pack.
   facts: PackFact[]
+  // format 'words' only, in introduction order (import ref pack:<id>:<n>).
+  words: PackWord[] | null
   // format 'irregular-verbs' only: by verb.
   verbs: Map<string, IrregularVerb> | null
   // format 'grammar-handbook' only, in file order.
   topics: HandbookTopic[] | null
 }
 
-export const PACK_FORMATS = ['facts', 'irregular-verbs', 'grammar-handbook'] as const
+export const PACK_FORMATS = ['facts', 'irregular-verbs', 'grammar-handbook', 'words'] as const
 export const HANDBOOK_CARDS = { min: 3, max: 6 }
 // A rule reviews through its pool once it has MIN_POOL (3) tap items.
 export const HANDBOOK_MIN_EXERCISES = 3
@@ -157,6 +175,26 @@ function handbookTopic(x: unknown, i: number): HandbookTopic {
   }
 }
 
+// A starter word, validated like any added word. Verbs are written "to X"
+// (that is how a learner looks them up, and the dedupe key drops the "to").
+function packWord(x: unknown, i: number): PackWord {
+  const o = (x ?? {}) as Record<string, unknown>
+  const where = `item ${i}${isStr(o.term) ? ` (${o.term})` : ''}`
+  const r = cleanWord({
+    term: typeof o.term === 'string' ? o.term : '',
+    pos: o.pos as PartOfSpeech,
+    translations: Array.isArray(o.translations) ? o.translations.filter((t): t is string => typeof t === 'string') : [],
+    ipa: typeof o.ipa === 'string' ? o.ipa : null,
+    examples: Array.isArray(o.examples) ? o.examples.map((e) => ({ text: String((e as Record<string, unknown>)?.text ?? ''), translation: typeof (e as Record<string, unknown>)?.translation === 'string' ? (e as { translation: string }).translation : null })) : [],
+    note: typeof o.note === 'string' ? o.note : null,
+    cefr: (o.cefr ?? null) as Cefr | null,
+  })
+  if ('error' in r) throw new Error(`${where}: ${r.error}`)
+  if (r.word.pos === 'verb' && !/^to /i.test(r.word.term)) throw new Error(`${where}: a verb is written "to ${r.word.term}"`)
+  if (o.rank !== undefined && o.rank !== null && (typeof o.rank !== 'number' || !Number.isFinite(o.rank))) throw new Error(`${where}: rank must be a number or null`)
+  return { word: r.word, rank: typeof o.rank === 'number' ? o.rank : null }
+}
+
 // The root of the grammar tags: rules and theory cards sit under
 // "Grammar/<group>" (the card type tells them apart).
 export const GRAMMAR_TAG = 'Grammar'
@@ -182,10 +220,22 @@ export function parsePack(data: unknown): Pack {
   const format = (o.format ?? 'facts') as Pack['format']
   if (!PACK_FORMATS.includes(format)) throw new Error(`format must be one of ${PACK_FORMATS.join(', ')}`)
   if (!Array.isArray(o.items) || !o.items.length) throw new Error('items must be a non-empty list')
-  let facts: PackFact[]
+  let facts: PackFact[] = []
   let verbs: Map<string, IrregularVerb> | null = null
   let topics: HandbookTopic[] | null = null
-  if (format === 'irregular-verbs') {
+  let words: PackWord[] | null = null
+  let level: Cefr | null = null
+  if (format === 'words') {
+    if (!(CEFR_LEVELS as readonly unknown[]).includes(o.level)) throw new Error(`level must be one of ${CEFR_LEVELS.join(', ')}`)
+    level = o.level as Cefr
+    words = o.items.map(packWord)
+    const keys = new Map<string, string>()
+    for (const { word: w } of words) {
+      const k = dedupeKey(w.term, w.pos)
+      if (keys.has(k)) throw new Error(`"${w.term}" (${w.pos}) appears twice${keys.get(k) !== w.term ? ` (also as "${keys.get(k)}")` : ''}`)
+      keys.set(k, w.term)
+    }
+  } else if (format === 'irregular-verbs') {
     const list = o.items.map(irregularVerb)
     verbs = new Map(list.map((v) => [v.verb, v]))
     facts = list.map(irregularVerbFact)
@@ -205,8 +255,11 @@ export function parsePack(data: unknown): Pack {
     if (seen.has(f.key)) throw new Error(`${topics ? 'topic' : 'item'} "${f.key}" appears twice`)
     seen.add(f.key)
   }
-  return { id: o.id, name: o.name.trim(), description: isStr(o.description) ? o.description.trim() : '', kind: 'topic', format, facts, verbs, topics }
+  return { id: o.id, name: o.name.trim(), description: isStr(o.description) ? o.description.trim() : '', kind: 'topic', format, level, facts, words, verbs, topics }
 }
+
+// How many cards-worth of items a pack has: words or facts.
+export const packSize = (p: Pack) => p.words?.length ?? p.facts.length
 
 const RECHECK_MS = 30_000
 
@@ -240,7 +293,7 @@ export function packLoader(dir: string): () => Pack[] {
         console.error(`cannot load pack ${f}: ${(e as Error).message}`)
       }
     }
-    if (out.length) console.log(`loaded packs: ${out.map((p) => `${p.id} (${p.facts.length})`).join(', ')}`)
+    if (out.length) console.log(`loaded packs: ${out.map((p) => `${p.id} (${packSize(p)})`).join(', ')}`)
     packs = out
     return packs
   }

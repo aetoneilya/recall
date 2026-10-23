@@ -5,6 +5,7 @@
   import ScaleLadder from '../components/ScaleLadder.svelte'
   import { HttpError } from '../lib/api.ts'
   import { api, kv, status } from '../lib/app.svelte.ts'
+  import { levelFromTest } from '../lib/onboarding.svelte.ts'
   import { back, navigate } from '../lib/router.svelte.ts'
   import { swipe, type SwipeDir } from '../lib/swipe.ts'
   import { haptic, setBackButton } from '../lib/telegram.ts'
@@ -12,6 +13,10 @@
   import type { Dashboard, TestResult, VocabScale, VocabTestStart } from '../lib/types.ts'
 
   type Phase = 'intro' | 'run' | 'submitting' | 'result' | 'failed' | 'unavailable'
+
+  // Started from the first-run wizard: Done (and leaving) go back to it, with
+  // the result (null when left without one), instead of to Progress.
+  let { onfinish }: { onfinish?: (r: TestResult | null) => void } = $props()
 
   let phase = $state<Phase>('intro')
   let test = $state.raw<VocabTestStart | null>(null)
@@ -106,7 +111,8 @@
   }
 
   function done() {
-    navigate('/progress', { replace: true })
+    if (onfinish) onfinish(phase === 'result' ? result : null)
+    else navigate('/progress', { replace: true })
   }
 
   // Back undoes the last answer; on the first word (or before) it leaves.
@@ -119,7 +125,8 @@
       haptic.select()
       return
     }
-    back()
+    if (onfinish) onfinish(null)
+    else back()
   }
 
   $effect(() => {
@@ -227,7 +234,7 @@
       <div class="empty">
         <Icon name="info" size={40} stroke={1.4} />
         <p><strong>No test here yet</strong>The vocabulary test isn't installed on the server.</p>
-        <button class="btn" onclick={done}>Back to progress</button>
+        <button class="btn" onclick={done}>{onfinish ? 'Back' : 'Back to progress'}</button>
       </div>
     {:else if phase === 'intro'}
       <div class="intro">
@@ -290,7 +297,7 @@
       {/if}
 
       <p class="caption">{r.answered} answers · {r.pseudowords.yes} of {r.pseudowords.items} made-up words marked as known.</p>
-      <button class="btn primary block done" onclick={done}>Done</button>
+      <button class="btn primary block done" onclick={done}>{onfinish && r.valid ? `Continue with ${levelFromTest(r)}` : 'Done'}</button>
     {/if}
   </div>
 {/if}

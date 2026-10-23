@@ -231,7 +231,7 @@ export function dueForTraining(user: Pick<User, 'fsrsAttemptedAt' | 'fsrsReviews
 // The hourly pass: trains every allowed user who is due, one at a time.
 export async function fsrsTick(ctx: AppContext): Promise<void> {
   for (const user of listUsers(ctx.db)) {
-    if (!isAllowed(ctx.cfg, user.telegramId)) continue
+    if (!isAllowed(ctx.db, ctx.cfg, user.telegramId)) continue
     if (!dueForTraining(user, reviewCount(ctx.db, user.id), ctx.cfg.fsrsMinReviews, ctx.now())) continue
     try {
       await trainUser(ctx, user)

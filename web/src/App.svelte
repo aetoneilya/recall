@@ -2,6 +2,7 @@
   import TabBar from './components/TabBar.svelte'
   import Toast from './components/Toast.svelte'
   import { loadMe, status } from './lib/app.svelte.ts'
+  import { needsWizard } from './lib/onboarding.svelte.ts'
   import { session } from './lib/review.svelte.ts'
   import { back, parentOf, router } from './lib/router.svelte.ts'
   import { setBackButton } from './lib/telegram.ts'
@@ -16,10 +17,13 @@
   import Review from './screens/Review.svelte'
   import Settings from './screens/Settings.svelte'
   import VocabTest from './screens/VocabTest.svelte'
+  import Welcome from './screens/Welcome.svelte'
   import WordEditor from './screens/WordEditor.svelte'
   import Words from './screens/Words.svelte'
 
   const r = $derived(router.route)
+  // A new account: the first-run wizard instead of the tabs.
+  const wizard = $derived(needsWizard(status))
   const [a, b] = $derived(r.parts)
 
   // Pushed screens slide in from the right, popped ones from the left; tab
@@ -42,9 +46,9 @@
     checkpoint('route')
   })
 
-  // The test runs its own Back (it undoes the last answer).
+  // The test runs its own Back (it undoes the last answer); so does the wizard.
   $effect(() => {
-    if (r.parts[0] === 'test') return
+    if (r.parts[0] === 'test' || wizard) return
     setBackButton(status.auth === 'ok' && parentOf(r) !== null ? back : null)
   })
 
@@ -57,7 +61,7 @@
       t.blur()
       return
     }
-    if (r.parts[0] !== 'test' && parentOf(r) !== null) {
+    if (r.parts[0] !== 'test' && !wizard && parentOf(r) !== null) {
       e.preventDefault()
       back()
     }
@@ -75,6 +79,8 @@
   <Login onsignedin={afterLogin} />
 {:else if status.auth === 'denied'}
   <Denied />
+{:else if wizard}
+  <div class="shell"><main><div class="view"><Welcome /></div></main></div>
 {:else}
   <div class="shell">
     <main>

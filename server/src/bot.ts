@@ -1,9 +1,10 @@
 // Telegram bot: Mini App menu button, /due, /stats, /help, per-user daily
 // reminders and the weekly report, the "Log in with Telegram" confirmation
-// (/start login_<nonce>, then a button), and adding words by message
-// (bot-words.ts).
+// (/start login_<nonce>, then a button), getting in by request and the
+// owner's /users (bot-access.ts), and adding words by message (bot-words.ts).
 import { Bot, GrammyError, InlineKeyboard } from 'grammy'
 import type { UserFromGetMe } from 'grammy/types'
+import { answerStranger, installAccessHandlers } from './bot-access.ts'
 import { installWordHandlers, type TaskQueue, type WordBotOptions } from './bot-words.ts'
 import type { Config } from './config.ts'
 import type { AppContext } from './context.ts'
@@ -13,7 +14,7 @@ import { lexiconOf } from './lexicon.ts'
 import { answerLoginRef, openLoginNonce, START_PREFIX } from './login.ts'
 import { defaultDeck, syncFreqRanks } from './repo.ts'
 import { buildQueue, reviewedOn, studyDay } from './study.ts'
-import { ensureUser, isAllowed, listUsers, setBotStarted, setReminderSent, userDayOptions, type User } from './users.ts'
+import { ensureUser, isAllowed, listUsers, ownerTelegramId, setBotStarted, setReminderSent, userDayOptions, type User } from './users.ts'
 import { weeklyTick } from './weekly.ts'
 
 export interface DueCounts {
@@ -105,8 +106,17 @@ export const BOT_COMMANDS = [
   { command: 'help', description: 'How to add words' },
 ]
 
-export function strangerText(telegramId: number): string {
-  return `This is a private bot. Your Telegram id: ${telegramId} — send it to the owner to get access.`
+// The owner's chat also gets /users.
+export const OWNER_COMMANDS = [...BOT_COMMANDS, { command: 'users', description: 'Who has access' }]
+
+type CommandsApi = { setMyCommands: Bot['api']['setMyCommands'] }
+
+// The owner's command list lives in their chat's scope, which exists only
+// once they have started the bot: tried at launch and again on their /start.
+export function registerOwnerCommands(api: CommandsApi, cfg: Pick<Config, 'ownerTelegramId'>): Promise<unknown> {
+  if (cfg.ownerTelegramId === null) return Promise.resolve()
+  return api.setMyCommands(OWNER_COMMANDS, { scope: { type: 'chat', chat_id: cfg.ownerTelegramId } })
+    .catch((e) => console.error('telegram: setMyCommands for the owner:', (e as Error).message))
 }
 
 // Minutes since local midnight in the given zone.
@@ -184,7 +194,7 @@ export type SendReminder = (chatId: number, text: string) => Promise<unknown>
 export async function reminderTick(ctx: AppContext, send: SendReminder) {
   const { db, cfg } = ctx
   for (const user of listUsers(db)) {
-    if (!user.botStartedAt || !isAllowed(cfg, user.telegramId)) continue
+    if (!user.botStartedAt || !isAllowed(db, cfg, user.telegramId)) continue
     try {
       const now = ctx.now()
       const counts = dueCounts(db, cfg, user, now)
@@ -210,13 +220,14 @@ export function createBot(ctx: AppContext, botInfo?: UserFromGetMe, opts: WordBo
   const keyboard = () => new InlineKeyboard().webApp('Open Mnemosyne', cfg.appOrigin)
 
   bot.use(async (c, next) => {
-    if (c.from && isAllowed(cfg, c.from.id)) return next()
-    if (c.from && c.chat) await c.reply(strangerText(c.from.id))
+    if (c.from && isAllowed(db, cfg, c.from.id)) return next()
+    await answerStranger(c, ctx)
   })
 
   bot.command('start', async (c) => {
     const user = ensureUser(db, cfg, c.from!.id, ctx.now(), c.from!.first_name)
     if (c.chat.type === 'private') setBotStarted(db, user.id, ctx.now())
+    if (c.from!.id === ownerTelegramId(cfg)) void registerOwnerCommands(c.api, cfg)
     const payload = typeof c.match === 'string' ? c.match.trim() : ''
     if (payload.startsWith(START_PREFIX)) {
       // Opening the link only asks; the login happens on a press, so a link
@@ -263,6 +274,7 @@ export function createBot(ctx: AppContext, botInfo?: UserFromGetMe, opts: WordBo
     await c.reply(reminderText(dueCounts(db, cfg, user, ctx.now()), 'now'), { reply_markup: keyboard() })
   })
 
+  installAccessHandlers(bot, ctx)
   const words = installWordHandlers(bot, ctx, opts)
   bot.catch((err) => console.error('telegram:', err.error))
   return Object.assign(bot, { words })
@@ -289,6 +301,7 @@ export function startBot(ctx: AppContext): { stop: () => Promise<void> } | null 
       () => {
         ctx.telegram.botUsername = bot.botInfo.username
         bot.api.setMyCommands(BOT_COMMANDS).catch((e) => console.error('telegram: setMyCommands:', e))
+        void registerOwnerCommands(bot.api, cfg)
         return bot.start({ drop_pending_updates: true, onStart: (me) => console.log(`telegram bot @${me.username} polling`) })
       },
       (e) => {

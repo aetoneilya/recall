@@ -18,15 +18,17 @@ import {
 import { decksWithCounts, leeches, stats, wordLogs } from './study.ts'
 import { userDayOptions, type User } from './users.ts'
 
-const INSTRUCTIONS = `Mnemosyne is the user's personal vocabulary trainer (spaced repetition, FSRS). The user is a Russian speaker learning English; each language they learn is one deck ("English": English terms, Russian translations).
+const INSTRUCTIONS = `Mnemosyne is the user's spaced-repetition app (FSRS). The user is a Russian speaker learning English.
 
-Decks are big containers ("English", "Programming") holding cards of any type: words (only in a deck with languages), question/answer facts, and grammar rules (facts with an exercise pool). Subjects inside a deck — Java Core, Databases, Grammar — are tags, not decks. A tag with "/" is a path ("Grammar/Tenses", "Books/wuthering heights"): searching or filtering by a tag also finds the tags under it. The fact tools (create_deck, search_facts, add_facts, update_fact, set_fact_status) work on any deck. A fact has a question (front) and an answer (back), both Markdown; one card each; the user reviews one deck at a time. Good facts: one idea per card; a question with one clear answer (not "tell me about X"); a short answer — a few sentences or a short list, **bold** for the key point, \`code\` for identifiers, a fenced block only for a few lines of code. Facts you add are studied at once, like words.
+Decks are big containers ("English", "History") holding cards of mixed types: words (only in a deck with languages, e.g. English terms with Russian translations), question/answer facts, and grammar rules (facts with an exercise pool, reviewed through a few exercises at a time). The user reviews one deck at a time. Subjects inside a deck are tags, not decks: a tag with "/" is a path ("Grammar/Tenses", "Books/<title>"), and a tag in a search or filter also takes the tags under it. Add to an existing deck with the subject as a tag; create a deck only when the user asks for one.
 
-Each word has two cards: forward (English → Russian, recognition) and reverse (Russian → English, production; its prompt shows the translations and the first example with the term blanked out as "___"). A deck can turn a direction off or delay reverse cards until the forward card is stable.
+There is no inbox: everything you add is active at once (studied within the deck's new cards per day), and your words and facts get the tag "claude". Add what the user asked for, not more. A card the user doesn't want is dropped (status rejected): never shown again but kept, so the duplicate check still sees it — don't propose it again. Prefer drop or suspend to delete.
 
-You can look up words, propose new ones, fix existing ones, and read progress (review_stats, get_leeches, vocabulary_profile) to suggest what to learn next. Everything you add (words and facts) is studied at once and tagged "claude"; the user drops what they don't want (status rejected), and a dropped card is never shown again — the duplicate check sees it, so don't propose it again. Add what the user asked for, not more. A word is unique per deck by its normalised term (lowercase, "to " dropped) plus part of speech: adding an existing one returns its id and what your proposal would add instead of creating a copy — use update_word to merge in a new translation or example.
+Nothing is added twice. A word is unique per deck by its normalised term (lowercase, spaces collapsed, a leading "to " dropped) plus part of speech; a fact by its question (case, spacing and a final "?" ignored); an exercise by its text within the rule's pool. Adding one that exists, in any status, reports it under duplicates with its id and what your proposal would add: merge that with update_word / update_fact if it is worth it. search_words / search_facts first catch near-duplicates the exact check misses (another part of speech, a reworded question).
 
-Good words: term in base form ("to frown", "a chicken-and-egg situation", "to give up"), the right part of speech, 1–4 natural Russian translations with the most common first, General American IPA without slashes, 1–2 short natural example sentences that contain the term (inflected forms are fine) with Russian translations, a CEFR guess, and a short usage note in Russian when it helps (register, collocations, false friends).`
+Each word has two cards: forward (English → Russian, recognition) and reverse (Russian → English, production; its prompt shows the translations and the first example with the term blanked out as "___"). Good words: base form ("to frown", "a chicken-and-egg situation", "to give up"), the right part of speech, 1–4 natural Russian translations with the most common first, General American IPA without slashes, 1–2 short natural examples containing the term (inflected forms are fine) with Russian translations, a CEFR guess, and a short usage note in Russian when it helps (register, collocations, false friends). Good facts: one idea per card, a question with one clear answer, a short Markdown answer with the key point in **bold**.
+
+Content packs (list_packs: starter word sets per CEFR level, irregular verbs, a grammar handbook) are added only when the user asks. review_stats, get_leeches and vocabulary_profile show where the user stands, to suggest what to learn next.`
 
 const json = (value: unknown): CallToolResult => ({ content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] })
 
@@ -59,7 +61,7 @@ const fields = {
   })).max(5).optional().describe('1–2 short natural examples; the first one is shown on the cards.'),
   note: z.string().max(2000).optional().describe('Short usage note in Russian: register, collocations, pitfalls.'),
   cefr: cefr.optional().describe('CEFR level estimate.'),
-  tags: z.array(z.string()).max(30).optional().describe('Free-form short tags, e.g. a topic or the book or article the word came from.'),
+  tags: z.array(z.string()).max(30).optional().describe('Short tags, e.g. the subject or the book or article the word came from; "/" makes a path ("Books/<title>").'),
 }
 
 const FACT_RULES = 'Front: one question with one clear answer, standalone (no "as above"). Back: the answer in Markdown — a few sentences or a short "-" / "1." list; **bold** the key point, `code` for identifiers, ``` fenced blocks only for short code. One idea per card: split a big topic into several facts rather than one long answer.'
@@ -266,7 +268,7 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
 
   server.registerTool('add_facts', {
     title: 'Add facts',
-    description: `Proposes up to 100 question/answer flashcards for a deck, e.g. generated from the user's notes; give the subject as a tag (tags, e.g. ["Kafka"]) rather than a new deck. They are studied at once (within the deck's daily limit of new cards) and get the tag "claude". A fact whose question already exists in the deck (any status, including rejected = dropped by the user) is not added: it is reported under duplicates with the existing id, its status and what differs (back, newTags) — use update_fact to merge. Invalid facts are reported under errors. ${FACT_RULES}`,
+    description: `Adds up to 100 question/answer flashcards to a deck, e.g. generated from the user's notes; give the subject as a tag (tags, e.g. ["Kafka"]) rather than a new deck. They are studied at once (within the deck's daily limit of new cards) and get the tag "claude". A fact whose question already exists in the deck (any status, including rejected = dropped by the user) is not added: it is reported under duplicates with the existing id, its status and what differs (back, newTags) — use update_fact to merge. Invalid facts are reported under errors. ${FACT_RULES}`,
     inputSchema: {
       deck: z.string().min(1).describe('Deck name or id, e.g. "Programming".'),
       tags: z.array(z.string()).max(10).optional().describe('Tags for every fact, e.g. the subject: ["Kafka"]. Each fact can add its own.'),
@@ -318,16 +320,16 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
 
   server.registerTool('list_packs', {
     title: 'List content packs',
-    description: 'Ready-made sets of cards the app ships (e.g. "Irregular verbs"): id, name, description, count of cards, whether the user has added it (added, deckId) and how many of its cards they still lack (missing; for the grammar handbook also missingExercises). Suggest one when it fits what the user wants to learn; add it only when they agree.',
+    description: 'Ready-made sets of cards the app ships — starter word sets per CEFR level (format "words", with level), "Irregular verbs", the grammar handbook: id, name, description, format, count of cards, whether the user has added it (added, deckId) and how many of its cards they still lack (missing; for the grammar handbook also missingExercises). Suggest one when it fits what the user wants to learn; add it only when they agree.',
     annotations: { readOnlyHint: true },
   }, guard(() => listPacks(db, uid)))
 
   server.registerTool('add_pack', {
     title: 'Add content pack',
-    description: 'Adds a content pack\'s cards to a deck (default: irregular verbs and the grammar handbook into the English deck, other packs into a deck named after the pack), each tagged with the pack\'s name (the grammar handbook: "Grammar/<the topic\'s group>" on rules and theory cards alike); they are active at once, introduced in the pack\'s order (most useful first). The grammar handbook adds per topic a rule (title → cheat sheet) with its exercise pool, and the theory cards; `exercises` = items added to rules. Running it again adds only what the user lacks, including new exercises of rules already added. Only when the user asked for it.',
+    description: 'Adds a content pack\'s cards to a deck (default: starter words, irregular verbs and the grammar handbook into the English deck, other packs into a deck named after the pack), each tagged with the pack\'s name (the grammar handbook: "Grammar/<the topic\'s group>" on rules and theory cards alike; a starter word set: "Starter/<level>"); they are active at once, introduced in the pack\'s order (most useful first). A starter word set adds words with both cards, deduped like add_words (a word the deck has, in any status, counts under duplicates). The grammar handbook adds per topic a rule (title → cheat sheet) with its exercise pool, and the theory cards; `exercises` = items added to rules. Running it again adds only what the user lacks, including new exercises of rules already added. Only when the user asked for it.',
     inputSchema: { id: z.string().describe('Pack id from list_packs.'), deck: z.string().optional().describe('Deck name or id to add it to.') },
   }, guard(({ id, deck }) => {
-    const r = addPack(db, uid, id, ctx.now(), { deckId: deck })
+    const r = addPack(db, uid, id, ctx.now(), { deckId: deck, lex: lex() })
     return { deck: { id: r.deck.id, name: r.deck.name }, added: r.added, alreadyAdded: r.alreadyAdded, duplicates: r.duplicates, exercises: r.exercises }
   }))
 

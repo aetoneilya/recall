@@ -102,7 +102,7 @@ describe('adding a pack', () => {
     const small = parsePack(pack([verb('be', ['was', 'were'], ['been']), verb('have', ['had'], ['had']), verb('do', ['did'], ['done']), verb('say', ['said'], ['said'])]))
     setPacks([small])
     const en = deck(ctx, 0)
-    expect(listPacks(ctx.db, ctx.user.id)).toEqual([{ id: 'irregular-verbs', name: 'Irregular verbs', description: 'd', count: 4, added: false, missing: 4, deckId: en.id, deckName: 'English' }])
+    expect(listPacks(ctx.db, ctx.user.id)).toEqual([{ id: 'irregular-verbs', name: 'Irregular verbs', description: 'd', format: 'irregular-verbs', count: 4, added: false, missing: 4, deckId: en.id, deckName: 'English' }])
 
     const r = addPack(ctx.db, ctx.user.id, 'irregular-verbs', ctx.now())
     expect(r).toMatchObject({ deck: { id: en.id, name: 'English' }, added: 4, alreadyAdded: 0, duplicates: 0 })

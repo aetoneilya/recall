@@ -11,6 +11,7 @@
   import { applyTheme, loadTheme, type ThemeChoice } from '../lib/theme.ts'
   import { errorText, showToast } from '../lib/toast.svelte.ts'
   import type { ApiToken, AuthVia, DeckPatch, DeckWithCounts, Me, NewToken, PackInfo, TypeAnswer } from '../lib/types.ts'
+  import { LEVEL_NAMES, type Level } from '../lib/onboarding.svelte.ts'
 
   // The review screen's cached copy paints the study settings at once (and
   // offline); the fetch below brings fresh counts.
@@ -88,8 +89,11 @@
     }
   }
 
-  // Content packs, added with one tap into the deck picked for each.
+  // Content packs, added with one tap into the deck picked for each. The
+  // starter word sets (one per level) get a compact list of their own.
   let packs = $state<PackInfo[]>([])
+  const starters = $derived(packs.filter((p) => p.format === 'words'))
+  const otherPacks = $derived(packs.filter((p) => p.format !== 'words'))
   let packDeck = $state<Record<string, string>>({})
   let addingPack = $state<string | null>(null)
   void api.packs().then((p) => (packs = p)).catch(() => {})
@@ -100,8 +104,10 @@
       const r = await api.addPack(p.id, packDeck[p.id] || p.deckId)
       packs = r.packs
       const deck = r.packs.find((x) => x.id === p.id)?.deckName ?? p.deckName
-      showToast(`Added ${r.added} ${r.added === 1 ? 'card' : 'cards'} to “${deck}”`)
+      const unit = p.format === 'words' ? (r.added === 1 ? 'word' : 'words') : r.added === 1 ? 'card' : 'cards'
+      showToast(`Added ${r.added} ${unit} to “${deck}”${r.duplicates ? ` · ${r.duplicates} already there` : ''}`)
       status.factsVersion++
+      status.wordsVersion++
       void getDecks(true).then((x) => (decks = x)).catch(() => {})
       void session.refresh()
     } catch (e) {
@@ -562,10 +568,10 @@
       </form>
     </div>
     <p class="caption">A deck holds cards of any type; subjects inside it are tags. Merging moves a deck's cards into another, tagged with its name.</p>
-    {#if packs.length}
+    {#if otherPacks.length}
       <div class="section-label">Packs</div>
       <div class="group">
-        {#each packs as p (p.id)}
+        {#each otherPacks as p (p.id)}
           <div class="row pack">
             <span class="grow">{p.name} <span class="muted">· {p.count} cards</span>{#if p.description}<span class="sub">{p.description}</span>{/if}
               {#if p.added && !p.missing}
@@ -589,6 +595,24 @@
           </div>
         {/each}
       </div>
+    {/if}
+    {#if starters.length}
+      <div class="section-label">Starter words</div>
+      <div class="group">
+        {#each starters as p (p.id)}
+          <div class="row pack">
+            <span class="grow"><b class="lvl">{p.level}</b> {p.level ? LEVEL_NAMES[p.level as Level] ?? '' : p.name} <span class="muted">· {p.count.toLocaleString('en-US')} words</span></span>
+            {#if p.added && !p.missing}
+              <span class="added"><Icon name="check" size={16} stroke={2.2} /> Added</span>
+            {:else}
+              <button class="btn small" onclick={() => addPack(p)} disabled={addingPack === p.id} aria-label="Add {p.name}">
+                {addingPack === p.id ? 'Adding…' : p.added ? `Add ${p.missing} new` : 'Add'}
+              </button>
+            {/if}
+          </div>
+        {/each}
+      </div>
+      <p class="caption">Common words for each level, most useful first, into “{starters[0]!.deckName}” and tagged Starter/&lt;level&gt;. Words you already have are skipped.</p>
     {/if}
   {/if}
 
@@ -880,6 +904,12 @@
     font-size: 13px;
     width: auto;
     max-width: 60%;
+  }
+  .lvl {
+    display: inline-block;
+    min-width: 26px;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
   }
   .pack .btn.small {
     flex: none;

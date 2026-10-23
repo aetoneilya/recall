@@ -164,7 +164,7 @@ export type SendWeekly = (chatId: number, text: string) => Promise<unknown>
 export async function weeklyTick(ctx: AppContext, send: SendWeekly) {
   const { db, cfg } = ctx
   for (const user of listUsers(db)) {
-    if (!user.botStartedAt || !isAllowed(cfg, user.telegramId)) continue
+    if (!user.botStartedAt || !isAllowed(db, cfg, user.telegramId)) continue
     try {
       const now = ctx.now()
       const decision = decideWeekly(now, user, user)

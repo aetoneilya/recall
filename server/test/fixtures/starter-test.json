@@ -1,0 +1,14 @@
+{
+  "id": "starter-a1",
+  "name": "Starter words A1",
+  "description": "A tiny invented set for the tests.",
+  "kind": "topic",
+  "format": "words",
+  "level": "A1",
+  "items": [
+    { "term": "house", "pos": "noun", "translations": ["дом"], "ipa": "/haʊs/", "examples": [{ "text": "Our house is small.", "translation": "Наш дом маленький." }], "cefr": "A1", "note": null, "rank": 150 },
+    { "term": "to eat", "pos": "verb", "translations": ["есть", "кушать"], "ipa": "it", "examples": [{ "text": "We eat at seven.", "translation": "Мы едим в семь." }], "cefr": "A1", "note": "Разговорное «кушать» звучит по-детски.", "rank": 300 },
+    { "term": "happy", "pos": "adjective", "translations": ["счастливый", "довольный"], "ipa": "ˈhæpi", "examples": [{ "text": "She looks happy.", "translation": "Она выглядит счастливой." }], "cefr": "A1", "note": null, "rank": 600 },
+    { "term": "to get up", "pos": "phrasal_verb", "translations": ["вставать"], "ipa": "ɡɛt ʌp", "examples": [{ "text": "I get up early.", "translation": "Я встаю рано." }], "cefr": "A1", "note": null, "rank": 800 }
+  ]
+}

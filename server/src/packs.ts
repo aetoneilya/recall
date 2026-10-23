@@ -1,19 +1,25 @@
 // Adding content packs (pack-data.ts) to a user's collection: one topic deck
 // per pack, named after it, with the pack's facts active in pack order. The
 // grammar handbook also brings each rule's exercise pool, and has a read API
-// of its own (handbook()).
-import { tagMatches, type ExerciseInput } from '@recall/core'
+// of its own (handbook()). A starter word set adds words to the English deck.
+import { tagMatches, type Cefr, type ExerciseInput } from '@recall/core'
 import type { Db } from './db.ts'
 import { tx } from './db.ts'
 import { addExercises, exerciseKeyOf } from './exercises.ts'
 import { createFact, findDuplicateFact, HANDBOOK_REF, type FactRow } from './facts.ts'
-import { currentPacks, GRAMMAR_TAG, type HandbookTopic, type Pack } from './pack-data.ts'
-import { createDeck, defaultDeck, findDeckByName, findDefaultDeck, getDeck, HttpError, resolveDeck, type DeckInfo } from './repo.ts'
+import type { Lexicon } from './lexicon.ts'
+import { currentPacks, GRAMMAR_TAG, packSize, type HandbookTopic, type Pack } from './pack-data.ts'
+import {
+  createDeck, createWord, defaultDeck, findDeckByName, findDefaultDeck, findDuplicate, getDeck, HttpError, mustHaveLanguages, resolveDeck, type DeckInfo,
+} from './repo.ts'
 
 export interface PackInfo {
   id: string
   name: string
   description: string
+  format: Pack['format']
+  // A starter word set's CEFR level (words packs only).
+  level?: Cefr
   count: number
   // Some of its cards are in the user's collection.
   added: boolean
@@ -39,22 +45,33 @@ export interface AddPackResult {
 
 const ref = (p: Pack, key: string) => `pack:${p.id}:${key}`
 
-// Which of the pack's items the user has, and the deck they're in.
+// A starter set's tag: "Starter/A1".
+export const STARTER_TAG = 'Starter'
+export const starterTag = (p: Pack) => `${STARTER_TAG}/${p.level}`
+
+// Which of the pack's items the user has, and the deck they're in (words
+// for a words pack, facts otherwise).
 function imported(db: Db, userId: string, p: Pack): { refs: Set<string>; deckId: string | null } {
-  const rows = db.prepare("SELECT import_ref, deck_id FROM facts WHERE user_id = ? AND import_ref LIKE ? ESCAPE '\\' ORDER BY created_at")
+  const table = p.words ? 'words' : 'facts'
+  const rows = db.prepare(`SELECT import_ref, deck_id FROM ${table} WHERE user_id = ? AND import_ref LIKE ? ESCAPE '\\' ORDER BY created_at`)
     .all(userId, `pack:${p.id.replace(/[\\%_]/g, (c) => '\\' + c)}:%`) as { import_ref: string; deck_id: string }[]
   return { refs: new Set(rows.map((r) => r.import_ref)), deckId: rows[0]?.deck_id ?? null }
 }
 
-// Missing counts what an add would bring: a question the target deck
-// already has from elsewhere is skipped by addPack, so it isn't missing.
+// Items an add would bring to `deck`: not imported yet, and not a word or
+// question the deck already has from elsewhere (addPack skips those).
+function missingItems(db: Db, userId: string, p: Pack, refs: Set<string>, deck: DeckInfo | null): number {
+  if (p.words) return p.words.filter((w, n) => !refs.has(ref(p, String(n))) && !(deck && findDuplicate(db, userId, deck.id, w.word.term, w.word.pos))).length
+  return p.facts.filter((f) => !refs.has(ref(p, f.key)) && !(deck && findDuplicateFact(db, userId, deck.id, f.front))).length
+}
+
 export function listPacks(db: Db, userId: string, now = new Date()): PackInfo[] {
   return currentPacks().map((p) => {
     const { refs, deckId } = imported(db, userId, p)
     const deck = (deckId ? getDeck(db, userId, deckId) : null) ?? defaultPackDeck(db, userId, p, now, false)
-    const missing = p.facts.filter((f) => !refs.has(ref(p, f.key)) && !(deck && findDuplicateFact(db, userId, deck.id, f.front))).length
     return {
-      id: p.id, name: p.name, description: p.description, count: p.facts.length, added: refs.size > 0, missing,
+      id: p.id, name: p.name, description: p.description, format: p.format, ...(p.level ? { level: p.level } : {}),
+      count: packSize(p), added: refs.size > 0, missing: missingItems(db, userId, p, refs, deck),
       ...(p.topics ? { missingExercises: missingExercises(db, userId, p) } : {}),
       ...(deck ? { deckId: deck.id } : {}), deckName: deck?.name ?? p.name,
     }
@@ -193,11 +210,11 @@ export function handbook(db: Db, userId: string, deckId: string): { topics: Hand
   return { topics, mine }
 }
 
-// The deck a pack goes to unless one is chosen: irregular verbs and the
-// grammar handbook into the user's English deck, other packs into a deck
-// named after them (made when it is added).
+// The deck a pack goes to unless one is chosen: starter words, irregular
+// verbs and the grammar handbook into the user's English deck, other packs
+// into a deck named after them (made when it is added).
 export function defaultPackDeck(db: Db, userId: string, p: Pack, now: Date, create = true): DeckInfo | null {
-  if (p.format === 'irregular-verbs' || p.format === 'grammar-handbook') return create ? defaultDeck(db, userId, now) : findDefaultDeck(db, userId)
+  if (p.format === 'words' || p.format === 'irregular-verbs' || p.format === 'grammar-handbook') return create ? defaultDeck(db, userId, now) : findDefaultDeck(db, userId)
   return findDeckByName(db, userId, p.name) ?? (create ? createDeck(db, userId, { name: p.name }, now) : null)
 }
 
@@ -209,8 +226,9 @@ export function defaultPackDeck(db: Db, userId: string, p: Pack, now: Date, crea
 // queue introduces new cards by creation time, so they come most frequent
 // first. Items added on a later run (a grown pack) come after those. The
 // handbook's rules then get the exercise items they lack (by import ref),
-// including rules added on an earlier run.
-export function addPack(db: Db, userId: string, packId: string, now: Date, { deckId: chosen }: { deckId?: string } = {}): AddPackResult {
+// including rules added on an earlier run. A words pack goes word by word
+// (addPackWords).
+export function addPack(db: Db, userId: string, packId: string, now: Date, { deckId: chosen, lex }: { deckId?: string; lex?: Lexicon | null } = {}): AddPackResult {
   const p = currentPacks().find((x) => x.id === packId)
   if (!p) throw new HttpError(404, `no pack ${packId}`)
   return tx(db, () => {
@@ -220,6 +238,7 @@ export function addPack(db: Db, userId: string, packId: string, now: Date, { dec
       deck = resolveDeck(db, userId, chosen)
       if (!deck) throw new HttpError(404, 'deck not found')
     } else deck = (deckId ? getDeck(db, userId, deckId) : null) ?? defaultPackDeck(db, userId, p, now)!
+    if (p.words) return addPackWords(db, userId, p, mustHaveLanguages(deck!), refs, now, lex)
     const out: AddPackResult = { deck: deck!, added: 0, alreadyAdded: 0, duplicates: 0, exercises: 0 }
     const into = deck!
     let i = 0
@@ -242,4 +261,32 @@ export function addPack(db: Db, userId: string, packId: string, now: Date, { dec
     if (p.topics) out.exercises = addTopicExercises(db, userId, p, now)
     return out
   })
+}
+
+// A starter set's missing words, as add_words adds them: active with both
+// cards, deduped against the deck (any status: a dropped word stays dropped,
+// and counts as a duplicate), tagged Starter/<level>, import_ref
+// pack:<id>:<n> (n = the item's place in the file), created a millisecond
+// apart in file order so new_per_day introduces them in that order.
+function addPackWords(db: Db, userId: string, p: Pack, deck: DeckInfo, refs: Set<string>, now: Date, lex?: Lexicon | null): AddPackResult {
+  const out: AddPackResult = { deck, added: 0, alreadyAdded: 0, duplicates: 0, exercises: 0 }
+  const tag = starterTag(p)
+  let i = 0
+  for (const [n, { word }] of p.words!.entries()) {
+    const importRef = ref(p, String(n))
+    if (refs.has(importRef)) {
+      out.alreadyAdded++
+      continue
+    }
+    if (findDuplicate(db, userId, deck.id, word.term, word.pos)) {
+      out.duplicates++
+      continue
+    }
+    createWord(db, userId, {
+      deckId: deck.id, word: { ...word, tags: [tag, ...word.tags.filter((t) => t !== tag)] }, status: 'active', createdBy: 'import',
+      importRef, createdAt: new Date(now.getTime() + i++),
+    }, now, lex)
+    out.added++
+  }
+  return out
 }

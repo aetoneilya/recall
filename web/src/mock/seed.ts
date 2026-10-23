@@ -370,3 +370,34 @@ export const grammar: SeedRule[] = [
     ],
   },
 ]
+
+// Two tiny invented starter word sets (the real ones are server/data/packs/starter-*.json).
+export interface SeedStarter {
+  id: string
+  name: string
+  level: 'A1' | 'A2'
+  description: string
+  items: { term: string; pos: PartOfSpeech; translations: string[]; ipa: string; examples: { text: string; translation: string }[]; cefr: 'A1' | 'A2'; note: string | null }[]
+}
+
+export const starterPacks: SeedStarter[] = [
+  {
+    id: 'starter-a1', name: 'Starter words A1', level: 'A1', description: 'The first everyday words, most common first.',
+    items: [
+      { term: 'house', pos: 'noun', translations: ['дом'], ipa: 'haʊs', examples: [{ text: 'Our house is near the park.', translation: 'Наш дом рядом с парком.' }], cefr: 'A1', note: null },
+      { term: 'to eat', pos: 'verb', translations: ['есть', 'кушать'], ipa: 'it', examples: [{ text: 'We eat dinner at seven.', translation: 'Мы ужинаем в семь.' }], cefr: 'A1', note: null },
+      { term: 'happy', pos: 'adjective', translations: ['счастливый', 'довольный'], ipa: 'ˈhæpi', examples: [{ text: 'She looks happy today.', translation: 'Она сегодня выглядит счастливой.' }], cefr: 'A1', note: null },
+      { term: 'to get up', pos: 'phrasal_verb', translations: ['вставать'], ipa: 'ɡɛt ʌp', examples: [{ text: 'I get up early on Mondays.', translation: 'По понедельникам я встаю рано.' }], cefr: 'A1', note: null },
+      { term: 'often', pos: 'adverb', translations: ['часто'], ipa: 'ˈɔfən', examples: [{ text: 'We often walk to work.', translation: 'Мы часто ходим на работу пешком.' }], cefr: 'A1', note: null },
+    ],
+  },
+  {
+    id: 'starter-a2', name: 'Starter words A2', level: 'A2', description: 'The next step: words for plans, places and feelings.',
+    items: [
+      { term: 'to borrow', pos: 'verb', translations: ['занимать', 'брать взаймы'], ipa: 'ˈbɑroʊ', examples: [{ text: 'Can I borrow your pen?', translation: 'Можно взять твою ручку?' }], cefr: 'A2', note: 'borrow — брать, lend — давать' },
+      { term: 'journey', pos: 'noun', translations: ['поездка', 'путешествие'], ipa: 'ˈdʒɝni', examples: [{ text: 'The journey took four hours.', translation: 'Поездка заняла четыре часа.' }], cefr: 'A2', note: null },
+      { term: 'worried', pos: 'adjective', translations: ['обеспокоенный'], ipa: 'ˈwɝid', examples: [{ text: 'He was worried about the test.', translation: 'Он волновался из-за теста.' }], cefr: 'A2', note: null },
+      { term: 'to look for', pos: 'phrasal_verb', translations: ['искать'], ipa: 'lʊk fɔr', examples: [{ text: "I'm looking for my keys.", translation: 'Я ищу ключи.' }], cefr: 'A2', note: null },
+    ],
+  },
+]

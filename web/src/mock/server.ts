@@ -46,7 +46,7 @@ import {
   type WordInput,
 } from '@recall/core'
 import type { CardSummary, Dashboard, Draft, ExerciseInfo, FactItem, Placement, ScalePoint, TestResult, TypeAnswer, VocabEstimate, WordItem } from '../lib/types.ts'
-import { autofillDictionary, baselineSrs, grammar, irregularVerbs, pseudowords, scale, testBands, topics as seedTopics, words as seedWords, type Plan, type SeedWord } from './seed.ts'
+import { autofillDictionary, baselineSrs, grammar, irregularVerbs, pseudowords, scale, starterPacks, testBands, topics as seedTopics, words as seedWords, type Plan, type SeedStarter, type SeedWord } from './seed.ts'
 
 const DAY = { timeZone: 'Europe/Moscow', startHour: 4 }
 const H = 3600_000
@@ -160,8 +160,42 @@ function packInfo() {
   const have = irregularVerbs.filter((v) => packRefs.has(packRef(v.verb)))
   const deckId = have.length ? db.facts.find((f) => f.id === packRefs.get(packRef(have[0]!.verb)))?.deckId : undefined
   const deck = deckId ? db.decks.find((d) => d.id === deckId) : db.decks.find((d) => d.targetLang === 'en')
-  return { ...PACK, count: irregularVerbs.length, added: have.length > 0, missing: irregularVerbs.length - have.length, deckId: deck?.id, deckName: deck?.name ?? PACK.name }
+  return { ...PACK, format: 'irregular-verbs', count: irregularVerbs.length, added: have.length > 0, missing: irregularVerbs.length - have.length, deckId: deck?.id, deckName: deck?.name ?? PACK.name }
 }
+
+// Starter word sets: words into the English deck, tagged Starter/<level>,
+// deduped like any add, idempotent by import ref (the item's place).
+const starterRefs = new Map<string, string>()
+const starterRef = (p: SeedStarter, n: number) => `pack:${p.id}:${n}`
+const englishDeck = () => db.decks.find((d) => d.targetLang === 'en') ?? db.decks.find(hasLangs) ?? db.decks[0]!
+function starterInfo(p: SeedStarter) {
+  const have = p.items.filter((_, n) => starterRefs.has(starterRef(p, n)))
+  const first = p.items.map((_, n) => db.words.find((w) => w.id === starterRefs.get(starterRef(p, n)))).find(Boolean)
+  const deck = first ? deckOf(first.deckId) : englishDeck()
+  const missing = p.items.filter((it, n) => !starterRefs.has(starterRef(p, n)) && !duplicateOf(deck.id, it.term, it.pos)).length
+  return { id: p.id, name: p.name, description: p.description, format: 'words', level: p.level, count: p.items.length, added: have.length > 0, missing, deckId: deck.id, deckName: deck.name }
+}
+function addStarter(p: SeedStarter, deckId: string | undefined, now: Date) {
+  const deck = deckId ? mustDeck(deckId) : deckOf(starterInfo(p).deckId)
+  if (!hasLangs(deck)) throw new Fail(400, `"${deck.name}" has no languages; words go into a deck with them`)
+  let added = 0
+  let duplicates = 0
+  p.items.forEach((it, n) => {
+    if (starterRefs.has(starterRef(p, n))) return
+    if (duplicateOf(deck.id, it.term, it.pos)) return void duplicates++
+    const at = new Date(now.getTime() + added)
+    const word: Word = {
+      id: id('wd'), deckId: deck.id, term: it.term, pos: it.pos, translations: it.translations, ipa: it.ipa, examples: it.examples, note: it.note,
+      tags: [`Starter/${p.level}`], freqRank: rankOf(it.term), cefr: it.cefr, status: 'active', createdBy: 'import', createdAt: at.toISOString(), updatedAt: at.toISOString(),
+    }
+    db.words.push(word)
+    for (const direction of ['forward', 'reverse'] as const) db.cards.push({ id: id('cd'), wordId: word.id, factId: null, direction, suspended: false, schedule: newCardState(at) })
+    starterRefs.set(starterRef(p, n), word.id)
+    added++
+  })
+  return { deck, added, alreadyAdded: p.items.length - added - duplicates, duplicates }
+}
+const allPacks = () => [packInfo(), ...starterPacks.map(starterInfo)]
 
 // The handbook pack's topics added to English (the mock's own, invented).
 const handbookTopics: { id: string; group: string; title: string; level: string; ruleFactId: string; cardFactIds: string[] }[] = []
@@ -1109,6 +1143,9 @@ const settings = {
   weeklyReportDay: 0,
   weeklyReportTime: '19:00',
   requestRetention: 0.9,
+  // ?mock=empty is a new account: the first-run wizard, then the gesture coach.
+  onboarded: variant !== 'empty',
+  coachSeen: variant !== 'empty',
 }
 // Personal FSRS weights once "trained" (POST /api/fsrs/optimize).
 const fsrsState = { weights: null as number[] | null, trainedAt: null as string | null, reviewsUsed: null as number | null, lastRun: 0 }
@@ -1135,13 +1172,16 @@ function me(now: Date) {
     weeklyReportTime: settings.weeklyReportTime,
     // Written exercises are graded by a fake Claude here (off with ?mock=noautofill).
     grading: mockControl.autofill,
+    onboarded: settings.onboarded,
+    coachSeen: settings.coachSeen,
   }
 }
 
 const isTime = (v: unknown) => typeof v === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(v)
 
 function patchMe(body: Body) {
-  const keys = ['timeZone', 'reminderTime', 'eveningReminderTime', 'weeklyReport', 'weeklyReportDay', 'weeklyReportTime', 'requestRetention']
+  const keys = ['timeZone', 'reminderTime', 'eveningReminderTime', 'weeklyReport', 'weeklyReportDay', 'weeklyReportTime', 'requestRetention', 'onboarded', 'coachSeen']
+  for (const k of ['onboarded', 'coachSeen']) if (k in body && typeof body[k] !== 'boolean') throw new Fail(400, `${k} must be a boolean`)
   for (const k of Object.keys(body)) if (!keys.includes(k)) throw new Fail(400, `unknown key ${k}`)
   if ('weeklyReportDay' in body && !(Number.isInteger(body.weeklyReportDay) && Number(body.weeklyReportDay) >= 0 && Number(body.weeklyReportDay) <= 6)) throw new Fail(400, 'weeklyReportDay must be 0-6')
   if ('weeklyReportTime' in body && !isTime(body.weeklyReportTime)) throw new Fail(400, 'must be HH:MM (24 h)')
@@ -1427,8 +1467,10 @@ function handle(method: string, url: URL, body: unknown): unknown {
 
   // ---------- packs ----------
 
-  if (p === '/api/packs') return { packs: [packInfo()] }
+  if (p === '/api/packs') return { packs: allPacks() }
   if (a === 'packs' && b && method === 'POST') {
+    const starter = starterPacks.find((x) => x.id === b)
+    if (starter) return { ...addStarter(starter, B.deckId ? String(B.deckId) : undefined, now), exercises: 0, packs: allPacks() }
     if (b !== PACK.id) throw new Fail(404, `no pack ${b}`)
     // The deck asked for, else where it already is, else the deck with English.
     const known = packInfo().deckId
@@ -1443,7 +1485,7 @@ function handle(method: string, url: URL, body: unknown): unknown {
       packRefs.set(packRef(v.verb), fact.id)
       added++
     })
-    return { deck, added, alreadyAdded: irregularVerbs.length - added, duplicates: 0, packs: [packInfo()] }
+    return { deck, added, alreadyAdded: irregularVerbs.length - added, duplicates: 0, packs: allPacks() }
   }
 
   if (a === 'exercises' && b) {

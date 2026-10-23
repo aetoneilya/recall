@@ -285,6 +285,31 @@ export const MIGRATIONS: Migration[] = [
   );
   `),
   },
+  // v11: access by request (the owner lets Telegram accounts in from the
+  // bot: allowed_users, next to OWNER_TELEGRAM_ID / ALLOW_USER_IDS) and the
+  // first-run wizard. Everyone who already has cards counts as onboarded,
+  // so nobody with a collection sees the wizard or the gesture coach.
+  `
+  CREATE TABLE allowed_users (
+    telegram_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    username TEXT,
+    added_at TEXT NOT NULL
+  );
+  -- One row per account that asked: pending until the owner answers; a deny is kept for the cooldown.
+  CREATE TABLE access_requests (
+    telegram_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    username TEXT,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'denied')),
+    requested_at TEXT NOT NULL,
+    decided_at TEXT
+  );
+  ALTER TABLE users ADD COLUMN onboarded INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE users ADD COLUMN coach_seen INTEGER NOT NULL DEFAULT 0;
+  UPDATE users SET onboarded = 1, coach_seen = 1
+    WHERE EXISTS (SELECT 1 FROM words WHERE words.user_id = users.id) OR EXISTS (SELECT 1 FROM facts WHERE facts.user_id = users.id);
+  `,
 ]
 
 function plainDecks(db: Db) {

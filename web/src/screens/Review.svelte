@@ -17,6 +17,7 @@
   import { dropCard } from '../lib/drop.ts'
   import { fsrs } from '../lib/fsrs.ts'
   import { counts, remaining } from '../lib/queue.ts'
+  import { coach } from '../lib/coach.svelte.ts'
   import { session, type ExerciseProgress } from '../lib/review.svelte.ts'
   import { navigate } from '../lib/router.svelte.ts'
   import { defaultThreshold, dirOf, dominantAxis, swipe, type SwipeDir } from '../lib/swipe.ts'
@@ -351,6 +352,7 @@
   // A rating button throws the card the way its swipe would.
   function rate(r: Rating) {
     if (!session.revealed || !item) return
+    coach.dismiss()
     const d = (Object.keys(byDir) as SwipeDir[]).find((k) => byDir[k] === r)!
     throwCard(d, BUTTON_SPEED, { x: 0, y: 0, rotate: 0 }, r, true)
   }
@@ -442,6 +444,7 @@
   }
 
   function tapCard() {
+    coach.dismiss()
     if (exTyping && exTap) {
       if (tap.done) nextItem()
     } else if (exTyping) exInput?.focus()
@@ -470,6 +473,8 @@
   const np = $derived(nextPose(dragging ? pull : 0, reduced))
 
   function onSwipeStart(_fx: number, fy: number) {
+    // The coach goes with the first touch; the gesture carries on (it never blocks it).
+    coach.dismiss()
     grabbedLow = fy >= 0.5
     pressed = true
     // The preview underneath is worked out for this moment.
@@ -695,6 +700,20 @@
           {/if}
         </div>
       {/key}
+      {#if coach.visible}
+        <!-- Once, on the first card after the wizard. It takes no touches:
+             the first tap or swipe goes to the card and dismisses it. -->
+        <div class="coach" aria-live="polite">
+          <p class="tap">Tap the card to flip it</p>
+          <div class="ways">
+            <span class="to-r"><Icon name="arrow" size={18} stroke={2.2} /> Good</span>
+            <span><Icon name="arrow" size={18} stroke={2.2} /> Hard</span>
+            <span class="to-d"><Icon name="arrow" size={18} stroke={2.2} /> Again</span>
+            <span class="to-u"><Icon name="arrow" size={18} stroke={2.2} /> Easy</span>
+          </div>
+          <p class="then">then swipe it to rate how well you knew it</p>
+        </div>
+      {/if}
     {:else}
       <Summary />
     {/if}
@@ -1170,6 +1189,67 @@
     background: var(--c);
     transform-origin: left;
     transform: scaleX(var(--pull));
+  }
+
+  /* The gesture coach: a quiet scrim over the card, no touches taken. */
+  .coach {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 24px;
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    text-align: center;
+    animation: coach-in var(--t-base) var(--ease-out);
+  }
+  @keyframes coach-in {
+    from {
+      opacity: 0;
+    }
+  }
+  .coach p {
+    margin: 0;
+  }
+  .coach .tap {
+    font-size: 19px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .coach .then {
+    font-size: 15px;
+    color: var(--muted);
+  }
+  .coach .ways {
+    display: grid;
+    grid-template-columns: repeat(2, auto);
+    gap: 10px 22px;
+    font-size: 17px;
+    font-weight: 500;
+    color: var(--text);
+  }
+  .coach .ways span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .coach .ways :global(svg) {
+    color: var(--accent);
+    transform: rotate(-90deg);
+  }
+  .coach .to-r :global(svg) {
+    transform: rotate(90deg);
+  }
+  .coach .to-d :global(svg) {
+    transform: rotate(180deg);
+  }
+  .coach .to-u :global(svg) {
+    transform: none;
   }
 
   /* The legend gets its own strip under the card's content: the content

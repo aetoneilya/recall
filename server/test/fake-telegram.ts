@@ -47,8 +47,13 @@ export function fakeBot(ctx: AppContext, files: Map<string, Uint8Array> = new Ma
     return { ok: true, result } as any
   })
   let updateId = 0
-  // Telegram sends the same first name with every update from a user.
+  // Telegram sends the same first name (and @username) with every update from a user.
   const names = new Map<number, string>()
+  const usernames = new Map<number, string>()
+  const profile = (id: number, p: { name?: string; username?: string }) => {
+    if (p.name) names.set(id, p.name)
+    if (p.username) usernames.set(id, p.username)
+  }
   const sentIds = () => calls.filter((c) => c.method === 'sendMessage').length
   const lastId = () => [...messages.keys()].at(-1)
   const deliver = async (update: object) => {
@@ -57,7 +62,8 @@ export function fakeBot(ctx: AppContext, files: Map<string, Uint8Array> = new Ma
   }
   const from = (id: number, name = names.get(id) ?? `user${id}`) => {
     names.set(id, name)
-    return { id, is_bot: false, first_name: name }
+    const username = usernames.get(id)
+    return { id, is_bot: false, first_name: name, ...(username ? { username } : {}) }
   }
   const base = (id: number, name?: string) => ({ message_id: ++updateId, date: Math.floor(Date.now() / 1000), chat: { id, type: 'private', first_name: name ?? names.get(id) ?? `user${id}` }, from: from(id, name) })
 
@@ -102,5 +108,7 @@ export function fakeBot(ctx: AppContext, files: Map<string, Uint8Array> = new Ma
       popup: made.find((c) => c.method === 'answerCallbackQuery')?.payload.text as string | undefined,
     }
   }
-  return { bot, queue, calls, messages, message, photo, document, buttons, data, press, last: () => messages.get(lastId()!) }
+  // The messages the bot sent to one chat, oldest first, with their ids.
+  const sentTo = (chatId: number) => [...messages].filter(([, m]) => m.chatId === chatId).map(([id, m]) => ({ id, ...m }))
+  return { bot, queue, calls, messages, message, photo, document, buttons, data, press, profile, sentTo, last: () => messages.get(lastId()!) }
 }

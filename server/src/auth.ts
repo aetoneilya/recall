@@ -191,7 +191,7 @@ export function authenticate(req: Request, ctx: AppContext): AuthResult {
   const initData = req.header('x-telegram-init-data')
   if (initData && cfg.botToken) {
     const tg = validateInitData(initData, cfg.botToken, now)
-    if (tg && isAllowed(cfg, tg.id)) return { user: ensureUser(db, cfg, tg.id, now, tg.first_name), via: 'telegram' }
+    if (tg && isAllowed(db, cfg, tg.id)) return { user: ensureUser(db, cfg, tg.id, now, tg.first_name), via: 'telegram' }
     if (tg) stranger = tg.id
   }
   const session = sessionUser(ctx, req)

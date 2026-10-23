@@ -33,7 +33,9 @@ else {
   if (cfg.ownerTelegramId === null) console.warn('OWNER_TELEGRAM_ID is not set: MCP_TOKEN and OWNER_PASSWORD have no owner to sign in as')
   if (!cfg.botToken) console.warn('BOT_TOKEN is not set: Telegram sign-in (Mini App and bot login) is off')
   if (!cfg.ownerPassword) console.warn('OWNER_PASSWORD is not set: the password fallback is off')
-  console.log(`access: owner ${cfg.ownerTelegramId ?? '-'}, ${cfg.allowUserIds.length} more allowed Telegram ids`)
+  // Counts only: Telegram ids stay out of the logs.
+  const fromBot = (db.prepare('SELECT count(*) AS n FROM allowed_users').get() as { n: number }).n
+  console.log(`access: owner ${cfg.ownerTelegramId === null ? 'not set' : 'set'}, ${cfg.allowUserIds.length} from ALLOW_USER_IDS, ${fromBot} let in from the bot`)
 }
 
 // HOST=127.0.0.1 behind a reverse proxy; all interfaces by default.

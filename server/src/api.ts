@@ -130,6 +130,9 @@ const MePatchBody = z.object({
   weeklyReportDay: z.number().int().min(0).max(6).optional(),
   weeklyReportTime: time.optional(),
   requestRetention: z.number().min(REQUEST_RETENTION.min).max(REQUEST_RETENTION.max).optional(),
+  // The first-run wizard is done (or skipped); the gesture coach was seen.
+  onboarded: z.boolean().optional(),
+  coachSeen: z.boolean().optional(),
 }).strict()
 const TokenBody = z.object({ name: z.string().trim().min(1).max(100) })
 
@@ -203,6 +206,9 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
       fsrs: fsrsInfo(ctx, u),
       // Write items can be graded here (Claude is configured); else the app skips them.
       grading: gradingAvailable(ctx),
+      // false: a new account, the app shows the first-run wizard (then the gesture coach once).
+      onboarded: u.onboarded,
+      coachSeen: u.coachSeen,
     }
   }
 
@@ -420,7 +426,7 @@ export function apiRouter(ctx: AppContext, limiter: LoginLimiter, nonceLimiter =
   // Adds the pack's missing cards (all of them the first time).
   r.post('/packs/:id', (req, res) => {
     const { deckId } = parse(z.object({ deckId: z.string().optional() }).strict(), req.body ?? {})
-    const out = addPack(db, uid(req), req.params.id as string, ctx.now(), { deckId })
+    const out = addPack(db, uid(req), req.params.id as string, ctx.now(), { deckId, lex: lex() })
     res.json({ ...out, deck: getDeck(db, uid(req), out.deck.id, today(req))!, packs: listPacks(db, uid(req), ctx.now()) })
   })
 

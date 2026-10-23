@@ -49,11 +49,17 @@ export interface Me {
   // 0 = Sunday.
   weeklyReportDay?: number
   weeklyReportTime?: string
+  // Newer servers only. false: a new account — the first-run wizard, then the
+  // gesture coach once (absent: neither).
+  onboarded?: boolean
+  coachSeen?: boolean
 }
 
 export type MePatch = Partial<Pick<Me, 'timeZone' | 'reminderTime' | 'eveningReminderTime' | 'weeklyReport' | 'weeklyReportDay' | 'weeklyReportTime'>> & {
   // 0.75–0.97.
   requestRetention?: number
+  onboarded?: boolean
+  coachSeen?: boolean
 }
 
 export interface ApiToken {
@@ -187,10 +193,15 @@ export interface WordDetail {
 export type NewWord = WordInput & { deckId?: string }
 
 // A content pack offered by the server (GET /api/packs).
+export type PackFormat = 'facts' | 'irregular-verbs' | 'grammar-handbook' | 'words'
+
 export interface PackInfo {
   id: string
   name: string
   description: string
+  // Newer servers only. words: a starter word set for `level`.
+  format?: PackFormat
+  level?: Cefr
   count: number
   added: boolean
   // Cards of it not in the collection yet.

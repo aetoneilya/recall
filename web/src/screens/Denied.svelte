@@ -3,8 +3,8 @@
   import { status } from '../lib/app.svelte.ts'
   import { showToast } from '../lib/toast.svelte.ts'
 
-  // A Telegram account that isn't on the allowlist. The id is what the owner
-  // adds to ALLOW_USER_IDS.
+  // A Telegram account that isn't allowed yet. The way in is the bot's
+  // Request access button; the id is there for asking the owner directly.
   const id = $derived(status.deniedId)
 
   async function copy() {
@@ -21,12 +21,12 @@
   <div class="empty">
     <Icon name="lock" size={40} stroke={1.6} />
     {#if id !== null}
-      <p><strong>Invite-only</strong>Mnemosyne is invite-only. Send this id to the owner:</p>
+      <p><strong>Invite-only</strong>Mnemosyne is invite-only. Ask for access in the bot: send it /start and tap Request access. Your Telegram id:</p>
       <div class="id">
         <span class="num">{id}</span>
         <button class="btn" onclick={copy}><Icon name="copy" size={16} /> Copy</button>
       </div>
-      <p class="hint">Once you're added, close and reopen the app.</p>
+      <p class="hint">Once the owner lets you in, close and reopen the app.</p>
     {:else}
       <p><strong>Couldn't sign you in</strong>Telegram didn't confirm who you are. Close the app and open it again from the bot.</p>
     {/if}

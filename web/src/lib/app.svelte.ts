@@ -32,10 +32,16 @@ export const status = $state({
   syncFailed: false,
   lastSync: 0,
   me: null as Me | null,
+  // `me` came from the server this visit (not the offline cache): the
+  // first-run wizard only runs then.
+  meFresh: false,
   day: { timeZone: 'Europe/Moscow', startHour: 4 } as DayOptions,
   telegram: false,
   mock: isMock,
 })
+
+// A coach dismissal not sent yet (coach.svelte.ts).
+export const COACH_PENDING = 'coachSeenPending'
 
 export let api: Api
 export let kv: AccountKV
@@ -116,6 +122,7 @@ export async function loadMe(): Promise<void> {
 
 export async function setMe(me: Me): Promise<void> {
   status.me = me
+  status.meFresh = true
   const was = kv.confirmed
   const r = await kv.claim(me.user.id)
   if (r === 'switched') {
@@ -124,6 +131,11 @@ export async function setMe(me: Me): Promise<void> {
     await Promise.all([outbox.persisted(), wordOutbox.persisted(), editOutbox.persisted()])
     location.reload()
     return
+  }
+  // The gesture coach dismissed while the server couldn't be told: tell it now.
+  if (me.coachSeen === false && (await kv.get<boolean>(COACH_PENDING))) {
+    status.me.coachSeen = true
+    void api.patchMe({ coachSeen: true }).then(() => kv.del(COACH_PENDING), () => {})
   }
   status.day = { timeZone: me.timeZone || status.day.timeZone, startHour: me.dayStartHour ?? status.day.startHour }
   void kv.set('day', { ...status.day })

@@ -107,7 +107,7 @@ describe('adding the handbook', () => {
     const ctx = makeCtx()
     const p = load()
     const en = deck(ctx, 20)
-    expect(listPacks(ctx.db, ctx.user.id)).toEqual([{ id: 'grammar-handbook', name: 'Grammar handbook', description: expect.any(String), count: 8, added: false, missing: 8, missingExercises: 0, deckId: en.id, deckName: 'English' }])
+    expect(listPacks(ctx.db, ctx.user.id)).toEqual([{ id: 'grammar-handbook', name: 'Grammar handbook', description: expect.any(String), format: 'grammar-handbook', count: 8, added: false, missing: 8, missingExercises: 0, deckId: en.id, deckName: 'English' }])
     const r = addPack(ctx.db, ctx.user.id, 'grammar-handbook', ctx.now())
     // 4 + 1 + 1 generated write items, 3 + 2 generated.
     expect(r).toMatchObject({ deck: { id: en.id }, added: 8, alreadyAdded: 0, duplicates: 0, exercises: 11 })

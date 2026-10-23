@@ -2,6 +2,7 @@
 // bot → ✅ pressed under "Log in to Mnemosyne on the web?" → the web's poll
 // gets a session cookie, once.
 import { afterEach, describe, expect, it } from 'vitest'
+import { ACCESS_TEXT } from '../src/bot-access.ts'
 import { LOGIN_TEXT } from '../src/bot.ts'
 import { answerLoginRef, createLoginNonce, openLoginNonce, pollLoginNonce } from '../src/login.ts'
 import { ensureUser, getUserByTelegramId } from '../src/users.ts'
@@ -55,9 +56,8 @@ describe('login via the bot', () => {
     expect(await pending.json()).toEqual({ status: 'pending', expiresAt: body.expiresAt })
     expect(pending.headers.get('set-cookie')).toBeNull()
 
-    // A stranger can't open it; they get their id back.
-    expect(await bot.message(STRANGER, `/start login_${body.nonce}`)).toBe(
-      `This is a private bot. Your Telegram id: ${STRANGER} — send it to the owner to get access.`)
+    // A stranger can't open it; they're offered to ask for access instead.
+    expect(await bot.message(STRANGER, `/start login_${body.nonce}`)).toBe(ACCESS_TEXT.intro)
     expect((await poll(url, body.nonce)).status).toBe(202)
     expect(getUserByTelegramId(ctx.db, STRANGER)).toBeNull()
 
@@ -179,7 +179,7 @@ describe('login via the bot', () => {
     const menu = bot.calls.find((c) => c.method === 'setChatMenuButton')!
     expect(menu.payload).toEqual({ chat_id: FRIEND, menu_button: { type: 'web_app', text: 'Review', web_app: { url: 'http://localhost:9' } } })
     expect(await bot.message(FRIEND, '/due')).toBe('0 cards due')
-    expect(await bot.message(STRANGER, '/start')).toMatch(/Your Telegram id: 7/)
+    expect(await bot.message(STRANGER, '/start')).toBe(ACCESS_TEXT.intro)
   })
 })
 

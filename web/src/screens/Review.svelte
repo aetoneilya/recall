@@ -19,8 +19,8 @@
   import { counts, remaining } from '../lib/queue.ts'
   import { session, type ExerciseProgress } from '../lib/review.svelte.ts'
   import { navigate } from '../lib/router.svelte.ts'
-  import { defaultThreshold, swipe, type Axis, type SwipeDir } from '../lib/swipe.ts'
-  import { BUTTON_SPEED, canArm, dragRise, dragScale, nextArmed, nextPose, PEEK_HOLD_MS, PEEK_SAFE_MS, peekReveals, plan, reducedMotion, releaseDir, releaseOutcome, snapMs, THROW_EASE, tilt, tiltOrigin } from '../lib/throw.ts'
+  import { defaultThreshold, dirOf, dominantAxis, swipe, type SwipeDir } from '../lib/swipe.ts'
+  import { BUTTON_SPEED, canArm, dragRise, dragScale, nextArmedDir, nextPose, PEEK_HOLD_MS, PEEK_SAFE_MS, peekReveals, plan, reducedMotion, releaseDir, releaseOutcome, snapMs, THROW_EASE, tilt, tiltOrigin } from '../lib/throw.ts'
   import { haptic } from '../lib/telegram.ts'
 
   const c = $derived(counts(session.queue))
@@ -258,15 +258,16 @@
     return { 1: formatInterval(now, p[1]), 2: formatInterval(now, p[2]), 3: formatInterval(now, p[3]), 4: formatInterval(now, p[4]) } as Record<Rating, string>
   })
 
+  // The drag's offset: free in 2D, no axis lock (lib/swipe.ts).
   let dx = $state(0)
   let dy = $state(0)
-  let axis = $state<Axis | null>(null)
   let dragging = $state(false)
   // Released short of the threshold: settling back over this many ms.
   let snapping = $state(0)
   // Grabbed in the lower half: the card pivots around the thumb.
   let grabbedLow = $state(true)
-  let armed = $state(false)
+  // The direction armed past its threshold (the pill lit), or null.
+  let armed = $state<SwipeDir | null>(null)
   // Where a drag starting mid snap-back continues from.
   let base = { x: 0, y: 0 }
   // The pose the next card steps up from once it is on top: the stacked
@@ -448,22 +449,23 @@
     else reveal()
   }
 
+  // The wash, the pill and arming follow the dominant direction right now.
+  const axis = $derived(dominantAxis(dx, dy))
   const dist = $derived(axis === 'y' ? dy : dx)
-  const dir = $derived<SwipeDir | null>(
-    !axis || Math.abs(dist) < 16 ? null : axis === 'x' ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up',
-  )
+  const dir = $derived<SwipeDir | null>(Math.abs(dist) < 16 ? null : dirOf(dx, dy))
   const lean = $derived<Rating | null>(dir ? byDir[dir] : null)
-  // Same distance swipe.ts commits at; crossing it ticks once.
+  // Same distances swipe.ts commits at, per axis; crossing one ticks once.
   const threshold = $derived(defaultThreshold(axis, stageWidth, stageHeight))
   const pull = $derived(Math.min(1, Math.abs(dist) / threshold))
-  const rotation = $derived(axis === 'x' ? tilt(dx, grabbedLow) : 0)
+  // Tilt from the horizontal offset, lift from the vertical progress: a
+  // diagonal drag does both.
+  const vertical = $derived(Math.min(1, Math.abs(dy) / defaultThreshold('y', stageWidth, stageHeight)))
+  const rotation = $derived(tilt(dx, grabbedLow))
   const origin = $derived(tiltOrigin(grabbedLow))
   // The drag pose grows out of the press lift (lib/throw.ts dragScale / dragRise).
-  const scale = $derived(reduced ? 1 : dragScale(pressed, axis, pull))
+  const scale = $derived(reduced ? 1 : dragScale(pressed, pull, vertical))
   const rise = $derived(reduced ? 0 : dragRise(pressed, pull))
-  const transform = $derived(
-    axis === 'y' ? `translate3d(0, ${dy + rise}px, 0) scale(${scale})` : `translate3d(${dx}px, ${rise}px, 0) rotate(${rotation}deg) scale(${scale})`,
-  )
+  const transform = $derived(`translate3d(${dx}px, ${dy + rise}px, 0) rotate(${rotation}deg) scale(${scale})`)
   // The next card eases up with the drag; one style on one element.
   const np = $derived(nextPose(dragging ? pull : 0, reduced))
 
@@ -481,19 +483,20 @@
     } else base = { x: 0, y: 0 }
   }
 
-  function onSwipeMove(x: number, y: number, a: Axis) {
+  function onSwipeMove(x: number, y: number) {
     dragging = true
     snapping = 0
-    axis = a
     dx = base.x + x
     dy = base.y + y
-    // Arms only once the answer has been visible long enough.
-    const on = armReady && nextArmed(armed, a === 'y' ? dy : dx, defaultThreshold(a, stageWidth, stageHeight))
-    if (on && !armed) haptic.select()
+    // Arms only once the answer has been visible long enough, on the
+    // dominant axis against its threshold.
+    const a = dominantAxis(dx, dy)
+    const on = armReady ? nextArmedDir(armed, dirOf(dx, dy), a === 'y' ? dy : dx, defaultThreshold(a, stageWidth, stageHeight)) : null
+    if (on && on !== armed) haptic.select()
     armed = on
   }
 
-  // Moves before the axis locks count for the peek's slop.
+  // Every move from the press counts for the peek's slop, inside the swipe's.
   function onSwipeRaw(x: number, y: number) {
     if (!session.revealed && peekable && peekReveals(Math.hypot(x, y), 0)) peekNow()
   }
@@ -509,25 +512,24 @@
   function resetDrag() {
     dragging = false
     pressed = false
-    armed = false
+    armed = null
     dx = dy = 0
-    axis = null
   }
 
   function onSwipeEnd(tracked: SwipeDir | null, _x: number, _y: number, v: number) {
-    const d = releaseDir(tracked, armed, axis, dist)
+    const d = releaseDir(tracked, armed)
     // Short of the threshold, or too soon after the answer appeared: back
     // in place, still revealed.
     if (!session.revealed || releaseOutcome(d, revealedAt, Date.now()) === 'spring' || !d) {
-      snapping = snapMs(dist)
+      snapping = snapMs(Math.hypot(dx, dy))
       dragging = false
       pressed = false
-      armed = false
+      armed = null
       dx = dy = 0
       return
     }
     usedSwipe()
-    throwCard(d, v, { x: dx, y: axis === 'y' ? dy + rise : rise, rotate: rotation }, byDir[d], false)
+    throwCard(d, v, { x: dx, y: dy + rise, rotate: rotation }, byDir[d], false)
   }
 
   function onKey(e: KeyboardEvent) {
@@ -678,7 +680,7 @@
           {/if}
           {#if dir && lean && intervals && armReady}
             <div class="wash {dir} {tone[lean]}" style="opacity: {pull * 0.6}"></div>
-            <div class="swipe-hint {dir} {tone[lean]}" class:armed style="opacity: {0.35 + pull * 0.65}; --pull: {pull}">
+            <div class="swipe-hint {dir} {tone[lean]}" class:armed={!!armed} style="opacity: {0.35 + pull * 0.65}; --pull: {pull}">
               <span class="what"><b>{names[lean]}</b> {intervals[lean]}</span>
               <span class="track"><span></span></span>
             </div>
@@ -984,6 +986,9 @@
   .card-wrap.dragging {
     transition: none;
     will-change: transform;
+    /* A claimed drag is the card's in 2D until release: no browser pan of
+       its own (swipe.ts also cancels every touchmove of it). */
+    touch-action: none;
   }
   /* The thrown card's copy, above the next one. */
   .stage :global(.ghost) {

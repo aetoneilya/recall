@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createTracker, defaultThreshold, lockAxis, release, SLOP, verticalAllowed, type ScrollState } from './swipe.ts'
+import { createTracker, defaultThreshold, dirOf, dominantAxis, pastSlop, release, SLOP, verticalAllowed, type ScrollState } from './swipe.ts'
 
 const fits: ScrollState = { top: 0, height: 400, client: 500 }
 const atTop: ScrollState = { top: 0, height: 1200, client: 500 }
@@ -16,15 +16,26 @@ function drag(opts: { axes: 'x' | 'xy'; scroll?: ScrollState | null; to: [number
   return { moves, last: moves.at(-1)!, end: t.end(opts.to[0], opts.to[1]) }
 }
 
-describe('lockAxis', () => {
+// Drives a tracker along a path of points, 16 ms apart, and lets go at the last.
+function path(points: [number, number][], opts: { axes?: 'x' | 'xy'; threshold?: number } = {}) {
+  const t = createTracker({ axes: opts.axes ?? 'xy', threshold: () => opts.threshold ?? 100 })
+  t.start(0, 0, 0, null)
+  const moves = points.map(([x, y], i) => t.move(x, y, (i + 1) * 16))
+  const [x, y] = points.at(-1)!
+  return { moves, end: t.end(x, y) }
+}
+
+describe('slop and dominant axis', () => {
   it('stays undecided inside the slop', () => {
-    expect(lockAxis(SLOP - 1, 0)).toBeNull()
-    expect(lockAxis(5, -8)).toBeNull()
+    expect(pastSlop(SLOP - 1, 0)).toBe(false)
+    expect(pastSlop(5, -8)).toBe(false)
+    expect(pastSlop(0, -SLOP)).toBe(true)
   })
-  it('picks the dominant direction once past it', () => {
-    expect(lockAxis(14, 6)).toBe('x')
-    expect(lockAxis(-6, 14)).toBe('y')
-    expect(lockAxis(13, -13)).toBe('x')
+  it('names the dominant axis and its direction; a tie goes sideways', () => {
+    expect(dominantAxis(14, 6)).toBe('x')
+    expect(dominantAxis(-6, 14)).toBe('y')
+    expect(dominantAxis(13, -13)).toBe('x')
+    expect([dirOf(30, 10), dirOf(-30, 10), dirOf(10, 30), dirOf(10, -30)]).toEqual(['right', 'left', 'down', 'up'])
   })
 })
 
@@ -46,16 +57,33 @@ describe('verticalAllowed', () => {
 
 describe('release', () => {
   it('maps each axis and sign to a direction', () => {
-    expect(release('x', 120, 0, 0, 0, 100)).toBe('right')
-    expect(release('x', -120, 0, 0, 0, 100)).toBe('left')
-    expect(release('y', 0, 120, 0, 0, 100)).toBe('down')
-    expect(release('y', 0, -120, 0, 0, 100)).toBe('up')
+    expect(release(120, 0, 0, 0, 100)).toBe('right')
+    expect(release(-120, 0, 0, 0, 100)).toBe('left')
+    expect(release(0, 120, 0, 0, 100)).toBe('down')
+    expect(release(0, -120, 0, 0, 100)).toBe('up')
   })
-  it('snaps back under the threshold unless flicked', () => {
-    expect(release('x', 80, 0, 0.1, 0, 100)).toBeNull()
-    expect(release('y', 0, -60, 0, -0.9, 100)).toBe('up')
-    expect(release('x', 30, 0, 2, 0, 100)).toBeNull()
-    expect(release('x', 60, 0, -0.9, 0, 100)).toBeNull()
+  it('decides by the dominant direction of the final displacement', () => {
+    // Good (right), Again (down), Easy (up) from diagonal end points.
+    expect(release(130, 60, 0, 0, 100)).toBe('right')
+    expect(release(40, 140, 0, 0, 100)).toBe('down')
+    expect(release(-90, -150, 0, 0, 100)).toBe('up')
+    // Near-equal: the larger one wins, whichever it is.
+    expect(release(121, 120, 0, 0, 100)).toBe('right')
+    expect(release(-120, 121, 0, 0, 100)).toBe('down')
+    // Each axis against its own threshold.
+    expect(release(0, 95, 0, 0, (a) => (a === 'y' ? 90 : 110))).toBe('down')
+    expect(release(105, 20, 0, 0, (a) => (a === 'y' ? 90 : 110))).toBeNull()
+  })
+  it('snaps back under the threshold unless flicked along the dominant axis', () => {
+    expect(release(80, 0, 0.1, 0, 100)).toBeNull()
+    expect(release(0, -60, 0, -0.9, 100)).toBe('up')
+    expect(release(30, 0, 2, 0, 100)).toBeNull()
+    expect(release(60, 0, -0.9, 0, 100)).toBeNull()
+    // A short fast flick, a little off-axis: its dominant axis decides.
+    expect(release(50, -20, 1.2, -0.4, 100)).toBe('right')
+    expect(release(-15, -48, -0.2, -1.1, 100)).toBe('up')
+    // Fast across the dominant axis is no flick along it.
+    expect(release(30, 50, 1.5, 0.1, 100)).toBeNull()
   })
 })
 
@@ -67,11 +95,29 @@ describe('createTracker', () => {
     expect(drag({ axes: 'xy', to: [0, -150] }).end.dir).toBe('up')
   })
 
-  it('locks the axis: a diagonal drag only moves along the dominant one', () => {
+  it('follows the finger in 2D: a diagonal drag keeps both offsets', () => {
     const r = drag({ axes: 'xy', to: [150, 90] })
-    expect(r.last.axis).toBe('x')
-    expect(r.last.dy).toBe(0)
+    expect(r.last).toMatchObject({ state: 'drag', axis: 'x', dx: 150, dy: 90, prevent: true })
     expect(r.end.dir).toBe('right')
+  })
+
+  it('has no axis lock: after a downward start, sideways moves still count', () => {
+    const r = path([[0, 6], [2, 14], [3, 20], [30, 24], [80, 28], [140, 30]])
+    expect(r.moves[2]).toMatchObject({ state: 'drag', axis: 'y', dx: 3, dy: 20 })
+    expect(r.moves.slice(3).map((m) => m.dx)).toEqual([30, 80, 140])
+    expect(r.moves.at(-1)!.axis).toBe('x')
+    // Every move of the drag stays ours, whichever way it heads.
+    expect(r.moves.slice(2).every((m) => m.prevent)).toBe(true)
+    // Starts down, ends right: Good.
+    expect(r.end.dir).toBe('right')
+  })
+
+  it('decides at release: starts right and ends down = Again; up-left, mostly up = Easy', () => {
+    expect(path([[14, 0], [30, 4], [40, 40], [45, 90], [50, 150]]).end.dir).toBe('down')
+    expect(path([[-4, -14], [-30, -50], [-60, -110], [-80, -150]]).end.dir).toBe('up')
+    // The release speed is along the final dominant axis.
+    const r = path([[14, 0], [30, 4], [40, 40], [45, 90], [50, 150]])
+    expect(r.end.v).toBeGreaterThan(2)
   })
 
   it('takes no flick from a drag held still before the release', () => {
@@ -86,13 +132,12 @@ describe('createTracker', () => {
     expect(t.end(60, 0, 2048)).toMatchObject({ dir: null, v: 0 })
   })
 
-  it('keeps the first locked axis even if the finger changes course', () => {
+  it('follows the finger when it changes course', () => {
     const t = createTracker({ axes: 'xy', threshold: () => 100 })
     t.start(0, 0, 0, null)
     t.move(0, 20, 16)
-    t.move(160, 30, 32)
-    const end = t.end(160, 30)
-    expect(end.dir).toBeNull()
+    expect(t.move(160, 30, 32)).toMatchObject({ axis: 'x', dx: 160, dy: 30 })
+    expect(t.end(160, 30).dir).toBe('right')
   })
 
   it('reports nothing and claims sideways motion while inside the slop', () => {
@@ -125,6 +170,21 @@ describe('createTracker', () => {
     expect(r.last.state).toBe('scroll')
     expect(r.end.dir).toBeNull()
     expect(drag({ axes: 'x', to: [150, 0] }).end.dir).toBe('right')
+    // Sideways, the vertical part isn't the gesture's: never down, never moved.
+    const d = drag({ axes: 'x', to: [60, 150] })
+    expect(d.last.state).toBe('scroll')
+    const s = path([[14, 0], [40, 60], [120, 150]], { axes: 'x' })
+    expect(s.moves.at(-1)).toMatchObject({ dx: 120, dy: 0, axis: 'x' })
+    expect(s.end.dir).toBe('right')
+  })
+
+  it('keeps scrolling once the slop says scroll, wherever the finger goes', () => {
+    // Mid-scroll content, a vertical start: native scrolling to the end.
+    const t = createTracker({ axes: 'xy', threshold: () => 100 })
+    t.start(0, 0, 0, middle)
+    t.move(1, 14, 16)
+    expect(t.move(160, 25, 32)).toMatchObject({ state: 'scroll', prevent: false })
+    expect(t.end(160, 25)).toMatchObject({ dir: null, wasDrag: false })
   })
 })
 

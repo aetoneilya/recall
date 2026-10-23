@@ -1,6 +1,6 @@
 // The Cards tab's list: one deck's words, questions and grammar rules,
 // searched, filtered and sorted together on the device.
-import { tagAncestors, tagMatches, type CardType, type Cefr, type Direction, type PartOfSpeech, type WordStatus } from '@recall/core'
+import { facetOptions, inReviewFilter, type CardFacts, type CardType, type Cefr, type Direction, type FacetItem, type PartOfSpeech, type ReviewFilter, type WordStatus } from '@recall/core'
 import { factMatches } from './factFilter.ts'
 import type { FactItem, WordItem } from './types.ts'
 import { dirState, matches, type DirState } from './wordFilter.ts'
@@ -13,10 +13,11 @@ export interface LibraryFilter {
   type: CardType | ''
   // All of these, each with what's under it ("Grammar" takes "Grammar/Tenses").
   tags: string[]
+  // A word passes when one of its cards is in this state.
   state: DirState | ''
   // 'all' hides nothing; '' (the default) hides rejected cards.
   status: WordStatus | 'all' | ''
-  // Words only.
+  // Words only: other cards pass them.
   pos: PartOfSpeech | ''
   cefr: Cefr | ''
   sort: LibrarySort
@@ -36,32 +37,38 @@ const lapses = (r: Row) => (r.kind === 'word' ? Math.max(r.item.cards.forward?.l
 const created = (r: Row) => r.item.createdAt
 const title = (r: Row) => (r.kind === 'word' ? r.item.term : r.item.front)
 
-export function libraryRows(words: WordItem[], facts: FactItem[], deckId: string, f: LibraryFilter): Row[] {
-  const tagsOk = (ts: string[]) => f.tags.every((t) => ts.some((c) => tagMatches(t, c)))
+// The type, tag, part-of-speech and level picks as a review filter, so the
+// list matches and counts like the review session (core.inReviewFilter /
+// facetOptions): one value per single-valued facet, tags AND.
+const asReviewFilter = (f: LibraryFilter): ReviewFilter => ({
+  types: f.type ? [f.type] : [],
+  tags: f.tags,
+  pos: f.pos ? [f.pos] : [],
+  cefr: f.cefr ? [f.cefr] : [],
+})
+
+// A row for the shared filter. No direction: the tab doesn't filter by it.
+const cardFacts = (r: Row): CardFacts & FacetItem =>
+  r.kind === 'word' ? { type: 'word', tags: r.item.tags, pos: r.item.pos, cefr: r.item.cefr } : { type: r.kind, tags: r.item.tags }
+
+const statesOf = (r: Row): Set<DirState> => {
+  const xs = r.kind === 'word' ? dirs.map((d) => dirState(r.item.cards[d])) : [dirState(r.item.card)]
+  return new Set(xs.filter((x): x is DirState => !!x))
+}
+
+// The deck's cards under the status picked and the search: what every
+// facet is counted among.
+function searched(words: WordItem[], facts: FactItem[], deckId: string, f: LibraryFilter): Row[] {
   const statusOk = (s: WordStatus) => (f.status === '' ? s !== 'rejected' : f.status === 'all' || s === f.status)
   const out: Row[] = []
-  if (!f.type || f.type === 'word') {
-    for (const w of words) {
-      if (w.deckId !== deckId || !statusOk(w.status)) continue
-      if (!tagsOk(w.tags)) continue
-      if (f.pos && w.pos !== f.pos) continue
-      if (f.cefr && w.cefr !== f.cefr) continue
-      if (f.state && !dirs.some((d) => dirState(w.cards[d]) === f.state)) continue
-      if (!matches(w, f.q)) continue
-      out.push({ kind: 'word', id: w.id, item: w })
-    }
-  }
-  if (f.type !== 'word' && !f.pos && !f.cefr) {
-    for (const x of facts) {
-      if (x.deckId !== deckId || !statusOk(x.status)) continue
-      const t = factType(x)
-      if (f.type && f.type !== t) continue
-      if (!tagsOk(x.tags)) continue
-      if (f.state && dirState(x.card) !== f.state) continue
-      if (!factMatches(x, f.q)) continue
-      out.push({ kind: t, id: x.id, item: x })
-    }
-  }
+  for (const w of words) if (w.deckId === deckId && statusOk(w.status) && matches(w, f.q)) out.push({ kind: 'word', id: w.id, item: w })
+  for (const x of facts) if (x.deckId === deckId && statusOk(x.status) && factMatches(x, f.q)) out.push({ kind: factType(x), id: x.id, item: x })
+  return out
+}
+
+export function libraryRows(words: WordItem[], facts: FactItem[], deckId: string, f: LibraryFilter): Row[] {
+  const rf = asReviewFilter(f)
+  const out = searched(words, facts, deckId, f).filter((r) => inReviewFilter(rf, cardFacts(r)) && (!f.state || statesOf(r).has(f.state)))
   const by: Record<LibrarySort, (a: Row, b: Row) => number> = {
     recent: (a, b) => created(b).localeCompare(created(a)) || a.id.localeCompare(b.id),
     alpha: (a, b) => sortKey(title(a)).localeCompare(sortKey(title(b))),
@@ -97,36 +104,22 @@ export interface Facets {
   states: { value: DirState; n: number }[]
 }
 
-// Drill-down: every choice narrows (AND), so an option's count is how many
-// of the cards already shown have it too — counted on `rows`, the list under
-// the full filter. A tag counts for each of its ancestors as well, once per
-// card. Options at 0 don't appear; the caller keeps the selected ones.
-export function libraryFacets(rows: Row[]): Facets {
-  const types: Partial<Record<CardType, number>> = {}
-  const tags = new Map<string, number>()
-  const pos = new Map<PartOfSpeech, number>()
-  const cefr = new Map<Cefr, number>()
-  const states = new Map<DirState, number>()
-  const bump = <K>(m: Map<K, number>, k: K) => m.set(k, (m.get(k) ?? 0) + 1)
-  for (const r of rows) {
-    types[r.kind] = (types[r.kind] ?? 0) + 1
-    const paths = new Set<string>()
-    for (const t of r.item.tags) for (const p of [...tagAncestors(t), t]) paths.add(p)
-    for (const p of paths) bump(tags, p)
-    const st = new Set<DirState>()
-    if (r.kind === 'word') {
-      bump(pos, r.item.pos)
-      if (r.item.cefr) bump(cefr, r.item.cefr)
-      for (const d of dirs) {
-        const x = dirState(r.item.cards[d])
-        if (x) st.add(x)
-      }
-    } else {
-      const x = dirState(r.item.card)
-      if (x) st.add(x)
-    }
-    for (const x of st) bump(states, x)
+// The pickers' options, as the review filter sheet counts them
+// (core.facetOptions): a type, part of speech, level or state counted under
+// the other picks (so the rest of its facet stays on offer), a tag under all
+// of them plus that tag (tags AND); options at 0 are hidden, picked ones
+// always stay. A tag counts for each of its ancestors too, once per card.
+export function libraryFacets(words: WordItem[], facts: FactItem[], deckId: string, f: LibraryFilter): Facets {
+  const rows = searched(words, facts, deckId, f)
+  const rf = asReviewFilter(f)
+  const shared = facetOptions(rows.filter((r) => !f.state || statesOf(r).has(f.state)).map(cardFacts), rf)
+  const states = new Map<DirState, number>(f.state ? [[f.state, 0]] : [])
+  for (const r of rows) if (inReviewFilter(rf, cardFacts(r))) for (const x of statesOf(r)) states.set(x, (states.get(x) ?? 0) + 1)
+  return {
+    types: Object.fromEntries(shared.types.map((t) => [t.value, t.n])),
+    tags: shared.tags,
+    pos: shared.pos,
+    cefr: shared.cefr,
+    states: [...states].map(([value, n]) => ({ value, n })).sort((a, b) => b.n - a.n || a.value.localeCompare(b.value)),
   }
-  const list = <K extends string>(m: Map<K, number>) => [...m].map(([value, n]) => ({ value, n })).sort((a, b) => b.n - a.n || a.value.localeCompare(b.value))
-  return { types, tags: list(tags), pos: list(pos), cefr: list(cefr), states: list(states) }
 }

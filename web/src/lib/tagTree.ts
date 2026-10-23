@@ -1,5 +1,5 @@
 // Hierarchical tags ("Grammar/Articles & nouns") as a tree for the filter
-// UIs. Filters drill down: every selected tag narrows the cards (AND), a
+// UIs. Tags drill down: every selected tag narrows the cards (AND), a
 // parent tag standing for "any tag under it".
 import { tagAncestors, tagLeaf, tagMatches } from '@recall/core'
 

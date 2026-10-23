@@ -9,10 +9,11 @@
   import TagTree from './TagTree.svelte'
 
   // "What to review" for one deck: card types, tags, and for words part of
-  // speech, level and direction; empty = everything. It drills down: each
-  // pick narrows (AND), and the server offers only options that still have
-  // cards under the draft, plus the picked ones. Today's count follows the
-  // draft; Done saves it on the deck.
+  // speech, level and direction; empty = everything. Within a row the picks
+  // add up (any of them: B2 and C1), except tags, which narrow (cards with
+  // all of them); the rows narrow each other. The server offers only options
+  // that have cards under the rest of the draft, plus the picked ones.
+  // Today's count follows the draft; Done saves it on the deck.
   let {
     deckId,
     deckName,
@@ -57,7 +58,8 @@
 
   const today = $derived(options ? options.counts.new + options.counts.learning + options.counts.review : null)
   const on = (key: keyof ReviewFilter, v: string) => ((draft?.[key] ?? []) as string[]).includes(v)
-  const hasWords = $derived(!!options?.types.some((t) => t.value === 'word'))
+  // The word rows go when the picked types leave no words.
+  const hasWords = $derived(!!options?.types.some((t) => t.value === 'word') && (!draft?.types?.length || draft.types.includes('word')))
 
   async function done() {
     saving = true
@@ -109,7 +111,7 @@
         {/each}
       </div>
     {/if}
-    <p class="note">Each pick narrows the cards further; only what still has cards is offered. Cards outside the filter wait and don't use the day's new cards.</p>
+    <p class="note">Picks in a row add up; tags and the rows narrow each other. Only what has cards is offered. Cards outside the filter wait and don't use the day's new cards.</p>
   {/if}
   <div class="actions">
     <button class="btn" onclick={() => (draft = null)} disabled={!draft}>Clear</button>

@@ -2,7 +2,8 @@
 //
 // The element keeps `touch-action: pan-y`, so the browser scrolls vertically
 // on its own and horizontal drags are always ours. Vertical swipes (opt-in
-// with `axes: 'xy'`) compete with that scrolling, so the rule is:
+// with `axes: 'xy'`) compete with that scrolling, so the rule, decided once
+// when the finger leaves the SLOP, is:
 //
 // - If the scroller's content fits, every vertical drag is a swipe.
 // - If it scrolls, a vertical drag is a swipe only when it *starts* at an
@@ -11,8 +12,11 @@
 //   so scrolling into an edge never fires a rating; a fresh drag from the
 //   edge does.
 //
-// The axis is locked once the finger has moved SLOP px; the dominant
-// direction wins for the rest of the gesture, so diagonals don't misfire.
+// Past the slop the gesture is either a scroll (the browser's, to the end)
+// or a drag. A drag (`axes: 'xy'`) follows the finger in 2D with no axis
+// lock: the direction is the dominant one of the displacement at release,
+// so a drag that starts down and ends right is a right swipe. Every move of
+// a drag cancels the native default, so the browser never takes it back.
 //
 // Touch input uses touch events (a non-passive touchmove can still claim a
 // gesture before WebKit starts scrolling, which pointer events + touch-action
@@ -29,11 +33,11 @@ export interface ScrollState {
 
 export const SLOP = 12
 
-// null while inside the slop; afterwards the dominant axis.
-export function lockAxis(dx: number, dy: number, slop = SLOP): Axis | null {
-  if (Math.max(Math.abs(dx), Math.abs(dy)) < slop) return null
-  return Math.abs(dx) >= Math.abs(dy) ? 'x' : 'y'
-}
+// The axis the displacement mostly lies along; a tie goes sideways.
+export const dominantAxis = (dx: number, dy: number): Axis => (Math.abs(dx) >= Math.abs(dy) ? 'x' : 'y')
+
+// Whether the finger has left the slop (and the gesture is decided).
+export const pastSlop = (dx: number, dy: number, slop = SLOP) => Math.max(Math.abs(dx), Math.abs(dy)) >= slop
 
 // Whether a vertical drag heading `dy` may be a swipe instead of a scroll.
 export function verticalAllowed(dy: number, s: ScrollState | null): boolean {
@@ -52,20 +56,31 @@ export function liveVelocity(v: number, lastMoveT: number, releaseT: number): nu
   return releaseT - lastMoveT > FLICK_WINDOW_MS ? 0 : v
 }
 
-// The committed direction on release: past the threshold, or a fast flick.
-export function release(axis: Axis, dx: number, dy: number, vx: number, vy: number, threshold: number): SwipeDir | null {
+// The direction a displacement points to along its dominant axis.
+export function dirOf(dx: number, dy: number): SwipeDir {
+  if (dominantAxis(dx, dy) === 'x') return dx > 0 ? 'right' : 'left'
+  return dy > 0 ? 'down' : 'up'
+}
+
+// The committed direction on release, from where the finger ended up: the
+// dominant axis of the whole displacement, past that axis's threshold or
+// flicked along it (fast that way, at least 40px out). The path there
+// doesn't matter.
+export function release(dx: number, dy: number, vx: number, vy: number, threshold: number | ((axis: Axis) => number)): SwipeDir | null {
+  const axis = dominantAxis(dx, dy)
   const d = axis === 'x' ? dx : dy
   const v = axis === 'x' ? vx : vy
+  const limit = typeof threshold === 'number' ? threshold : threshold(axis)
   const fast = Math.abs(v) > 0.55 && Math.abs(d) > 40 && Math.sign(v) === Math.sign(d)
-  if (Math.abs(d) <= threshold && !fast) return null
-  if (axis === 'x') return d > 0 ? 'right' : 'left'
-  return d > 0 ? 'down' : 'up'
+  if (Math.abs(d) <= limit && !fast) return null
+  return dirOf(dx, dy)
 }
 
 export interface MoveResult {
   state: 'pending' | 'drag' | 'scroll'
+  // While dragging: the dominant axis right now (it may change).
   axis: Axis | null
-  // Displacement along the locked axis; the other one is 0.
+  // The drag's displacement, both axes (dy is 0 with axes 'x').
   dx: number
   dy: number
   // Whether the native default (scrolling) should be cancelled.
@@ -73,7 +88,7 @@ export interface MoveResult {
 }
 
 // Gesture state machine, independent of the DOM.
-export function createTracker(opts: { axes: 'x' | 'xy'; threshold: () => number }) {
+export function createTracker(opts: { axes: 'x' | 'xy'; threshold: (axis: Axis) => number }) {
   let x0 = 0
   let y0 = 0
   let lastX = 0
@@ -83,15 +98,8 @@ export function createTracker(opts: { axes: 'x' | 'xy'; threshold: () => number 
   let vy = 0
   let scroll: ScrollState | null = null
   let state: MoveResult['state'] = 'pending'
-  let axis: Axis | null = null
-
-  const along = (dx: number, dy: number): MoveResult => ({
-    state,
-    axis,
-    dx: axis === 'x' ? dx : 0,
-    dy: axis === 'y' ? dy : 0,
-    prevent: state === 'drag',
-  })
+  // Vertical motion is part of the gesture only with axes 'xy'.
+  const vertical = (dy: number) => (opts.axes === 'xy' ? dy : 0)
 
   return {
     start(x: number, y: number, t: number, s: ScrollState | null) {
@@ -101,45 +109,46 @@ export function createTracker(opts: { axes: 'x' | 'xy'; threshold: () => number 
       vx = vy = 0
       scroll = s
       state = 'pending'
-      axis = null
     },
     move(x: number, y: number, t: number): MoveResult {
       const dx = x - x0
       const dy = y - y0
       if (state === 'pending') {
-        const a = lockAxis(dx, dy)
-        if (!a) {
+        const sideways = dominantAxis(dx, dy) === 'x'
+        if (!pastSlop(dx, dy)) {
           // Claim early what will be ours anyway, before the browser
           // commits to scrolling: sideways motion, or vertical motion
           // that couldn't scroll.
-          const mine = Math.abs(dx) >= Math.abs(dy) ? dx !== 0 : opts.axes === 'xy' && verticalAllowed(dy, scroll)
+          const mine = sideways ? dx !== 0 : opts.axes === 'xy' && verticalAllowed(dy, scroll)
           return { state, axis: null, dx: 0, dy: 0, prevent: mine }
         }
-        axis = a
-        state = a === 'x' || (opts.axes === 'xy' && verticalAllowed(dy, scroll)) ? 'drag' : 'scroll'
+        // Decided once: the scroll rule looks at how the gesture starts;
+        // a drag is then free in 2D until the finger lifts.
+        state = sideways || (opts.axes === 'xy' && verticalAllowed(dy, scroll)) ? 'drag' : 'scroll'
       }
-      if (state === 'drag') {
-        const dt = t - lastT
-        if (dt > 0) {
-          vx = 0.7 * ((x - lastX) / dt) + 0.3 * vx
-          vy = 0.7 * ((y - lastY) / dt) + 0.3 * vy
-        }
-        lastX = x
-        lastY = y
-        lastT = t
+      if (state !== 'drag') return { state, axis: null, dx: 0, dy: 0, prevent: false }
+      const dt = t - lastT
+      if (dt > 0) {
+        vx = 0.7 * ((x - lastX) / dt) + 0.3 * vx
+        vy = 0.7 * ((y - lastY) / dt) + 0.3 * vy
       }
-      return along(dx, dy)
+      lastX = x
+      lastY = y
+      lastT = t
+      return { state, axis: dominantAxis(dx, vertical(dy)), dx, dy: vertical(dy), prevent: true }
     },
-    // `v`: the release velocity along the locked axis, px/ms; `t`: the
-    // release time (without it, the last move's speed is taken as is).
+    // `v`: the release velocity along the final displacement's dominant
+    // axis, px/ms; `t`: the release time (without it, the last move's speed
+    // is taken as is).
     end(x: number, y: number, t = lastT): { dir: SwipeDir | null; wasDrag: boolean; v: number } {
       const wasDrag = state === 'drag'
+      const dx = x - x0
+      const dy = vertical(y - y0)
       const ux = liveVelocity(vx, lastT, t)
       const uy = liveVelocity(vy, lastT, t)
-      const dir = wasDrag && axis ? release(axis, x - x0, y - y0, ux, uy, opts.threshold()) : null
-      const v = axis === 'x' ? ux : axis === 'y' ? uy : 0
+      const dir = wasDrag ? release(dx, dy, ux, uy, opts.threshold) : null
+      const v = !wasDrag ? 0 : dominantAxis(dx, dy) === 'x' ? ux : uy
       state = 'pending'
-      axis = null
       return { dir, wasDrag, v }
     },
   }
@@ -154,13 +163,14 @@ export interface SwipeOptions {
   scroller?: () => HTMLElement | null | undefined
   // A gesture may start here: where it was grabbed, as fractions of the node (0..1).
   onstart?: (fx: number, fy: number) => void
+  // A drag's displacement (dy 0 with axes 'x') and its dominant axis now.
   onmove?: (dx: number, dy: number, axis: Axis) => void
-  // Every move from the press, before the axis locks too (peek's slop).
+  // Every move from the press, inside the slop too (peek's slop).
   onraw?: (dx: number, dy: number) => void
   // The press ended, dragged or not (before onend for a drag).
   onrelease?: (wasDrag: boolean) => void
   // Called on release with the committed direction (or null to snap back)
-  // and the release velocity along the axis, px/ms.
+  // and the release velocity along the dominant axis, px/ms.
   onend?: (dir: SwipeDir | null, dx: number, dy: number, v: number) => void
   threshold?: number
 }
@@ -175,9 +185,8 @@ const IGNORE = 'pre, .table-wrap, input, textarea, select, a, button'
 
 export function swipe(node: HTMLElement, initial: SwipeOptions) {
   let opts = initial
-  const threshold = (axis: Axis | null) => opts.threshold ?? defaultThreshold(axis, node.clientWidth, node.clientHeight)
-  let lockedAxis: Axis | null = null
-  const tracker = createTracker({ axes: opts.axes ?? 'x', threshold: () => threshold(lockedAxis) })
+  const threshold = (axis: Axis) => opts.threshold ?? defaultThreshold(axis, node.clientWidth, node.clientHeight)
+  const tracker = createTracker({ axes: opts.axes ?? 'x', threshold })
   // The active pointer or touch, or null.
   let active: number | null = null
   let kind: 'pointer' | 'touch' = 'pointer'
@@ -185,6 +194,8 @@ export function swipe(node: HTMLElement, initial: SwipeOptions) {
   let dy = 0
   let x0 = 0
   let y0 = 0
+  // The gesture is a drag: its moves are ours (touchmove cancelled).
+  let claimed = false
 
   const scrollState = (): ScrollState | null => {
     const el = opts.scroller?.()
@@ -198,7 +209,7 @@ export function swipe(node: HTMLElement, initial: SwipeOptions) {
     dx = dy = 0
     x0 = x
     y0 = y
-    lockedAxis = null
+    claimed = false
     tracker.start(x, y, t, scrollState())
     if (opts.onstart) {
       const r = node.getBoundingClientRect()
@@ -210,8 +221,8 @@ export function swipe(node: HTMLElement, initial: SwipeOptions) {
   const step = (x: number, y: number, t: number) => {
     opts.onraw?.(x - x0, y - y0)
     const r = tracker.move(x, y, t)
+    claimed = r.state === 'drag'
     if (r.state === 'drag') {
-      lockedAxis = r.axis
       dx = r.dx
       dy = r.dy
       opts.onmove?.(r.dx, r.dy, r.axis!)
@@ -221,6 +232,7 @@ export function swipe(node: HTMLElement, initial: SwipeOptions) {
 
   const finish = (x: number, y: number, t: number, cancelled: boolean) => {
     active = null
+    claimed = false
     const { dir, wasDrag, v } = tracker.end(x, y, t)
     opts.onrelease?.(wasDrag)
     if (!wasDrag) return
@@ -276,7 +288,13 @@ export function swipe(node: HTMLElement, initial: SwipeOptions) {
     kind = 'touch'
   }
   const tmove = (e: TouchEvent) => {
-    if (kind !== 'touch' || active === null) return
+    if (active === null) return
+    // A pen drag (pointer events) also sends touches on iOS: keep the
+    // browser from panning under it.
+    if (kind === 'pointer') {
+      if (claimed && e.cancelable) e.preventDefault()
+      return
+    }
     const t = find(e.changedTouches)
     if (!t) return
     const r = step(t.clientX, t.clientY, e.timeStamp)

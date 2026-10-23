@@ -32,9 +32,10 @@ import {
   type ExerciseInput,
   type Fact,
   type FactInput,
+  type FacetItem,
   formsLine,
+  facetOptions,
   inReviewFilter,
-  tagAncestors,
   tagMatches,
   type QueueItem,
   type Rating,
@@ -518,37 +519,16 @@ function deckTags(deckId: string) {
   return [...m].map(([tag, n]) => ({ tag, n })).sort((a, b) => b.n - a.n || a.tag.localeCompare(b.tag))
 }
 
-// "What to review", drilling down: today's count under the draft, and each
-// facet's options counted among the cards the draft already matches (every
-// pick narrows, AND); only options with cards, plus the picked ones. A tag
-// counts for its ancestors too, once per card.
+// "What to review": today's count under the draft, and the deck's options
+// as the server counts them (core.facetOptions over active words and facts,
+// a word with its enabled directions).
 function reviewOptions(deck: MockDeck, filter: ReviewFilter | null, now: Date) {
   const q = buildQueue(now, 10_000, deck.id, { deckId: deck.id, filter })
-  const owners = [...db.words, ...db.facts].filter((o) => o.deckId === deck.id && o.status === 'active')
-  const dirsOn = (['forward', 'reverse'] as const).filter((d) => enabled(deck, d))
-  // A word matches if one of its enabled directions does.
-  const matching = owners.filter((o) =>
-    'term' in o
-      ? dirsOn.some((d) => inReviewFilter(filter, { type: 'word', tags: o.tags, pos: o.pos, cefr: o.cefr, direction: d }))
-      : inReviewFilter(filter, { type: typeOf(o), tags: o.tags }),
-  )
-  const count = <T extends string>(xs: T[][], picked: readonly T[] = []) => {
-    const m = new Map<T, number>()
-    for (const set of xs) for (const x of new Set(set)) m.set(x, (m.get(x) ?? 0) + 1)
-    for (const p of picked) if (!m.has(p)) m.set(p, 0)
-    return [...m].map(([value, n]) => ({ value, n })).sort((a, b) => b.n - a.n || a.value.localeCompare(b.value))
-  }
-  const words = matching.filter((o): o is Word => 'term' in o)
-  const wordsPossible = !filter?.types?.length || filter.types.includes('word')
-  const paths = (tags: string[]) => tags.flatMap((t) => [...tagAncestors(t), t])
-  return {
-    counts: q.counts,
-    types: count(matching.map((o) => [typeOf(o)]), filter?.types),
-    tags: count(matching.map((o) => paths(o.tags)), filter?.tags),
-    pos: wordsPossible ? count(words.map((w) => [w.pos]), filter?.pos) : [],
-    cefr: wordsPossible ? count(words.map((w) => (w.cefr ? [w.cefr] : [])), filter?.cefr) : [],
-    directions: wordsPossible && words.length ? count(words.map(() => dirsOn.filter((d) => !filter?.directions?.length || filter.directions.includes(d))), filter?.directions) : [],
-  }
+  const directions = (['forward', 'reverse'] as const).filter((d) => enabled(deck, d))
+  const items: FacetItem[] = [...db.words, ...db.facts]
+    .filter((o) => o.deckId === deck.id && o.status === 'active')
+    .map((o) => ('term' in o ? { type: 'word', tags: o.tags, pos: o.pos, cefr: o.cefr, directions } : { type: typeOf(o), tags: o.tags }))
+  return { counts: q.counts, ...facetOptions(items, filter) }
 }
 
 // --- words -----------------------------------------------------------------

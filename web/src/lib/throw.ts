@@ -1,6 +1,6 @@
 // Card motion numbers (web/DESIGN.md "Motion"): the drag's rotation, the
 // snap-back, and a throw whose start speed matches the finger's.
-import type { Axis, SwipeDir } from './swipe.ts'
+import type { SwipeDir } from './swipe.ts'
 
 export const THROW_EASE = 'cubic-bezier(0.3, 0.6, 0.5, 1)'
 // Button commits throw as if released at this speed.
@@ -10,7 +10,8 @@ const MAX_ROT = 8
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
-// Sideways tilt: 0.06°/px up to 8°. Grabbed in the lower half the card
+// Tilt follows the horizontal displacement, whatever the vertical one:
+// 0.06°/px up to 8°. Grabbed in the lower half the card
 // pivots around the thumb below it (clockwise to the right); in the upper
 // half around a point above it (the other way).
 export function tilt(dx: number, grabbedLow: boolean): number {
@@ -20,7 +21,8 @@ export function tilt(dx: number, grabbedLow: boolean): number {
 
 export const tiltOrigin = (grabbedLow: boolean) => (grabbedLow ? '50% 110%' : '50% -10%')
 
-// Vertical drags lift the card a little instead: 1 → 0.985 over the threshold.
+// Vertical travel lifts the card a little: 1 → 0.985 over the vertical
+// threshold (a diagonal drag tilts and lifts).
 export const lift = (pull: number) => 1 - 0.015 * clamp(pull, 0, 1)
 
 // Released short of the threshold: settles back, longer from further away.
@@ -32,15 +34,20 @@ export function nextArmed(armed: boolean, d: number, threshold: number): boolean
   return armed ? Math.abs(d) >= threshold * 0.85 : Math.abs(d) > threshold
 }
 
+// The armed direction after a move: `dir` is the dominant direction now, `d`
+// the distance along its axis, `threshold` that axis's. The hysteresis holds
+// only while the direction stays the same; a new dominant direction arms
+// afresh, past its own threshold.
+export function nextArmedDir(armed: SwipeDir | null, dir: SwipeDir | null, d: number, threshold: number): SwipeDir | null {
+  if (!dir) return null
+  return nextArmed(armed === dir, d, threshold) ? dir : null
+}
+
 // The direction a release commits to. An armed swipe (the pill lit) commits
 // its way even if pulled back between 85% and 100% of the threshold — what
 // the pill says is what happens; otherwise the tracker's verdict (past the
-// threshold, or a flick).
-export function releaseDir(tracked: SwipeDir | null, armed: boolean, axis: Axis | null, d: number): SwipeDir | null {
-  if (!armed || !axis || d === 0) return tracked
-  if (axis === 'x') return d > 0 ? 'right' : 'left'
-  return d > 0 ? 'down' : 'up'
-}
+// threshold, or a flick, along the dominant axis).
+export const releaseDir = (tracked: SwipeDir | null, armed: SwipeDir | null): SwipeDir | null => armed ?? tracked
 
 export interface Throw {
   // Where the card ends, off the stage, and how long it takes to get there.
@@ -53,6 +60,7 @@ export interface Throw {
 
 // From the card's current offset (and tilt) to off the stage plus 40px, in
 // T = 2·D / v so that the curve's initial slope (2) gives the finger's speed.
+// The other axis keeps its offset, so a diagonal drag leaves from where it is.
 export function plan(dir: SwipeDir, at: { x: number; y: number; rotate: number }, v: number, stage: { width: number; height: number }): Throw {
   const horizontal = dir === 'left' || dir === 'right'
   const sign = dir === 'right' || dir === 'down' ? 1 : -1
@@ -62,8 +70,8 @@ export function plan(dir: SwipeDir, at: { x: number; y: number; rotate: number }
   const speed = Math.max(Math.abs(v), MIN_SPEED)
   const ms = clamp((2 * d) / speed, 160, 260)
   return horizontal
-    ? { x: target, y: 0, rotate: clamp(at.rotate * 1.4, -MAX_ROT * 1.4, MAX_ROT * 1.4), scale: 1, ms }
-    : { x: 0, y: target, rotate: 0, scale: 0.985, ms }
+    ? { x: target, y: at.y, rotate: clamp(at.rotate * 1.4, -MAX_ROT * 1.4, MAX_ROT * 1.4), scale: 1, ms }
+    : { x: at.x, y: target, rotate: at.rotate, scale: 0.985, ms }
 }
 
 export const reducedMotion = () => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -75,11 +83,13 @@ export const PRESS_SCALE = 1.02
 export const PRESS_Y = -2
 
 // The drag's scale, starting from the press lift and easing into the drag
-// pose by the threshold (1 sideways, `lift` vertically), so picking the card
-// up and dragging it is one motion. `pull` is the drag's progress, 0..1.
-export function dragScale(pressed: boolean, axis: 'x' | 'y' | null, pull: number): number {
+// pose by the threshold (`lift` of the vertical progress: 1 sideways, 0.985
+// straight down or up), so picking the card up and dragging it is one
+// motion. `pull` is the drag's progress along its dominant axis, `vertical`
+// the vertical one, both 0..1.
+export function dragScale(pressed: boolean, pull: number, vertical: number): number {
   const p = clamp(pull, 0, 1)
-  const to = axis === 'y' ? lift(p) : 1
+  const to = lift(vertical)
   return pressed ? PRESS_SCALE + (to - PRESS_SCALE) * p : to
 }
 

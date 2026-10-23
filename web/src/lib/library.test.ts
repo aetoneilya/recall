@@ -33,8 +33,10 @@ describe('the Cards list', () => {
     expect(ids({ tags: ['Grammar'] })).toEqual(['rule:f4'])
     expect(ids({ tags: ['Gram'] })).toEqual([])
     expect(ids({ q: 'deadlock' })).toEqual(['fact:f5'])
-    expect(ids({ pos: 'phrasal_verb' })).toEqual(['word:w1'])
-    expect(ids({ cefr: 'B1' })).toEqual(['word:w1'])
+    expect(ids({ type: 'word', pos: 'phrasal_verb' })).toEqual(['word:w1'])
+    expect(ids({ type: 'word', cefr: 'B1' })).toEqual(['word:w1'])
+    // Word-only fields never exclude the other cards.
+    expect(ids({ pos: 'phrasal_verb' })).toEqual(['fact:f5', 'rule:f4', 'word:w1'])
   })
 
   it('the header total follows the status picked, so Dropped is never "1 of" the active count', () => {
@@ -48,26 +50,45 @@ describe('the Cards list', () => {
   })
 })
 
-describe('drill-down facets', () => {
+describe('facets like the review filter', () => {
   const w = (id: string, p: Partial<WordItem>) => word(id, id, p)
   const words = [
     w('a', { pos: 'verb', cefr: 'B1', tags: ['Books/Wuthering Heights', 'claude'] }),
-    w('b', { pos: 'verb', cefr: 'B2', tags: ['Books/Dracula'] }),
+    w('b', { pos: 'verb', cefr: 'B2', tags: ['Books/Dracula'], cards: { forward: card({ state: 'review', retrievability: 0.95 }), reverse: card() } }),
     w('c', { pos: 'noun', cefr: 'B2', tags: ['Books/Dracula', 'Books/Wuthering Heights'] }),
+    w('d', { pos: 'adverb', cefr: 'C1', tags: ['claude'] }),
   ]
-  const facets = (f: Partial<LibraryFilter>) => libraryFacets(libraryRows(words, [], 'dk_en', { ...emptyLibraryFilter(), ...f }))
+  const facts = [fact('f1', 'What is a deadlock?', { tags: ['Books/Dracula'] })]
+  const facets = (f: Partial<LibraryFilter>) => libraryFacets(words, facts, 'dk_en', { ...emptyLibraryFilter(), ...f })
+  const rows = (f: Partial<LibraryFilter>) => libraryRows(words, facts, 'dk_en', { ...emptyLibraryFilter(), ...f }).map((r) => r.id)
 
-  it('counts options among the cards already shown, so every choice narrows', () => {
-    // The owner's example: with "verb" picked, "noun" isn't offered — no card is both.
-    expect(facets({ pos: 'verb' }).pos).toEqual([{ value: 'verb', n: 2 }])
-    expect(facets({}).pos).toEqual([{ value: 'verb', n: 2 }, { value: 'noun', n: 1 }])
-    // Two tags: cards with both.
-    expect(libraryRows(words, [], 'dk_en', { ...emptyLibraryFilter(), tags: ['Books/Dracula', 'Books/Wuthering Heights'] }).map((r) => r.id)).toEqual(['c'])
-    // A parent counts each card once, however many of its children it has.
-    expect(facets({}).tags.find((t) => t.value === 'Books')).toEqual({ value: 'Books', n: 3 })
-    expect(facets({ tags: ['Books/Dracula'] }).tags).toEqual([
+  it('keeps the rest of a picked facet on offer, counted under the other picks', () => {
+    // The owner's example: with "verb" picked, "noun" is still offered with
+    // its count under the tag; "adverb" is hidden, no adverb has the tag.
+    expect(facets({ type: 'word', pos: 'verb', tags: ['Books'] }).pos).toEqual([{ value: 'verb', n: 2 }, { value: 'noun', n: 1 }])
+    expect(facets({ type: 'word', pos: 'verb' }).pos).toEqual([{ value: 'verb', n: 2 }, { value: 'adverb', n: 1 }, { value: 'noun', n: 1 }])
+    // The other facets count under the whole selection.
+    expect(facets({ type: 'word', pos: 'verb' }).cefr).toEqual([{ value: 'B1', n: 1 }, { value: 'B2', n: 1 }])
+    // The type chips: each counted under the other picks.
+    expect(facets({ type: 'rule', tags: ['Books/Dracula'] }).types).toEqual({ word: 2, fact: 1, rule: 0 })
+    expect(facets({ cefr: 'B2' }).cefr).toEqual([{ value: 'B2', n: 2 }, { value: 'B1', n: 1 }, { value: 'C1', n: 1 }])
+    // State is single-valued too: the other states stay, under the other picks.
+    expect(facets({ state: 'known' }).states).toEqual([{ value: 'new', n: 5 }, { value: 'known', n: 1 }])
+    expect(rows({ state: 'known' })).toEqual(['b'])
+  })
+
+  it('ANDs tags: two tags = cards with both; a parent counts each card once; tags at 0 are hidden', () => {
+    expect(rows({ tags: ['Books/Dracula', 'Books/Wuthering Heights'] })).toEqual(['c'])
+    expect(facets({}).tags.find((t) => t.value === 'Books')).toEqual({ value: 'Books', n: 4 })
+    expect(facets({ type: 'word', tags: ['Books/Dracula'] }).tags).toEqual([
       { value: 'Books', n: 2 }, { value: 'Books/Dracula', n: 2 }, { value: 'Books/Wuthering Heights', n: 1 },
     ])
-    expect(facets({ cefr: 'B2' }).cefr).toEqual([{ value: 'B2', n: 2 }])
+  })
+
+  it('keeps a picked option at 0', () => {
+    const f = facets({ type: 'word', pos: 'verb', tags: ['claude', 'Books/Dracula'] })
+    expect(f.pos).toEqual([{ value: 'verb', n: 0 }])
+    expect(f.tags).toEqual([{ value: 'Books/Dracula', n: 0 }, { value: 'claude', n: 0 }])
+    expect(facets({ state: 'suspended' }).states.find((s) => s.value === 'suspended')).toEqual({ value: 'suspended', n: 0 })
   })
 })

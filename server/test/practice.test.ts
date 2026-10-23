@@ -103,6 +103,9 @@ describe('practice', () => {
     rate(ctx, cardId, 1, hours(ctx, -0.5))
     updateDeck(ctx.db, ctx.user.id, d.id, { reviewFilter: { types: ['rule'] } })
     expect(practiceDeck(ctx.db, ctx.user.id, d.id, TZ, ctx.now())).toMatchObject([{ kind: 'fact', fact: { id: fact.id }, exercises: [{}, {}, {}] }])
+    // Two types: either of them.
+    updateDeck(ctx.db, ctx.user.id, d.id, { reviewFilter: { types: ['rule', 'word'] } })
+    expect(practiceDeck(ctx.db, ctx.user.id, d.id, TZ, ctx.now()).map((i) => i.kind).sort()).toEqual(['fact', 'word', 'word', 'word', 'word'])
   })
 
   it('gives one rule three rounds with different exercises', () => {

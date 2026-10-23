@@ -269,9 +269,10 @@ export interface ReviewOptions {
 }
 
 // The review filter sheet: today's count under a draft filter (not saved)
-// and the deck's options, drill-down (core.facetOptions): an option counted
-// as the draft plus that option, active words and facts, a word once per
-// enabled direction for `directions`.
+// and the deck's options (core.facetOptions): a type, part of speech, level
+// or direction counted under the draft's other facets, a tag under the whole
+// draft plus that tag; active words and facts, a word once per enabled
+// direction for `directions`.
 export function reviewOptions(db: Db, userId: string, opts: DayOptions, now: Date, deckId: string, filter: ReviewFilter | null): ReviewOptions {
   const deck = getDeck(db, userId, deckId)
   if (!deck) throw new HttpError(404, 'deck not found')

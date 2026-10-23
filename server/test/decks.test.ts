@@ -113,6 +113,12 @@ describe('the per-deck queue and its review filter', () => {
     updateDeck(ctx.db, ctx.user.id, en.id, { reviewFilter: { types: ['word'], cefr: ['A2'] } })
     expect(fronts(buildQueue(ctx.db, ctx.user.id, TZ, ctx.now(), { deckId: en.id }))).toEqual(['bone'])
     expect(getDeck(ctx.db, ctx.user.id, en.id)!.reviewFilter).toEqual({ types: ['word'], cefr: ['A2'] })
+    // Two values of one facet: either of them.
+    updateDeck(ctx.db, ctx.user.id, en.id, { reviewFilter: { types: ['word'], cefr: ['A2', 'B1'] } })
+    expect(fronts(buildQueue(ctx.db, ctx.user.id, TZ, ctx.now(), { deckId: en.id }))).toEqual(['to give up', 'bone'])
+    updateDeck(ctx.db, ctx.user.id, en.id, { reviewFilter: { types: ['word', 'rule'], pos: ['noun'] } })
+    expect(fronts(buildQueue(ctx.db, ctx.user.id, TZ, ctx.now(), { deckId: en.id }))).toEqual(['bone', 'Prepositions of time'])
+    updateDeck(ctx.db, ctx.user.id, en.id, { reviewFilter: { types: ['word'], cefr: ['A2'] } })
     // The deck counts and the bot follow the filters.
     expect(buildQueue(ctx.db, ctx.user.id, TZ, ctx.now()).decks.map((d) => [d.name, d.counts.new])).toEqual([['English', 1], ['Programming', 2]])
     expect(dueCounts(ctx.db, ctx.cfg, ctx.user, ctx.now())).toEqual({ due: 3, decks: [{ name: 'English', due: 1 }, { name: 'Programming', due: 2 }] })
@@ -124,12 +130,17 @@ describe('the per-deck queue and its review filter', () => {
     const { ctx, en } = setup()
     const o = reviewOptions(ctx.db, ctx.user.id, TZ, ctx.now(), en.id, { types: ['word'] })
     expect(o.counts).toEqual({ new: 2, learning: 0, review: 0 })
-    // Drill-down: only options that still match something with the draft.
-    expect(o.types).toEqual([{ value: 'word', n: 2 }])
+    // A type's other values stay on offer, counted without the type; tags
+    // count under the whole draft, so Grammar (no word has it) is gone.
+    expect(o.types).toEqual([{ value: 'word', n: 2 }, { value: 'rule', n: 1 }])
     expect(o.tags).toEqual([{ value: 'phrasal', n: 1 }])
     expect(o.pos).toEqual([{ value: 'noun', n: 1 }, { value: 'phrasal_verb', n: 1 }])
     expect(o.cefr).toEqual([{ value: 'A2', n: 1 }, { value: 'B1', n: 1 }])
     expect(o.directions.map((d) => d.value)).toEqual(['forward', 'reverse'])
+    // With a noun picked, the phrasal verb is still offered; B1 (only the
+    // phrasal verb's) is not.
+    const noun = reviewOptions(ctx.db, ctx.user.id, TZ, ctx.now(), en.id, { types: ['word'], pos: ['noun'] })
+    expect([noun.counts.new, noun.pos, noun.cefr]).toEqual([1, [{ value: 'noun', n: 1 }, { value: 'phrasal_verb', n: 1 }], [{ value: 'A2', n: 1 }]])
     // Not saved.
     expect(getDeck(ctx.db, ctx.user.id, en.id)!.reviewFilter).toBeNull()
   })

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { lift, nextArmed, plan, releaseDir, snapMs, tilt, tiltOrigin } from './throw.ts'
+import { lift, nextArmed, nextArmedDir, plan, releaseDir, snapMs, tilt, tiltOrigin } from './throw.ts'
 
 describe('card motion', () => {
   it('tilts 0.06°/px up to 8°, around the thumb or a point above', () => {
@@ -32,8 +32,11 @@ describe('card motion', () => {
     // A fast flick: D = 415 − 100 = 315, v = 3 → 210 ms.
     expect(plan('right', { x: 100, y: 0, rotate: 6 }, 3, stage).ms).toBeCloseTo(210)
     expect(plan('left', { x: -60, y: 0, rotate: -3 }, -10, stage)).toMatchObject({ x: -415, ms: 160 })
-    // Vertical: no tilt, a slight lift.
+    // Vertical: a slight lift, no extra tilt.
     expect(plan('down', { x: 0, y: 50, rotate: 0 }, 1.6, stage)).toMatchObject({ x: 0, y: 640, rotate: 0, scale: 0.985, ms: 260 })
+    // From a diagonal drag the other axis keeps its offset (and tilt).
+    expect(plan('right', { x: 120, y: 40, rotate: 5 }, 2, stage)).toMatchObject({ x: 415, y: 40 })
+    expect(plan('down', { x: 30, y: 120, rotate: 1.8 }, 2, stage)).toMatchObject({ x: 30, y: 640, rotate: 1.8 })
     // A button: from rest at 1.6 px/ms.
     expect(plan('up', { x: 0, y: 0, rotate: 0 }, 1.6, { width: 375, height: 100 }).ms).toBeCloseTo(175)
   })
@@ -42,17 +45,19 @@ describe('card motion', () => {
 describe('press, peek and the next card', () => {
   it('lifts on press and carries the lift into the drag pose', async () => {
     const { dragRise, dragScale, PRESS_SCALE } = await import('./throw.ts')
-    expect(dragScale(true, null, 0)).toBe(PRESS_SCALE)
+    expect(dragScale(true, 0, 0)).toBe(PRESS_SCALE)
     expect(dragRise(true, 0)).toBe(-2)
-    // No jump when the drag starts, the drag pose by the threshold.
-    expect(dragScale(true, 'x', 0)).toBe(PRESS_SCALE)
-    expect(dragScale(true, 'x', 0.5)).toBeCloseTo(1.01)
-    expect(dragScale(true, 'x', 1)).toBe(1)
-    expect(dragScale(true, 'y', 1)).toBeCloseTo(0.985)
-    expect(dragScale(true, 'y', 3)).toBeCloseTo(0.985)
+    // No jump when the drag starts, the drag pose by the threshold:
+    // sideways (no vertical progress) 1, straight down or up 0.985.
+    expect(dragScale(true, 0.5, 0)).toBeCloseTo(1.01)
+    expect(dragScale(true, 1, 0)).toBe(1)
+    expect(dragScale(true, 1, 1)).toBeCloseTo(0.985)
+    expect(dragScale(true, 3, 3)).toBeCloseTo(0.985)
+    // A diagonal: lifted by its vertical part.
+    expect(dragScale(true, 1, 0.5)).toBeCloseTo(lift(0.5))
     expect(dragRise(true, 1)).toBeCloseTo(0)
     // Not pressed (a drag continuing a snap-back): the plain drag pose.
-    expect(dragScale(false, 'y', 0.5)).toBeCloseTo(lift(0.5))
+    expect(dragScale(false, 0.5, 0.5)).toBeCloseTo(lift(0.5))
     expect(dragRise(false, 0)).toBe(0)
   })
 
@@ -86,12 +91,22 @@ describe('press, peek and the next card', () => {
 
   it('commits the way the pill says: armed and pulled back to 90 of 98 px still rates', () => {
     // Dragged to 120, back to 90: still armed (above 85%), the tracker says snap back.
-    const armed = nextArmed(nextArmed(false, 120, 98), 90, 98)
-    expect(armed).toBe(true)
-    expect(releaseDir(null, armed, 'x', 90)).toBe('right')
-    expect(releaseDir(null, true, 'y', -70)).toBe('up')
+    const armed = nextArmedDir(nextArmedDir(null, 'right', 120, 98), 'right', 90, 98)
+    expect(armed).toBe('right')
+    expect(releaseDir(null, armed)).toBe('right')
+    expect(releaseDir('down', 'up')).toBe('up')
     // Not armed: the tracker's verdict (a flick, or nothing).
-    expect(releaseDir(null, false, 'x', 90)).toBeNull()
-    expect(releaseDir('left', false, 'x', -50)).toBe('left')
+    expect(releaseDir(null, null)).toBeNull()
+    expect(releaseDir('left', null)).toBe('left')
+  })
+
+  it('arms on the dominant direction; the hysteresis holds only while it stays', () => {
+    expect(nextArmedDir(null, 'down', 100, 108)).toBeNull()
+    expect(nextArmedDir(null, 'down', 110, 108)).toBe('down')
+    expect(nextArmedDir('down', 'down', 95, 108)).toBe('down')
+    // Swung over to the right at 95 of 100: a new direction arms afresh.
+    expect(nextArmedDir('down', 'right', 95, 100)).toBeNull()
+    expect(nextArmedDir('down', 'right', 101, 100)).toBe('right')
+    expect(nextArmedDir('right', null, 0, 100)).toBeNull()
   })
 })

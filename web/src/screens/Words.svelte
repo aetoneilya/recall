@@ -71,21 +71,25 @@
     if (!loaded) return
     if (f.tags.length && !f.tags.every((s) => contents.tags.some((t) => tagMatches(s, t.tag)))) f.tags = f.tags.filter((s) => contents.tags.some((t) => tagMatches(s, t.tag)))
     if (f.type && !presentTypes.includes(f.type)) f.type = ''
+    // Hidden word pickers don't keep filtering the words.
+    if (!wordsOnly && (f.pos || f.cefr)) {
+      f.pos = ''
+      f.cefr = ''
+    }
   })
   const hasGrammar = $derived(contents.types.rule > 0 || contents.tags.some((t) => t.tag.startsWith('Grammar/') || t.tag === 'Grammar' || t.tag === 'Grammar theory'))
   const filtered = $derived(!!(f.status || f.pos || f.cefr || f.state || f.tags.length || f.type))
   let tagsOpen = $state(false)
-  // A subtree's cards, counted once each.
-  // Drill-down: the options are what the cards shown so far have (each pick
-  // narrows); picked ones stay listed so they can be taken off. The type
-  // chips are a mode switch instead: counted without the type.
-  const facets = $derived(libraryFacets(rows ?? []))
-  const typeCounts = $derived(libraryFacets(loaded ? libraryRows(words.all!, facts.all!, deckId, { ...f, type: '' }) : []).types)
-  const keep = <T extends string>(xs: { value: T; n: number }[], picked: T[]) => [...xs, ...picked.filter((p) => p && !xs.some((x) => x.value === p)).map((value) => ({ value, n: 0 }))]
-  const tagOptions = $derived(keep(facets.tags, f.tags))
-  const posOptions = $derived(keep(facets.pos, f.pos ? [f.pos] : []))
-  const cefrOptions = $derived(keep(facets.cefr, f.cefr ? [f.cefr] : []))
-  const stateOptions = $derived(keep(facets.states, f.state ? [f.state] : []))
+  // Like the review filter (library.libraryFacets): a type, part of speech,
+  // level or state is counted under the other picks, so the rest of its row
+  // stays on offer (the type chips switch modes); tags drill down. Picked
+  // options always stay listed so they can be taken off.
+  const facets = $derived(loaded ? libraryFacets(words.all!, facts.all!, deckId, f) : null)
+  const typeCounts = $derived<Partial<Record<CardType, number>>>(facets?.types ?? {})
+  const tagOptions = $derived(facets?.tags ?? [])
+  const posOptions = $derived(facets?.pos ?? [])
+  const cefrOptions = $derived(facets?.cefr ?? [])
+  const stateOptions = $derived(facets?.states ?? [])
   const wordsOnly = $derived(f.type === 'word' || (presentTypes.length === 1 && presentTypes[0] === 'word'))
 
   const STATE_NAMES: Record<DirState, string> = { new: 'New', learning: 'Learning', known: 'Known', fading: 'Fading', suspended: 'Suspended', off: 'Off' }

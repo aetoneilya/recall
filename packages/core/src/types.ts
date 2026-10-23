@@ -79,7 +79,7 @@ export type CardType = 'word' | 'fact' | 'rule'
 export const CARD_TYPES: readonly CardType[] = ['word', 'fact', 'rule']
 
 // What a deck's review session takes; every field empty or missing = all;
-// every value given must hold (inReviewFilter). Tags apply to every card (a
+// any of a facet's values, all of its tags (inReviewFilter). Tags apply to every card (a
 // tag takes the tags under it too, "Grammar" → "Grammar/Tenses"); part of
 // speech, CEFR and direction only to words (other cards pass them).
 export interface ReviewFilter {
@@ -124,19 +124,20 @@ export interface CardFacts {
 
 const has = <T>(xs: readonly T[] | undefined): xs is readonly T[] => !!xs && xs.length > 0
 
-// Whether a card is in a deck's review filter. Drill-down: every selected
-// value must hold (AND, within a facet too) — tags A and B = cards with
-// both; a tag takes the tags under it ("Grammar" = any Grammar/… tag). A
-// card has one type, part of speech, CEFR and direction, so two values of
-// one of those select nothing. Word-only fields don't exclude other cards.
+// Whether a card is in a deck's review filter. Single-valued facets (type,
+// part of speech, CEFR, direction: a card has one of each) are OR within
+// the facet — B2 and C1 = cards at either level; tags are AND, since a card
+// carries many — tags A and B = cards with both, and a tag takes the tags
+// under it ("Grammar" = any Grammar/… tag). Facets AND with each other.
+// Word-only fields don't exclude other cards.
 export function inReviewFilter(f: ReviewFilter | null | undefined, c: CardFacts): boolean {
   if (!f) return true
-  if (has(f.types) && !f.types.every((t) => t === c.type)) return false
+  if (has(f.types) && !f.types.includes(c.type)) return false
   if (has(f.tags) && !f.tags.every((ft) => c.tags.some((t) => tagMatches(ft, t)))) return false
   if (c.type === 'word') {
-    if (has(f.pos) && !f.pos.every((p) => p === c.pos)) return false
-    if (has(f.cefr) && !f.cefr.every((x) => x === c.cefr)) return false
-    if (has(f.directions) && c.direction && !f.directions.every((d) => d === c.direction)) return false
+    if (has(f.pos) && !f.pos.includes(c.pos as PartOfSpeech)) return false
+    if (has(f.cefr) && !f.cefr.includes(c.cefr as Cefr)) return false
+    if (has(f.directions) && c.direction && !f.directions.includes(c.direction)) return false
   }
   return true
 }

@@ -1,6 +1,6 @@
 // The review session store with its services faked: undo takes back one
-// rating only, the study day turns without a server, and a deck's cached
-// queue keeps what was done to it.
+// rating only, the study day turns without a server, a deck's cached queue
+// keeps what was done to it, and the minimum gap survives a reload.
 import { newCardState, type QueueItem, type Word } from '@recall/core'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -9,6 +9,8 @@ const h = vi.hoisted(() => ({
   byDeck: {} as Record<string, unknown[]>,
   listeners: [] as (() => void)[],
   pending: new Set<string>(),
+  // The device's IndexedDB: what a reload finds (JSON, as a structured clone would keep it).
+  kv: new Map<string, string>(),
 }))
 
 vi.mock('./app.svelte.ts', async () => {
@@ -19,7 +21,11 @@ vi.mock('./app.svelte.ts', async () => {
     status: { day: { timeZone: 'Europe/Moscow', startHour: 4 }, online: true },
     flushNow: async () => true,
     scheduleFlush: () => {},
-    kv: { get: async () => undefined, set: async () => {}, del: async () => {} },
+    kv: {
+      get: async (k: string) => (h.kv.has(k) ? JSON.parse(h.kv.get(k)!) : undefined),
+      set: async (k: string, v: unknown) => void h.kv.set(k, JSON.stringify(v)),
+      del: async (k: string) => void h.kv.delete(k),
+    },
     outbox: { add: () => {}, undo: () => {}, pending: 0, pendingFor: (id: string) => h.pending.has(id), onCards: () => {} },
     api: {
       queue: async (_n: number, d?: string) => {
@@ -67,6 +73,7 @@ beforeEach(() => {
   h.offline = false
   h.listeners = []
   h.pending = new Set()
+  h.kv = new Map()
   const store = new Map<string, string>([['reviewDeck', 'A']])
   vi.stubGlobal('localStorage', { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v), removeItem: (k: string) => void store.delete(k) })
   vi.stubGlobal('document', { visibilityState: 'visible', addEventListener: (_: string, f: () => void) => void h.listeners.push(f) })
@@ -154,5 +161,55 @@ describe('switching decks offline', () => {
     session.selectDeck('A')
     await session.refresh()
     expect(ids(session)).toEqual(['cd_a2_forward'])
+  })
+})
+
+describe('the minimum gap across a reload', () => {
+  // A fresh store over the same device storage, as after closing the app.
+  async function reload() {
+    await Promise.resolve() // the queued persist
+    vi.resetModules()
+    const { session } = await import('./review.svelte.ts')
+    h.offline = true
+    await session.start()
+    return session
+  }
+
+  it('keeps a card rated just before the reload resting', async () => {
+    h.byDeck = { A: [item('a'), item('b')] }
+    const session = await open('2026-10-21T13:00:00Z')
+    expect(session.current?.card.id).toBe('cd_a_forward')
+    answer(session, 1) // Again: a is due again in a minute
+    answer(session, 4) // Easy: b is done for today
+    expect(session.current).toBeNull()
+    vi.advanceTimersByTime(2 * 60_000)
+    const again = await reload()
+    expect(again.recent.map((r) => r.cardId)).toEqual(['cd_a_forward', 'cd_b_forward'])
+    // Due, but not rested: still the summary, and a comes back 5 min after its rating.
+    expect(again.current).toBeNull()
+    expect(again.comeBack()?.n).toBe(1)
+    vi.advanceTimersByTime(3 * 60_000)
+    expect(again.current?.card.id).toBe('cd_a_forward')
+  })
+
+  it('goes with the day', async () => {
+    h.byDeck = { A: [item('a')] }
+    const session = await open('2026-10-20T13:00:00Z')
+    answer(session, 1)
+    vi.setSystemTime(new Date('2026-10-21T13:00:00Z'))
+    const again = await reload()
+    expect(again.recent).toEqual([])
+  })
+
+  it('undo restores the gap history, persisted too', async () => {
+    h.byDeck = { A: [item('a'), item('b')] }
+    const session = await open('2026-10-21T14:00:00Z')
+    answer(session, 1)
+    answer(session, 1)
+    expect(session.undo()).toBe(true)
+    expect(session.current?.card.id).toBe('cd_b_forward')
+    expect(session.recent.map((r) => r.cardId)).toEqual(['cd_a_forward'])
+    const again = await reload()
+    expect(again.recent.map((r) => r.cardId)).toEqual(['cd_a_forward'])
   })
 })

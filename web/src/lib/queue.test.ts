@@ -1,6 +1,6 @@
 import { newCardState, type CardState, type Direction, type Fact, type QueueItem, type Word, type WordQueueItem } from '@recall/core'
 import { describe, expect, it } from 'vitest'
-import { applyRating, buildQueue, counts, deckCounts, dropWord, emptyQueue, GAP_MS, keepExercises, LEARN_AHEAD_MS, nextItem, patchFact, patchWord, peekNext, practiceStep, rested, upcoming, withSchedules, type QueueState, type Shown } from './queue.ts'
+import { applyRating, buildQueue, counts, deckCounts, dropWord, emptyQueue, GAP_CARDS, GAP_MS, keepExercises, LEARN_AHEAD_MS, nextItem, patchFact, patchWord, peekNext, practiceStep, RECENT_MAX, rested, upcoming, withSchedules, type QueueState, type Shown } from './queue.ts'
 
 const day = { timeZone: 'Europe/Moscow', startHour: 4 }
 // 13:00 MSK; the study day ends at 04:00 MSK tomorrow.
@@ -147,63 +147,94 @@ describe('nextItem', () => {
 
 describe('the minimum gap', () => {
   const shown = (...xs: [string, number][]): Shown[] => xs.map(([cardId, m]) => ({ cardId, at: min(m).getTime() }))
+  const others = (n: number, m = 0) => Array.from({ length: n }, (_, i) => [`o${i}`, m] as [string, number])
 
-  it('rests a card until two other cards were rated since, or 60 s passed', () => {
+  it('rests a card until ten other cards were rated since, or 5 min passed', () => {
     const t = now.getTime()
+    expect(GAP_CARDS).toBe(10)
+    expect(GAP_MS).toBe(5 * 60_000)
+    expect(RECENT_MAX).toBeGreaterThanOrEqual(GAP_CARDS + 1)
     expect(rested('a', [], t)).toBe(true)
     expect(rested('a', shown(['a', 0]), t)).toBe(false)
-    expect(rested('a', shown(['a', 0], ['b', 0]), t)).toBe(false)
-    expect(rested('a', shown(['a', 0], ['b', 0], ['c', 0]), t)).toBe(true)
-    expect(rested('a', shown(['a', 0], ['b', 0]), t + GAP_MS - 1)).toBe(false)
-    expect(rested('a', shown(['a', 0], ['b', 0]), t + GAP_MS)).toBe(true)
+    expect(rested('a', shown(['a', 0], ...others(9)), t)).toBe(false)
+    expect(rested('a', shown(['a', 0], ...others(10)), t)).toBe(true)
+    expect(rested('a', shown(['a', 0], ...others(9)), t + GAP_MS - 1)).toBe(false)
+    expect(rested('a', shown(['a', 0], ...others(9)), t + GAP_MS)).toBe(true)
     // Counted from its latest rating.
-    expect(rested('a', shown(['a', -5], ['b', -5], ['c', -5], ['a', 0]), t)).toBe(false)
+    expect(rested('a', shown(['a', -10], ...others(10, -10), ['a', 0]), t)).toBe(false)
   })
 
-  it('never learns ahead the card just rated: the prod loop on a 6-minute Hard step', () => {
+  it('keeps the history long enough: a card that fell out of it has ten ratings after it', () => {
+    const recent = shown(['a', 0], ...others(10)).slice(-RECENT_MAX)
+    expect(recent.some((s) => s.cardId === 'a')).toBe(true)
+    expect(rested('a', shown(['a', 0], ...others(11)).slice(-RECENT_MAX), now.getTime())).toBe(true)
+  })
+
+  it('does not show a card again before ten others, even a due learning one', () => {
+    const main = Array.from({ length: 12 }, (_, i) => item(`r${i}`, `nr${i}`, reviewState(min(-60))))
+    let q = buildQueue([item('a', 'na', newCardState(now)), ...main], {}, {}, now, day)
+    const recent: Shown[] = []
+    const order: string[] = []
+    // Ratings a few seconds apart: a's 1-minute step is long due by the end.
+    for (let i = 0; i < 12; i++) {
+      const at = new Date(now.getTime() + i * 10_000)
+      const cur = nextItem(q, at, recent)!
+      order.push(cur.card.id)
+      q = applyRating(q, cur, cur.card.id === 'a' ? 1 : 3, at, day).queue
+      recent.push({ cardId: cur.card.id, at: at.getTime() })
+    }
+    // a is first, then ten others, then a again (due since minute 1).
+    expect(order[0]).toBe('a')
+    expect(order.slice(1, 11)).not.toContain('a')
+    expect(order[11]).toBe('a')
+  })
+
+  it('pulls a card early only once the gap holds: a 6-minute Hard step with nothing else left', () => {
     // "to rumble" rated Hard, back in 6 min; nothing else left.
     const q: QueueState = { main: [], learning: [item('rumble', 'n1', learningState(min(6)), 1)], buried: {} }
     const recent = shown(['rumble', 0])
     expect(nextItem(q, now, recent)).toBeNull()
-    expect(nextItem(q, min(1), recent)).toBeNull()
-    // It waits for its own due (no learn-ahead), then comes by itself.
-    expect(upcoming(q, now, recent)).toMatchObject({ item: { card: { id: 'rumble' } }, at: min(6) })
-    expect(nextItem(q, min(6), recent)?.card.id).toBe('rumble')
+    expect(nextItem(q, min(4.9), recent)).toBeNull()
+    // Learned ahead the moment it is rested, not at its own due.
+    expect(upcoming(q, now, recent)).toMatchObject({ item: { card: { id: 'rumble' } }, at: min(5) })
+    expect(nextItem(q, min(5), recent)?.card.id).toBe('rumble')
   })
 
-  it('stops two learning cards from alternating every few seconds', () => {
-    const q: QueueState = { main: [], learning: [item('strain', 'n1', learningState(min(6))), item('court', 'n2', learningState(min(6)))], buried: {} }
-    // strain then court were just rated: neither may come back yet.
+  it('stops two learning cards from alternating', () => {
+    const q: QueueState = { main: [], learning: [item('strain', 'n1', learningState(min(1))), item('court', 'n2', learningState(min(1)))], buried: {} }
+    // strain then court were just rated: neither may come back yet, though both are due.
     const recent = shown(['strain', 0], ['court', 0.05])
-    expect(nextItem(q, min(0.1), recent)).toBeNull()
-    // strain is rested once 60 s passed since its rating, and is learned ahead then.
-    expect(upcoming(q, min(0.1), recent)).toMatchObject({ item: { card: { id: 'strain' } }, at: min(1) })
-    expect(nextItem(q, min(1), recent)?.card.id).toBe('strain')
+    expect(nextItem(q, min(2), recent)).toBeNull()
+    // strain is rested once 5 min passed since its rating.
+    expect(upcoming(q, min(2), recent)).toMatchObject({ item: { card: { id: 'strain' } }, at: min(5) })
+    expect(nextItem(q, min(5), recent)?.card.id).toBe('strain')
   })
 
   it('learns ahead a different card that is rested', () => {
     const q: QueueState = { main: [], learning: [item('a', 'n1', learningState(min(3))), item('b', 'n2', learningState(min(5)))], buried: {} }
-    expect(nextItem(q, now, shown(['b', -2], ['x', -1], ['y', -1], ['a', 0]))?.card.id).toBe('b')
+    expect(nextItem(q, now, shown(['b', -2], ...others(9, -1), ['a', 0]))?.card.id).toBe('b')
+    expect(nextItem(q, now, shown(['b', -2], ...others(8, -1), ['a', 0]))).toBeNull()
   })
 
   it('keeps the gap for a due learning card, showing the main queue meanwhile', () => {
     const q: QueueState = { main: [item('r1', 'n2', reviewState(min(-60)))], learning: [item('a', 'n1', learningState(min(-1)))], buried: {} }
-    expect(nextItem(q, now, shown(['a', -0.5]))?.card.id).toBe('r1')
-    expect(nextItem(q, now, shown(['a', -0.5], ['b', -0.4], ['c', -0.2]))?.card.id).toBe('a')
+    expect(nextItem(q, now, shown(['a', -0.5], ...others(9, -0.2)))?.card.id).toBe('r1')
+    expect(nextItem(q, now, shown(['a', -0.5], ...others(10, -0.2)))?.card.id).toBe('a')
   })
 
-  it('applyRating then nextItem: the card just rated waits while another is showable', () => {
-    let q = buildQueue([item('a', 'n1', newCardState(now)), item('b', 'n2', newCardState(now))], {}, {}, now, day)
+  it('with fewer than ten others left, nothing is showable until 5 min after a rating', () => {
+    let q = buildQueue(['a', 'b', 'c'].map((id) => item(id, `n${id}`, newCardState(now))), {}, {}, now, day)
     const recent: Shown[] = []
-    for (const [id, r] of [['a', 1], ['b', 1]] as const) {
+    for (const id of ['a', 'b', 'c']) {
       const cur = nextItem(q, now, recent)!
       expect(cur.card.id).toBe(id)
-      q = applyRating(q, cur, r, now, day).queue
+      q = applyRating(q, cur, 1, now, day).queue
       recent.push({ cardId: cur.card.id, at: now.getTime() })
     }
-    // Both on a 1-minute step, both just rated: a waits for its 60 s, b too.
-    expect(nextItem(q, min(0.2), recent)).toBeNull()
-    expect(nextItem(q, min(1), recent)?.card.id).toBe('a')
+    // All three on a 1-minute step, all due: none comes back before 5 min.
+    expect(nextItem(q, min(4.9), recent)).toBeNull()
+    expect(upcoming(q, min(2), recent)).toMatchObject({ item: { card: { id: 'a' } }, at: min(5) })
+    expect(nextItem(q, min(5), recent)?.card.id).toBe('a')
   })
 
   it('shows nothing upcoming when the day is done', () => {
@@ -225,6 +256,19 @@ describe('peekNext', () => {
       }
       q = applyRating(q, cur, 3, now, day).queue
       recent.push({ cardId: cur.card.id, at: now.getTime() })
+    }
+  })
+
+  it('follows the gap and learn-ahead: names a waiting card only if it is what comes next', () => {
+    const others = (n: number): Shown[] => Array.from({ length: n }, (_, i) => ({ cardId: `o${i}`, at: min(-0.5).getTime() }))
+    const q: QueueState = { main: [item('r0', 'n0', reviewState(min(-60)))], learning: [item('a', 'na', learningState(min(3)))], buried: {} }
+    for (const [n, expected] of [[9, 'a'], [8, null]] as const) {
+      const recent: Shown[] = [{ cardId: 'a', at: min(-1).getTime() }, ...others(n)]
+      const cur = nextItem(q, now, recent)!
+      expect(cur.card.id).toBe('r0')
+      const after = applyRating(q, cur, 3, now, day).queue
+      expect(nextItem(after, now, [...recent, { cardId: 'r0', at: now.getTime() }])?.card.id ?? null).toBe(expected)
+      expect(peekNext(q, cur, now, recent)?.card.id ?? null).toBe(expected)
     }
   })
 

@@ -1,7 +1,8 @@
 // The review session store with its services faked: what "+5 new" does at
-// the end of a session.
+// the end of a session, and how a session ends while cards still wait.
 import { newCardState, type QueueItem, type Word } from '@recall/core'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { GAP_MS } from './queue.ts'
 
 const h = vi.hoisted(() => ({
   queues: [] as { items: unknown[]; counts: { new: number; learning: number; review: number }; decks: unknown[] }[],
@@ -112,27 +113,48 @@ describe('a learning card with nothing else left', () => {
     expect(session.rate(rating)).toBe(true)
   }
 
-  it('waits for its step instead of showing it again, names it, and Show now brings it once', async () => {
+  it('ends on the summary instead of showing it again, and says when it comes back', async () => {
     const session = await lone('rumble')
-    answer(session, 2) // Hard: back in 6 min
+    answer(session, 2) // Hard: back in 6 min, rested after 5
     expect(session.current).toBeNull()
-    const up = session.upcoming()!
-    expect(up.item.card.id).toBe('cd_rumble')
-    expect(up.at.getTime() - Date.now()).toBe(6 * 60_000)
-    session.showNow()
-    expect(session.current?.card.id).toBe('cd_rumble')
-    answer(session, 2)
-    expect(session.current).toBeNull()
+    const back = session.comeBack()!
+    expect(back.n).toBe(1)
+    expect(back.at.getTime() - Date.now()).toBe(5 * 60_000)
+    const { comeBackText } = await import('./review.svelte.ts')
+    expect(comeBackText(back.n, back.at, Date.now())).toBe('1 card comes back in ~5 min')
+    // No way to pull it early: the waiting screen's Show now is gone.
+    expect('showNow' in session).toBe(false)
   })
 
-  it('comes by itself when the step is over', async () => {
+  it('comes by itself once the gap is over (the wake timer), not at its 1-minute step', async () => {
     const session = await lone('strain')
-    answer(session, 1) // Again: back in 1 min
+    answer(session, 1) // Again: due in 1 min
     expect(session.current).toBeNull()
-    vi.advanceTimersByTime(59_000)
+    vi.advanceTimersByTime(60_000)
+    expect(session.current).toBeNull()
+    vi.advanceTimersByTime(GAP_MS - 60_000 - 1_000)
     expect(session.current).toBeNull()
     vi.advanceTimersByTime(2_000)
     expect(session.current?.card.id).toBe('cd_strain')
+  })
+
+  it('with fewer than ten others, ends after the last one rather than repeating', async () => {
+    vi.useFakeTimers({ now: new Date(Date.parse('2026-10-21T06:00:00Z') + ++hour * 3600_000), toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
+    const { session } = await import('./review.svelte.ts')
+    session.deckId = 'dk_en'
+    h.queues.push(page([item('one'), item('two'), item('three')]))
+    await session.refresh()
+    for (const id of ['one', 'two', 'three']) {
+      expect(session.current?.card.id).toBe(`cd_${id}`)
+      answer(session, 1)
+    }
+    // All three due again in a minute; none comes back before 5 min.
+    expect(session.current).toBeNull()
+    const back = session.comeBack()!
+    const { comeBackText } = await import('./review.svelte.ts')
+    expect(comeBackText(back.n, back.at, Date.now())).toBe('3 cards come back in ~5 min')
+    vi.advanceTimersByTime(GAP_MS)
+    expect(session.current?.card.id).toBe('cd_one')
   })
 
   it('undo brings the rated card back at once', async () => {

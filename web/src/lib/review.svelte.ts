@@ -5,7 +5,7 @@ import { api, flushNow, kv, outbox, scheduleFlush, status } from './app.svelte.t
 import { AuthError, NetworkError, normalizeItem } from './api.ts'
 import { getDecks } from './decks.ts'
 import { fsrs } from './fsrs.ts'
-import { applyRating, buildQueue, counts, dropWord, emptyQueue, itemFacts, keepExercises, nextItem, patchFact, patchWord, peekNext, RECENT_MAX, upcoming, withSchedules, type Counts, type QueueState, type Shown } from './queue.ts'
+import { applyRating, buildQueue, counts, dropWord, emptyQueue, itemFacts, keepExercises, nextItem, patchFact, patchWord, peekNext, RECENT_MAX, remaining, upcoming, withSchedules, type Counts, type QueueState, type Shown } from './queue.ts'
 import type { DeckSettings, DeckWithCounts, FactItem, QueueDeck, WordItem } from './types.ts'
 import { haptic } from './telegram.ts'
 import { errorText, showToast } from './toast.svelte.ts'
@@ -51,6 +51,8 @@ interface Cache {
   local: Record<string, CardState>
   stats: SessionStats
   missed?: Missed[]
+  // The latest ratings: the minimum gap survives a reload (absent on older caches).
+  recent?: Shown[]
   fetchedAt?: number
 }
 
@@ -104,6 +106,12 @@ const MAX_DURATION_MS = 120_000
 const LOCK_MS = 280
 const STALE_MS = 60_000
 
+// The summary's quiet line about cards still waiting today.
+export function comeBackText(n: number, at: Date, now: number): string {
+  const m = Math.max(1, Math.round((at.getTime() - now) / 60_000))
+  return `${n} ${n === 1 ? 'card comes' : 'cards come'} back in ~${m} min`
+}
+
 // A card in one line: the term, or the question's first line.
 export function itemTitle(it: QueueItem): string {
   return it.kind === 'word' ? it.word.term : (it.fact.front.replace(/[`*_#>]/g, '').split('\n')[0] ?? '')
@@ -134,9 +142,10 @@ class ReviewSession {
   queueDecks = $state.raw<QueueDeck[]>([])
   // The deck under review ('' until the first answer names one); remembered.
   deckId = $state(readDeck())
-  // Changes on a timer so "next card in 4 min" stays current.
+  // Changes on a timer so "come back in ~4 min" stays current.
   now = $state(Date.now())
-  // The latest ratings, oldest first: the minimum gap before a card comes back.
+  // The latest ratings, oldest first: the minimum gap before a card comes
+  // back. Persisted with the day's cache, so a reload doesn't reset it.
   recent = $state.raw<Shown[]>([])
 
   private day = ''
@@ -158,6 +167,7 @@ class ReviewSession {
       this.local = cache.local ?? {}
       this.stats = cache.stats ?? zeroStats()
       this.missed = cache.missed ?? []
+      this.recent = cache.recent ?? []
       this.decks = cache.decks ?? {}
       this.queueDecks = cache.queueDecks ?? []
       this.byDeck = cache.byDeck ?? {}
@@ -567,12 +577,19 @@ class ReviewSession {
     return this.current ? null : upcoming(this.queue, new Date(this.now), this.recent)
   }
 
+  // The session is over for now but cards still wait today (learning steps,
+  // the gap): how many, and when the first one becomes showable.
+  comeBack(): { n: number; at: Date } | null {
+    const u = this.upcoming()
+    return u && { n: remaining(this.queue), at: u.at }
+  }
+
   // The card under the current one: what a rating would bring next.
   get peek(): QueueItem | null {
     return this.current ? peekNext(this.queue, this.current, new Date(this.now), this.recent) : null
   }
 
-  // Keeps "next card in N min" current while the waiting screen is open.
+  // Keeps "come back in ~N min" current while the summary is open.
   tick() {
     this.now = Date.now()
     this.turnDay()
@@ -584,18 +601,6 @@ class ReviewSession {
     if (this.started && this.rollDay()) this.rebuild()
   }
 
-  // The waiting screen's "Show now": the next card early, this once; after
-  // its rating the usual rules apply again.
-  showNow() {
-    const u = this.upcoming()
-    if (!u) return
-    clearTimeout(this.wake)
-    this.current = u.item
-    this.revealed = false
-    this.shownAt = Date.now()
-    this.freshExercises()
-  }
-
   private pick() {
     clearTimeout(this.wake)
     const now = new Date()
@@ -605,8 +610,8 @@ class ReviewSession {
     this.shownAt = now.getTime()
     this.freshExercises()
     if (!this.current) {
-      // Wake up when the next card becomes showable: on the waiting screen
-      // it comes by itself.
+      // Wake up when the next card becomes showable: with the app left
+      // open on the summary it simply appears.
       const u = upcoming(this.queue, now, this.recent)
       if (u) this.wake = setTimeout(() => this.pick(), Math.max(1000, u.at.getTime() - now.getTime() + 500))
     }
@@ -685,6 +690,7 @@ class ReviewSession {
         local: this.local,
         stats: $state.snapshot(this.stats),
         missed: this.missed,
+        recent: this.recent,
       }
       void kv.set('review', cache)
     })

@@ -2,7 +2,7 @@
   import { status } from '../lib/app.svelte.ts'
   import { navigate } from '../lib/router.svelte.ts'
   import { hasDeckLanguages } from '../lib/decks.ts'
-  import { itemTitle, session } from '../lib/review.svelte.ts'
+  import { comeBackText, session } from '../lib/review.svelte.ts'
   import { openTelegramLink } from '../lib/telegram.ts'
   import { checkpoint } from '../lib/update.ts'
   import { openAdd } from '../lib/add.ts'
@@ -11,16 +11,16 @@
 
   const s = $derived(session.stats)
   const minutes = $derived(Math.max(1, Math.round(s.ms / 60000)))
-  // Cards wait for their time today (a learning step): the next one, and
-  // when it comes by itself.
-  const up = $derived.by(() => {
+  // Cards still wait today (a learning step, the minimum gap): the session
+  // ends here anyway, with one quiet line on when they come back. The store's
+  // wake timer brings the first one if the app stays open.
+  const back = $derived.by(() => {
     void session.now
-    return session.loaded ? session.upcoming() : null
+    return session.loaded ? session.comeBack() : null
   })
-  const waitingNow = $derived(!!up)
-  const inMin = $derived(up ? Math.max(1, Math.round((up.at.getTime() - session.now) / 60000)) : 0)
+  const waiting = $derived(!!back)
   $effect(() => {
-    if (!waitingNow) return
+    if (!waiting) return
     const id = setInterval(() => session.tick(), 15_000)
     return () => clearInterval(id)
   })
@@ -120,11 +120,6 @@
           </a>
         {/if}
       </div>
-    {:else if up}
-      <span class="wait-mark"><Icon name="clock" size={26} stroke={1.6} /></span>
-      <h2>Next card in {inMin} min</h2>
-      <p class="muted up-next" aria-label="Next card in {inMin} min · {itemTitle(up.item)}">{itemTitle(up.item)}</p>
-      <button class="link" onclick={() => session.showNow()}>Show now</button>
     {:else}
       <svg class="mark" class:done={s.reviewed} width="56" height="56" viewBox="0 0 56 56" aria-hidden="true">
         <circle cx="28" cy="28" r="27" />
@@ -140,6 +135,9 @@
         </div>
       {:else}
         <p class="muted">Reviews and new cards appear here as they come due.</p>
+      {/if}
+      {#if back}
+        <p class="back">{comeBackText(back.n, back.at, session.now)}</p>
       {/if}
       {#if tomorrow !== null}
         <p class="next"><Icon name="clock" size={16} /> {tomorrow ? `Tomorrow: ${tomorrow} ${tomorrow === 1 ? 'review' : 'reviews'}` : 'No reviews due tomorrow'}</p>
@@ -326,34 +324,10 @@
     font-size: 15px;
     color: var(--muted);
   }
-
-  /* Waiting for a learning step: a quiet clock, no check, no tally. */
-  .wait-mark {
-    width: 56px;
-    height: 56px;
-    margin-bottom: 6px;
-    border-radius: 28px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--muted);
-    background: var(--surface);
-  }
-  .up-next {
-    max-width: 300px;
-    font-size: 17px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .link {
-    min-height: 44px;
-    padding: 0 12px;
+  /* Cards still waiting today: one quiet line, nothing to act on. */
+  .back {
     font-size: 15px;
-    font-weight: 500;
-    color: var(--accent);
-    background: none;
-    border: 0;
+    color: var(--muted);
   }
 
   /* The session-end check: drawn once, the one celebratory moment. */

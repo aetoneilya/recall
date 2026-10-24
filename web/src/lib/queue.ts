@@ -16,17 +16,21 @@ export interface QueueState {
   buried: Record<string, string>
 }
 
-// Learning cards due within this window are shown when nothing else is left,
-// so a session doesn't stall on a 1-minute step. Covers the default 1m/10m
-// FSRS learning steps.
+// Learning cards due within this window may be shown early when nothing else
+// is left, so a session doesn't stall on a 1-minute step — but only once the
+// minimum gap holds for them. Covers the default 1m/10m FSRS learning steps.
 export const LEARN_AHEAD_MS = 20 * 60_000
 
 // The minimum gap: a card rated is not shown again until GAP_CARDS other
-// cards have been rated since, or GAP_MS have passed, whichever comes first.
-export const GAP_CARDS = 2
-export const GAP_MS = 60_000
-// How much rating history the session keeps for the gap (and more than enough).
-export const RECENT_MAX = 8
+// cards have been rated since, or GAP_MS have passed (the user left and came
+// back), whichever comes first. A repeat after a card or two is close to
+// useless (Pyc & Rawson 2009, Kornell 2009): better to end the session and
+// let the card come back later.
+export const GAP_CARDS = 10
+export const GAP_MS = 5 * 60_000
+// How much rating history the session keeps for the gap: a card that fell
+// out of it has GAP_CARDS ratings after it.
+export const RECENT_MAX = GAP_CARDS + 1
 
 // One rating in the session's recent history, oldest first.
 export interface Shown {
@@ -95,33 +99,25 @@ export function rested(cardId: string, recent: readonly Shown[], now: number): b
 }
 
 // The card to show: a learning card that is due, then the main queue, then
-// (nothing else left) a learning card due within the learn-ahead window —
-// never the card just rated, which waits for its own due. Every pick keeps
-// the minimum gap (`rested`).
+// (nothing else left) a learning card due within the learn-ahead window.
+// Every pick keeps the minimum gap (`rested`), so a card is never pulled
+// early before the gap holds for it.
 export function nextItem(q: QueueState, now: Date, recent: readonly Shown[] = [], learnAheadMs = LEARN_AHEAD_MS): QueueItem | null {
   const t = now.getTime()
   const ok = (it: QueueItem) => rested(it.card.id, recent, t)
-  const last = recent.at(-1)?.cardId
-  return (
-    q.learning.find((it) => due(it) <= t && ok(it)) ??
-    q.main.find(ok) ??
-    q.learning.find((it) => it.card.id !== last && due(it) <= t + learnAheadMs && ok(it)) ??
-    null
-  )
+  return q.learning.find((it) => due(it) <= t && ok(it)) ?? q.main.find(ok) ?? q.learning.find((it) => due(it) <= t + learnAheadMs && ok(it)) ?? null
 }
 
 // Nothing showable now: the card that comes next and when it becomes
-// showable (by the rules of nextItem, with nothing rated meanwhile); null
-// when nothing is left today.
+// showable (by the rules of nextItem, with nothing rated meanwhile — so only
+// GAP_MS can rest it); null when nothing is left today.
 export function upcoming(q: QueueState, now: Date, recent: readonly Shown[] = [], learnAheadMs = LEARN_AHEAD_MS): { item: QueueItem; at: Date } | null {
   const t = now.getTime()
-  const last = recent.at(-1)?.cardId
   const restedAt = (it: QueueItem) => {
     if (rested(it.card.id, recent, t)) return t
     return recent.findLast((s) => s.cardId === it.card.id)!.at + GAP_MS
   }
-  const when = (it: QueueItem, inMain: boolean) =>
-    Math.max(restedAt(it), inMain ? t : it.card.id === last ? due(it) : due(it) - learnAheadMs)
+  const when = (it: QueueItem, inMain: boolean) => Math.max(restedAt(it), inMain ? t : due(it) - learnAheadMs)
   let best: { item: QueueItem; at: number } | null = null
   for (const [list, inMain] of [[q.main, true], [q.learning, false]] as const) {
     for (const it of list) {
@@ -133,8 +129,9 @@ export function upcoming(q: QueueState, now: Date, recent: readonly Shown[] = []
 }
 
 // The card nextItem would show once `current` is rated now, so the stack can
-// show it underneath. The rating's outcome doesn't matter: the card just
-// rated is never picked straight away while another one can be.
+// show it underneath: the same rules, gap and learn-ahead included. The
+// rating's outcome doesn't matter: the card just rated is never picked
+// straight away (the gap), so it can be left out.
 export function peekNext(q: QueueState, current: QueueItem, now: Date, recent: readonly Shown[] = [], learnAheadMs = LEARN_AHEAD_MS): QueueItem | null {
   const id = itemOf(current).id
   // What a rating leaves: the card and its review/new siblings go; a learning sibling stays.

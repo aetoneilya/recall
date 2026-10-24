@@ -78,7 +78,7 @@ describe('queue', () => {
     expect(q.items.map((i) => i.card.id)).toEqual([rev!.id])
   })
 
-  it('orders learning, then reviews by due, with a new card after every 4 reviews', () => {
+  it('orders learning, then the day\'s shuffle of reviews, with a new card after every 4 reviews', () => {
     const ctx = makeCtx()
     const set = ctx.db.prepare("UPDATE cards SET state = ?, due = ?, stability = 5, difficulty = 5, reps = 3, last_review = ? WHERE word_id = ? AND direction = 'forward'")
     // Reverse cards stay new; their words are already taken today by the forward card.
@@ -91,14 +91,37 @@ describe('queue', () => {
     addWord(ctx, 'dropped', { status: 'rejected' })
 
     const q = buildQueue(ctx.db, ctx.user.id, TZ, ctx.now())
-    expect(q.items.map((i) => wordOf(i).term)).toEqual([
-      'learning',
-      'review 1', 'review 2', 'review 3', 'review 4', 'new 1',
-      'review 5', 'review 6', 'review 7', 'review 8', 'new 2', 'not due',
-    ])
+    const terms = q.items.map((i) => wordOf(i).term)
+    expect(terms[0]).toBe('learning')
+    expect([terms[5], terms[10], terms[11]]).toEqual(['new 1', 'new 2', 'not due'])
+    const reviews = terms.filter((t) => t.startsWith('review '))
+    expect([...reviews].sort()).toEqual(['review 1', 'review 2', 'review 3', 'review 4', 'review 5', 'review 6', 'review 7', 'review 8'])
+    expect(reviews).not.toEqual([...reviews].sort())
     // "not due" has a new reverse card, introduced as the third new card.
     expect(q.counts).toEqual({ new: 3, learning: 1, review: 8 })
     expect(buildQueue(ctx.db, ctx.user.id, TZ, ctx.now(), { limit: 3 }).items).toHaveLength(3)
+
+    // The same order all day; rating one keeps the rest in place.
+    expect(buildQueue(ctx.db, ctx.user.id, TZ, ctx.now()).items.map((i) => wordOf(i).term)).toEqual(terms)
+    const first = q.items.find((i) => wordOf(i).term === reviews[0])!
+    rate(ctx, first.card.id, 3, ctx.now())
+    const after = buildQueue(ctx.db, ctx.user.id, TZ, ctx.now()).items.map((i) => wordOf(i).term).filter((t) => t.startsWith('review '))
+    expect(after).toEqual(reviews.slice(1))
+  })
+
+  it('takes new cards in turn from each source, each in the order added', () => {
+    const ctx = makeCtx()
+    updateDeck(ctx.db, ctx.user.id, deck(ctx, 4).id, { reverseEnabled: false })
+    let day = 1
+    const add = (term: string, tags: string[]) => addWord(ctx, term, { tags, at: new Date(Date.UTC(2026, 8, day++)) })
+    for (const t of ['book 1', 'book 2', 'book 3', 'book 4']) add(t, ['Books/the king'])
+    add('leon 1', ['Leon/words'])
+    add('book 5', ['Books/wuthering heights'])
+    add('leon 2', ['Leon/idioms'])
+    add('plain', [])
+
+    const q = buildQueue(ctx.db, ctx.user.id, TZ, ctx.now())
+    expect(q.items.map((i) => wordOf(i).term)).toEqual(['book 1', 'leon 1', 'plain', 'book 2'])
   })
 })
 

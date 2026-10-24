@@ -10,7 +10,7 @@ import {
   type FacetItem, type ReviewFilter, type ReviewInput, type ReviewLog,
 } from '@recall/core'
 import { tx, type Db } from './db.ts'
-import { exercisesForQueue, MIN_POOL, recordAttempts, reviewSeed, revertAttempts, SERVABLE } from './exercises.ts'
+import { exercisesForQueue, MIN_POOL, recordAttempts, reviewSeed, revertAttempts, seededRandom, SERVABLE } from './exercises.ts'
 import { toFact, type FactRow } from './facts.ts'
 import { userScheduler } from './fsrs.ts'
 import {
@@ -158,6 +158,46 @@ export function inFilter(filters: Map<string, ReviewFilter | null> = new Map()) 
   return (rows: QueueRow[]) => rows.filter((r) => inReviewFilter(filterOf(r), rowFacts(r)))
 }
 
+// Where a card comes from, for mixing new cards: the top level of its first
+// tag ("Books", "Grammar", "Starter"; a pack keeps its own order), else its
+// kind, so one import or pack doesn't fill a day's new cards on its own.
+const sourceOf = (r: QueueRow) => (JSON.parse(r.item_tags) as string[])[0]?.split('/')[0] ?? `:${r.kind}`
+
+// New cards taken in turn from each source (the oldest source first), each
+// source's in the order they were added; an item's cards stay together.
+export function mixSources(rows: QueueRow[]): QueueRow[] {
+  const sources = new Map<string, QueueRow[][]>()
+  const items = new Map<string, QueueRow[]>()
+  for (const r of rows) {
+    let cards = items.get(r.item_id)
+    if (!cards) {
+      items.set(r.item_id, (cards = []))
+      const k = sourceOf(r)
+      let s = sources.get(k)
+      if (!s) sources.set(k, (s = []))
+      s.push(cards)
+    }
+    cards.push(r)
+  }
+  const lists = [...sources.values()]
+  const out: QueueRow[] = []
+  for (let i = 0; out.length < rows.length; i++) for (const s of lists) if (i < s.length) out.push(...s[i]!)
+  return out
+}
+
+// The study day's order of due cards: a shuffle keyed by day and card, so
+// cards added or reviewed together don't come in runs, and a refetch after
+// some ratings keeps the rest in the same order.
+function dayOrder(day: string) {
+  const keys = new Map<string, number>()
+  const key = (r: QueueRow) => {
+    let k = keys.get(r.id)
+    if (k === undefined) keys.set(r.id, (k = seededRandom(`${day}:${r.id}`)()))
+    return k
+  }
+  return (a: QueueRow, b: QueueRow) => key(a) - key(b)
+}
+
 // Today's cards of every deck (or one), each deck's under its review filter
 // (`filters` overrides it, for a preview). Each deck's rows are what it
 // would put in the session on its own: the new-card budget is per deck and
@@ -172,7 +212,7 @@ function selectQueue(db: Db, userId: string, opts: DayOptions, now: Date, deckId
   const wanted = inFilter(filters)
   const learning = wanted(db.prepare(`${QUEUE_SELECT} AND c.state IN (1, 3) AND c.due < ?${deckFilter} ORDER BY c.due, c.id`).all(userId, end, ...deckArgs) as unknown as QueueRow[])
   const reviews = wanted(db.prepare(`${QUEUE_SELECT} AND c.state = 2 AND c.due < ?${deckFilter} ORDER BY c.due, c.id`).all(userId, end, ...deckArgs) as unknown as QueueRow[])
-  const fresh = wanted(db.prepare(`${QUEUE_SELECT} AND c.state = 0 AND ${REVERSE_GATE}${deckFilter} ORDER BY c.item_created_at, c.item_id, c.direction`).all(userId, ...deckArgs) as unknown as QueueRow[])
+  const fresh = mixSources(wanted(db.prepare(`${QUEUE_SELECT} AND c.state = 0 AND ${REVERSE_GATE}${deckFilter} ORDER BY c.item_created_at, c.item_id, c.direction`).all(userId, ...deckArgs) as unknown as QueueRow[]))
 
   const touched = reviewedToday(db, userId, day)
   const introduced = introducedToday(db, userId, day)
@@ -217,10 +257,13 @@ export function buildQueue(db: Db, userId: string, opts: DayOptions, now: Date, 
     .map((d) => ({ id: d.id, name: d.name, hasLanguages: hasLanguages(d), counts: perDeck.get(d.id) ?? { new: 0, learning: 0, review: 0 } }))
   const studied = (r: QueueRow) => !q.deckId || r.deck_id === q.deckId
   const learning = all.learning.filter(studied)
-  const reviews = all.reviews.filter(studied)
+  const order = dayOrder(studyDay(now, opts).key)
+  const reviews = all.reviews.filter(studied).sort(order)
   const fresh = all.fresh.filter(studied)
   const every = q.newEvery ?? 4
-  const ordered: QueueRow[] = [...learning]
+  // Learning cards already due are shuffled too; the ones still waiting keep their times.
+  const at = now.toISOString()
+  const ordered: QueueRow[] = [...learning.filter((r) => r.due <= at).sort(order), ...learning.filter((r) => r.due > at)]
   let ni = 0
   reviews.forEach((r, i) => {
     ordered.push(r)

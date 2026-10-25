@@ -12,8 +12,9 @@
   const s = $derived(session.stats)
   const minutes = $derived(Math.max(1, Math.round(s.ms / 60000)))
   // Cards still wait today (a learning step, the minimum gap): the session
-  // ends here anyway, with one quiet line on when they come back. The store's
-  // wake timer brings the first one if the app stays open.
+  // ends here anyway, with one quiet line on when the next round opens (once
+  // a round's worth is showable), or that too few are left and they wait for
+  // tomorrow. The store's wake timer opens the round if the app stays open.
   const back = $derived.by(() => {
     void session.now
     return session.loaded ? session.comeBack() : null
@@ -52,7 +53,8 @@
   })
 
   // What's left to do elsewhere, and what this session missed.
-  const others = $derived(session.choices.filter((d) => d.id !== deckId && d.left > 0))
+  // A deck whose session ended with too few cards for a round isn't work.
+  const others = $derived(session.choices.filter((d) => d.id !== deckId && d.left > 0 && !session.waitsHere(d.id, d.counts)))
   const missed = $derived(session.missed)
   // The ones of this deck: what "Go over them once more" practises, no more.
   const missedHere = $derived(missed.filter((m) => !m.deckId || m.deckId === deckId).length)
@@ -137,7 +139,7 @@
         <p class="muted">Reviews and new cards appear here as they come due.</p>
       {/if}
       {#if back}
-        <p class="back">{comeBackText(back.n, back.at, session.now)}</p>
+        <p class="back">{comeBackText(back, session.now)}</p>
       {/if}
       {#if tomorrow !== null}
         <p class="next"><Icon name="clock" size={16} /> {tomorrow ? `Tomorrow: ${tomorrow} ${tomorrow === 1 ? 'review' : 'reviews'}` : 'No reviews due tomorrow'}</p>

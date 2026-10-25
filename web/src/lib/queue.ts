@@ -1,7 +1,7 @@
 // Local review queue: what to show next and how a rating changes the queue.
 // Pure functions over immutable state so undo is just "restore the previous
 // state" and the logic is testable without a DOM.
-import { dayStart, isLearningState, itemOf, nextDayStart, planToday, review, todaySlot, type CardFacts, type CardState, type DayOptions, type Fact, type QueueItem, type Rating, type TodayCard, type Word } from '@recall/core'
+import { BATCH, dayStart, isLearningState, itemOf, nextDayStart, planToday, review, todaySlot, type CardFacts, type CardState, type DayOptions, type Fact, type QueueItem, type Rating, type TodayCard, type Word } from '@recall/core'
 import type { Scheduler } from './fsrs.ts'
 
 export interface QueueState {
@@ -98,46 +98,57 @@ export function rested(cardId: string, recent: readonly Shown[], now: number): b
   return recent.length - 1 - i >= GAP_CARDS || now - recent[i]!.at >= GAP_MS
 }
 
+// Between rounds: once a session has ended (nothing was showable after a
+// rating), the latch is `closed` and learning cards wait until BATCH of them
+// are showable at once, so they come back as a round, not one by one. Main
+// cards (reviews, new) are never gated: with any left, the session runs as
+// usual, learning cards joining it as they come due.
+const gated = (q: QueueState, closed: boolean) => closed && q.main.length === 0
+
 // The card to show: a learning card that is due, then the main queue, then
 // (nothing else left) a learning card due within the learn-ahead window.
 // Every pick keeps the minimum gap (`rested`), so a card is never pulled
-// early before the gap holds for it.
-export function nextItem(q: QueueState, now: Date, recent: readonly Shown[] = [], learnAheadMs = LEARN_AHEAD_MS): QueueItem | null {
+// early before the gap holds for it. With the latch closed, nothing until
+// a round's worth is showable.
+export function nextItem(q: QueueState, now: Date, recent: readonly Shown[] = [], closed = false): QueueItem | null {
   const t = now.getTime()
   const ok = (it: QueueItem) => rested(it.card.id, recent, t)
-  return q.learning.find((it) => due(it) <= t && ok(it)) ?? q.main.find(ok) ?? q.learning.find((it) => due(it) <= t + learnAheadMs && ok(it)) ?? null
+  const ahead = (it: QueueItem) => due(it) <= t + LEARN_AHEAD_MS && ok(it)
+  if (gated(q, closed) && q.learning.filter(ahead).length < BATCH) return null
+  return q.learning.find((it) => due(it) <= t && ok(it)) ?? q.main.find(ok) ?? q.learning.find(ahead) ?? null
 }
 
-// Nothing showable now: the card that comes next and when it becomes
-// showable (by the rules of nextItem, with nothing rated meanwhile — so only
-// GAP_MS can rest it); null when nothing is left today.
-export function upcoming(q: QueueState, now: Date, recent: readonly Shown[] = [], learnAheadMs = LEARN_AHEAD_MS): { item: QueueItem; at: Date } | null {
+// When a card becomes showable by nextItem's rules, with nothing rated
+// meanwhile (so only GAP_MS can rest it).
+function showableAt(it: QueueItem, inMain: boolean, recent: readonly Shown[], t: number): number {
+  const restedAt = rested(it.card.id, recent, t) ? t : recent.findLast((s) => s.cardId === it.card.id)!.at + GAP_MS
+  return Math.max(restedAt, inMain ? t : due(it) - LEARN_AHEAD_MS)
+}
+
+// Nothing showable now: when nextItem shows something again, which card,
+// and how many are showable then; null when nothing comes back today. With
+// the latch closed that is when the BATCH-th learning card is showable, and
+// with fewer than BATCH left, never (they wait for tomorrow).
+export function upcoming(q: QueueState, now: Date, recent: readonly Shown[] = [], closed = false): { item: QueueItem; at: Date; n: number } | null {
   const t = now.getTime()
-  const restedAt = (it: QueueItem) => {
-    if (rested(it.card.id, recent, t)) return t
-    return recent.findLast((s) => s.cardId === it.card.id)!.at + GAP_MS
-  }
-  const when = (it: QueueItem, inMain: boolean) => Math.max(restedAt(it), inMain ? t : due(it) - learnAheadMs)
-  let best: { item: QueueItem; at: number } | null = null
-  for (const [list, inMain] of [[q.main, true], [q.learning, false]] as const) {
-    for (const it of list) {
-      const at = when(it, inMain)
-      if (!best || at < best.at) best = { item: it, at }
-    }
-  }
-  return best && { item: best.item, at: new Date(Math.max(t, best.at)) }
+  const times = [...q.main.map((it) => showableAt(it, true, recent, t)), ...q.learning.map((it) => showableAt(it, false, recent, t))].sort((a, b) => a - b)
+  const k = gated(q, closed) ? BATCH : 1
+  if (times.length < k) return null
+  const at = Math.max(t, times[k - 1]!)
+  const item = nextItem(q, new Date(at), recent, closed)
+  return item && { item, at: new Date(at), n: times.filter((x) => x <= at).length }
 }
 
 // The card nextItem would show once `current` is rated now, so the stack can
-// show it underneath: the same rules, gap and learn-ahead included. The
-// rating's outcome doesn't matter: the card just rated is never picked
+// show it underneath: the same rules, gap, learn-ahead and latch included.
+// The rating's outcome doesn't matter: the card just rated is never picked
 // straight away (the gap), so it can be left out.
-export function peekNext(q: QueueState, current: QueueItem, now: Date, recent: readonly Shown[] = [], learnAheadMs = LEARN_AHEAD_MS): QueueItem | null {
+export function peekNext(q: QueueState, current: QueueItem, now: Date, recent: readonly Shown[] = [], closed = false): QueueItem | null {
   const id = itemOf(current).id
   // What a rating leaves: the card and its review/new siblings go; a learning sibling stays.
   const keep = (x: QueueItem) => itemOf(x).id !== id || (x.card.id !== current.card.id && isLearning(x.card.schedule))
   const after: QueueState = { ...q, main: q.main.filter(keep), learning: q.learning.filter(keep) }
-  return nextItem(after, now, [...recent, { cardId: current.card.id, at: now.getTime() }], learnAheadMs)
+  return nextItem(after, now, [...recent, { cardId: current.card.id, at: now.getTime() }], closed)
 }
 
 export interface Rated {

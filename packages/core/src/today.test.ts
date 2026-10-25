@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { planToday, todayCount, todaySlot, type TodayCard } from './index.ts'
+import { BATCH, planToday, todayCount, todaySlot, waitsForTomorrow, type TodayCard } from './index.ts'
 
 // Study day 2026-10-21 04:00 → 2026-10-22 04:00 MSK; "now" is 13:00 MSK.
 const day = { start: Date.parse('2026-10-21T01:00:00Z'), end: Date.parse('2026-10-22T01:00:00Z') }
@@ -75,5 +75,18 @@ describe('todayCount', () => {
     expect(todayCount('now', 2)).toBe('review')
     expect(todayCount('later', 2)).toBe('learning')
     expect(todayCount('later', 1)).toBe('learning')
+  })
+})
+
+describe('waitsForTomorrow', () => {
+  it('holds back only a few learning cards with nothing else left', () => {
+    expect(BATCH).toBe(10)
+    expect(waitsForTomorrow({ new: 0, learning: 3, review: 0 })).toBe(true)
+    expect(waitsForTomorrow({ new: 0, learning: BATCH - 1, review: 0 })).toBe(true)
+    // A round's worth, or anything else still due: they come today.
+    expect(waitsForTomorrow({ new: 0, learning: BATCH, review: 0 })).toBe(false)
+    expect(waitsForTomorrow({ new: 1, learning: 3, review: 0 })).toBe(false)
+    expect(waitsForTomorrow({ new: 0, learning: 3, review: 1 })).toBe(false)
+    expect(waitsForTomorrow({ new: 0, learning: 0, review: 0 })).toBe(false)
   })
 })

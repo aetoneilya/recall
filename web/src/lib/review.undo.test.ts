@@ -180,16 +180,12 @@ describe('the minimum gap across a reload', () => {
     const session = await open('2026-10-21T13:00:00Z')
     expect(session.current?.card.id).toBe('cd_a_forward')
     answer(session, 1) // Again: a is due again in a minute
-    answer(session, 4) // Easy: b is done for today
-    expect(session.current).toBeNull()
+    expect(session.current?.card.id).toBe('cd_b_forward')
     vi.advanceTimersByTime(2 * 60_000)
     const again = await reload()
-    expect(again.recent.map((r) => r.cardId)).toEqual(['cd_a_forward', 'cd_b_forward'])
-    // Due, but not rested: still the summary, and a comes back 5 min after its rating.
-    expect(again.current).toBeNull()
-    expect(again.comeBack()?.n).toBe(1)
-    vi.advanceTimersByTime(3 * 60_000)
-    expect(again.current?.card.id).toBe('cd_a_forward')
+    expect(again.recent.map((r) => r.cardId)).toEqual(['cd_a_forward'])
+    // a is due (a learning card would come first), but not rested: b, mid-session.
+    expect(again.current?.card.id).toBe('cd_b_forward')
   })
 
   it('goes with the day', async () => {

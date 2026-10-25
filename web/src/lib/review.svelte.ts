@@ -1,6 +1,6 @@
 // The review session: cached queue, current card, ratings applied locally
 // and queued for upload, undo.
-import { dayKey, inReviewFilter, isLearningState, itemOf, type AnswerCheck, type Card, type CardState, type ExerciseAttempt, type ExerciseCheck, type Fact, type QueueItem, type Rating, type ReviewFilter, type Word, type WriteGrade } from '@recall/core'
+import { dayKey, inReviewFilter, isLearningState, itemOf, waitsForTomorrow, type AnswerCheck, type Card, type CardState, type ExerciseAttempt, type ExerciseCheck, type Fact, type QueueItem, type Rating, type ReviewFilter, type Word, type WriteGrade } from '@recall/core'
 import { api, flushNow, kv, outbox, scheduleFlush, status } from './app.svelte.ts'
 import { AuthError, NetworkError, normalizeItem } from './api.ts'
 import { getDecks } from './decks.ts'
@@ -53,6 +53,8 @@ interface Cache {
   missed?: Missed[]
   // The latest ratings: the minimum gap survives a reload (absent on older caches).
   recent?: Shown[]
+  // Decks whose session ended today (the latch between rounds), likewise.
+  ended?: string[]
   fetchedAt?: number
 }
 
@@ -106,10 +108,19 @@ const MAX_DURATION_MS = 120_000
 const LOCK_MS = 280
 const STALE_MS = 60_000
 
-// The summary's quiet line about cards still waiting today.
-export function comeBackText(n: number, at: Date, now: number): string {
-  const m = Math.max(1, Math.round((at.getTime() - now) / 60_000))
-  return `${n} ${n === 1 ? 'card comes' : 'cards come'} back in ~${m} min`
+// Cards still waiting today, for the summary: `at` is when the next round
+// opens, null when they can't make one today.
+export interface ComeBack {
+  n: number
+  at: Date | null
+}
+
+// The summary's quiet line about them.
+export function comeBackText(back: ComeBack, now: number): string {
+  const cards = `${back.n} ${back.n === 1 ? 'card' : 'cards'}`
+  if (!back.at) return `${cards} ${back.n === 1 ? 'waits' : 'wait'} for tomorrow`
+  const m = Math.max(1, Math.round((back.at.getTime() - now) / 60_000))
+  return `Next round: ${cards} in ~${m} min`
 }
 
 // A card in one line: the term, or the question's first line.
@@ -147,6 +158,10 @@ class ReviewSession {
   // The latest ratings, oldest first: the minimum gap before a card comes
   // back. Persisted with the day's cache, so a reload doesn't reset it.
   recent = $state.raw<Shown[]>([])
+  // Decks whose session ended today: the latch between rounds is closed
+  // there (queue.nextItem), until a card shows again. Persisted and cleared
+  // with the day like `recent`.
+  ended = $state.raw<string[]>([])
 
   private day = ''
   private items: QueueItem[] = []
@@ -168,6 +183,7 @@ class ReviewSession {
       this.stats = cache.stats ?? zeroStats()
       this.missed = cache.missed ?? []
       this.recent = cache.recent ?? []
+      this.ended = cache.ended ?? []
       this.decks = cache.decks ?? {}
       this.queueDecks = cache.queueDecks ?? []
       this.byDeck = cache.byDeck ?? {}
@@ -552,6 +568,8 @@ class ReviewSession {
     this.stats = last.stats
     this.missed = last.missed
     this.recent = last.recent ?? []
+    // The rating was made in an open round: undoing it reopens the round.
+    this.setClosed(false)
     if (!this.current) {
       this.pick()
       this.persist()
@@ -572,24 +590,46 @@ class ReviewSession {
     return this.history.length > 0
   }
 
-  // Nothing to show now: the card that comes next today and when.
+  // Whether the latch between rounds is closed in the deck under review.
+  get closed(): boolean {
+    return this.ended.includes(this.deckId)
+  }
+
+  // Whether a deck's session ended today with too few cards left for
+  // a round (`counts`: what it has left).
+  waitsHere(deckId: string, c: Counts): boolean {
+    return this.ended.includes(deckId) && waitsForTomorrow(c)
+  }
+
+  private setClosed(closed: boolean) {
+    if (closed === this.closed) return
+    this.ended = closed ? [...this.ended, this.deckId] : this.ended.filter((id) => id !== this.deckId)
+    this.persist()
+  }
+
+  // Nothing to show now: when the next round opens, its first card and size.
   upcoming() {
-    return this.current ? null : upcoming(this.queue, new Date(this.now), this.recent)
+    return this.current ? null : upcoming(this.queue, new Date(this.now), this.recent, this.closed)
   }
 
   // The session is over for now but cards still wait today (learning steps,
-  // the gap): how many, and when the first one becomes showable.
-  comeBack(): { n: number; at: Date } | null {
+  // the gap): how many and when the next round opens — or, too few for a
+  // round, that they wait for tomorrow. n is what is showable when the round
+  // opens: what it starts with (others may join while it runs).
+  comeBack(): ComeBack | null {
+    if (this.current) return null
     const u = this.upcoming()
-    return u && { n: remaining(this.queue), at: u.at }
+    if (u) return { n: u.n, at: u.at }
+    const n = remaining(this.queue)
+    return n ? { n, at: null } : null
   }
 
   // The card under the current one: what a rating would bring next.
   get peek(): QueueItem | null {
-    return this.current ? peekNext(this.queue, this.current, new Date(this.now), this.recent) : null
+    return this.current ? peekNext(this.queue, this.current, new Date(this.now), this.recent, this.closed) : null
   }
 
-  // Keeps "come back in ~N min" current while the summary is open.
+  // Keeps "Next round: … in ~N min" current while the summary is open.
   tick() {
     this.now = Date.now()
     this.turnDay()
@@ -605,14 +645,18 @@ class ReviewSession {
     clearTimeout(this.wake)
     const now = new Date()
     this.now = now.getTime()
-    this.current = nextItem(this.queue, now, this.recent)
+    this.current = nextItem(this.queue, now, this.recent, this.closed)
     this.revealed = false
     this.shownAt = now.getTime()
     this.freshExercises()
+    // A card on screen: the round is open. Nothing showable once something
+    // was rated here today: the session has ended. Before any rating (the
+    // day's first session, a queue still loading) it never closes.
+    this.setClosed(!this.current && this.doneHere > 0)
     if (!this.current) {
-      // Wake up when the next card becomes showable: with the app left
-      // open on the summary it simply appears.
-      const u = upcoming(this.queue, now, this.recent)
+      // Wake up when the next round opens: with the app left open on the
+      // summary it simply appears.
+      const u = upcoming(this.queue, now, this.recent, this.closed)
       if (u) this.wake = setTimeout(() => this.pick(), Math.max(1000, u.at.getTime() - now.getTime() + 500))
     }
   }
@@ -649,6 +693,7 @@ class ReviewSession {
     this.missed = []
     this.history = []
     this.recent = []
+    this.ended = []
     this.queue = { ...this.queue, buried: {} }
     return true
   }
@@ -691,6 +736,7 @@ class ReviewSession {
         stats: $state.snapshot(this.stats),
         missed: this.missed,
         recent: this.recent,
+        ended: this.ended,
       }
       void kv.set('review', cache)
     })

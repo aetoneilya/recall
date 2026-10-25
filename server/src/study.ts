@@ -141,6 +141,15 @@ export function reviewedOn(db: Db, userId: string, day: StudyDay): boolean {
     WHERE c.user_id = ? AND l.reviewed_at >= ? AND l.reviewed_at < ? LIMIT 1`).get(userId, day.start.toISOString(), day.end.toISOString())
 }
 
+// Decks the user reviewed something in during this study day (a session
+// there has run: few learning cards left wait for tomorrow, as in the app).
+export function decksReviewedOn(db: Db, userId: string, day: StudyDay): Set<string> {
+  const rows = db.prepare(`
+    SELECT DISTINCT c.deck_id AS deck_id FROM review_logs l JOIN study_cards c ON c.id = l.card_id
+    WHERE c.user_id = ? AND l.reviewed_at >= ? AND l.reviewed_at < ?`).all(userId, day.start.toISOString(), day.end.toISOString()) as { deck_id: string }[]
+  return new Set(rows.map((r) => r.deck_id))
+}
+
 // Rows that pass their deck's review filter (`filters` overrides a deck's;
 // it caches the parsed ones too).
 export function inFilter(filters: Map<string, ReviewFilter | null> = new Map()) {

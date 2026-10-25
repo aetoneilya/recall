@@ -1,5 +1,6 @@
 // The review session store with its services faked: what "+5 new" does at
 // the end of a session, and how a session ends while cards still wait.
+// Rounds after the session (the latch) are in review.rounds.test.ts.
 import { newCardState, type QueueItem, type Word } from '@recall/core'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { GAP_MS } from './queue.ts'
@@ -113,34 +114,30 @@ describe('a learning card with nothing else left', () => {
     expect(session.rate(rating)).toBe(true)
   }
 
-  it('ends on the summary instead of showing it again, and says when it comes back', async () => {
+  it('ends on the summary instead of showing it again: one card is no round, it waits for tomorrow', async () => {
     const session = await lone('rumble')
     answer(session, 2) // Hard: back in 6 min, rested after 5
     expect(session.current).toBeNull()
+    expect(session.closed).toBe(true)
     const back = session.comeBack()!
-    expect(back.n).toBe(1)
-    expect(back.at.getTime() - Date.now()).toBe(5 * 60_000)
+    expect(back).toEqual({ n: 1, at: null })
     const { comeBackText } = await import('./review.svelte.ts')
-    expect(comeBackText(back.n, back.at, Date.now())).toBe('1 card comes back in ~5 min')
+    expect(comeBackText(back, Date.now())).toBe('1 card waits for tomorrow')
     // No way to pull it early: the waiting screen's Show now is gone.
     expect('showNow' in session).toBe(false)
   })
 
-  it('comes by itself once the gap is over (the wake timer), not at its 1-minute step', async () => {
+  it("doesn't come by itself once the gap is over: no wake timer for fewer than a round", async () => {
     const session = await lone('strain')
     answer(session, 1) // Again: due in 1 min
     expect(session.current).toBeNull()
-    vi.advanceTimersByTime(60_000)
+    vi.advanceTimersByTime(GAP_MS + 30 * 60_000)
     expect(session.current).toBeNull()
-    vi.advanceTimersByTime(GAP_MS - 60_000 - 1_000)
-    expect(session.current).toBeNull()
-    vi.advanceTimersByTime(2_000)
-    expect(session.current?.card.id).toBe('cd_strain')
   })
 
-  it('with fewer than ten others, ends after the last one rather than repeating', async () => {
+  it('with fewer than ten others, ends after the last one, and they wait for tomorrow', async () => {
     vi.useFakeTimers({ now: new Date(Date.parse('2026-10-21T06:00:00Z') + ++hour * 3600_000), toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
-    const { session } = await import('./review.svelte.ts')
+    const { session, comeBackText } = await import('./review.svelte.ts')
     session.deckId = 'dk_en'
     h.queues.push(page([item('one'), item('two'), item('three')]))
     await session.refresh()
@@ -148,13 +145,19 @@ describe('a learning card with nothing else left', () => {
       expect(session.current?.card.id).toBe(`cd_${id}`)
       answer(session, 1)
     }
-    // All three due again in a minute; none comes back before 5 min.
+    // All three due again in a minute; none comes back before 5 min, and three are no round.
     expect(session.current).toBeNull()
-    const back = session.comeBack()!
-    const { comeBackText } = await import('./review.svelte.ts')
-    expect(comeBackText(back.n, back.at, Date.now())).toBe('3 cards come back in ~5 min')
+    expect(comeBackText(session.comeBack()!, Date.now())).toBe('3 cards wait for tomorrow')
     vi.advanceTimersByTime(GAP_MS)
-    expect(session.current?.card.id).toBe('cd_one')
+    expect(session.current).toBeNull()
+  })
+
+  it('says when the next round opens', async () => {
+    const { comeBackText } = await import('./review.svelte.ts')
+    const now = Date.parse('2026-10-21T10:00:00Z')
+    expect(comeBackText({ n: 12, at: new Date(now + 25 * 60_000) }, now)).toBe('Next round: 12 cards in ~25 min')
+    expect(comeBackText({ n: 1, at: new Date(now + 10_000) }, now)).toBe('Next round: 1 card in ~1 min')
+    expect(comeBackText({ n: 4, at: null }, now)).toBe('4 cards wait for tomorrow')
   })
 
   it('undo brings the rated card back at once', async () => {

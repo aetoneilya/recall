@@ -65,6 +65,18 @@ export function planToday<T>(
   return out
 }
 
+// Rounds after a session: once it has ended, learning cards come back only
+// BATCH at a time (the web's queue.nextItem), so a lone 10-minute step
+// doesn't open a three-card session or pop up by itself.
+export const BATCH = 10
+
+// Only learning cards are left today, fewer than BATCH: after a session they
+// can't make a round, so they wait for tomorrow's first one (the web's
+// summary, the bot's reminders). Before any session today they still show.
+export function waitsForTomorrow(c: { new: number; learning: number; review: number }): boolean {
+  return c.new === 0 && c.review === 0 && c.learning > 0 && c.learning < BATCH
+}
+
 // Which count a placed card is in: waiting cards count as learning.
 export function todayCount(slot: 'now' | 'later', state: FsrsState): 'new' | 'learning' | 'review' {
   if (slot === 'later' || isLearningState(state)) return 'learning'

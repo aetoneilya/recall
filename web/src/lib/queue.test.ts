@@ -1,4 +1,4 @@
-import { newCardState, type CardState, type Direction, type Fact, type QueueItem, type Word, type WordQueueItem } from '@recall/core'
+import { BATCH, newCardState, type CardState, type Direction, type Fact, type QueueItem, type Word, type WordQueueItem } from '@recall/core'
 import { describe, expect, it } from 'vitest'
 import { applyRating, buildQueue, counts, deckCounts, dropWord, emptyQueue, GAP_CARDS, GAP_MS, keepExercises, LEARN_AHEAD_MS, nextItem, patchFact, patchWord, peekNext, practiceStep, RECENT_MAX, rested, upcoming, withSchedules, type QueueState, type Shown } from './queue.ts'
 
@@ -277,6 +277,73 @@ describe('peekNext', () => {
     expect(peekNext(q, q.main[0]!, now)).toBeNull()
     const solo: QueueState = { main: [], learning: [item('l', 'n1', learningState(min(-1)))], buried: {} }
     expect(peekNext(solo, solo.learning[0]!, now)).toBeNull()
+  })
+})
+
+describe('rounds after a session (the latch)', () => {
+  // l0 alone first, then nine more at once, then two later.
+  const dues = [25, 30, 30, 30, 30, 30, 30, 30, 30, 30, 33, 33]
+  const waiting = (): QueueState => ({ main: [], learning: dues.map((m, i) => item(`l${i}`, `n${i}`, learningState(min(m)))), buried: {} })
+  // nextItem and upcoming agree: nothing before `at`, upcoming's card at it.
+  function agree(q: QueueState, recent: Shown[], closed: boolean) {
+    const u = upcoming(q, now, recent, closed)
+    if (!u) {
+      for (const m of [0, 5, 20, 60, 600]) expect(nextItem(q, min(m), recent, closed)).toBeNull()
+      return
+    }
+    expect(nextItem(q, u.at, recent, closed)?.card.id).toBe(u.item.card.id)
+    if (u.at > now) expect(nextItem(q, new Date(u.at.getTime() - 1), recent, closed)).toBeNull()
+  }
+
+  it('opens the next round only once BATCH learning cards are showable at once', () => {
+    expect(BATCH).toBe(10)
+    const q = waiting()
+    // Open (a session still running): l0 as soon as it is within the learn-ahead.
+    expect(nextItem(q, min(5), [], false)?.card.id).toBe('l0')
+    expect(upcoming(q, now, [], false)).toMatchObject({ item: { card: { id: 'l0' } }, at: min(5), n: 1 })
+    // Closed: l0 alone isn't a round; nine more at 10 min make one.
+    expect(nextItem(q, min(9.9), [], true)).toBeNull()
+    expect(nextItem(q, min(10), [], true)?.card.id).toBe('l0')
+    expect(upcoming(q, now, [], true)).toMatchObject({ item: { card: { id: 'l0' } }, at: min(10), n: 10 })
+    agree(q, [], true)
+    agree(q, [], false)
+  })
+
+  it('counts only rested cards towards the batch', () => {
+    const q: QueueState = { main: [], learning: Array.from({ length: BATCH }, (_, i) => item(`l${i}`, `n${i}`, learningState(min(-1)))), buried: {} }
+    const recent: Shown[] = [{ cardId: 'l3', at: min(-1).getTime() }]
+    expect(nextItem(q, now, recent, true)).toBeNull()
+    expect(upcoming(q, now, recent, true)).toMatchObject({ at: min(4), n: BATCH })
+    agree(q, recent, true)
+  })
+
+  it('with fewer than BATCH left, nothing comes back today', () => {
+    const q: QueueState = { main: [], learning: Array.from({ length: BATCH - 1 }, (_, i) => item(`l${i}`, `n${i}`, learningState(min(-1)))), buried: {} }
+    expect(upcoming(q, now, [], true)).toBeNull()
+    agree(q, [], true)
+    // Before the session ended (the day's first one), they show.
+    expect(nextItem(q, now, [], false)?.card.id).toBe('l0')
+  })
+
+  it('never gates the main queue, nor learning cards beside it', () => {
+    const q: QueueState = { main: [item('r1', 'm1', reviewState(min(-60)))], learning: [item('l1', 'n1', learningState(min(-1)))], buried: {} }
+    for (const closed of [false, true]) {
+      expect(nextItem(q, now, [], closed)?.card.id).toBe('l1')
+      expect(nextItem(q, now, [{ cardId: 'l1', at: now.getTime() }], closed)?.card.id).toBe('r1')
+    }
+  })
+
+  it('peekNext follows the latch: after the last main card, a few learning cards are no round', () => {
+    const learning = dues.map((m, i) => item(`l${i}`, `n${i}`, learningState(min(m - 5))))
+    const q: QueueState = { main: [item('r0', 'm0', reviewState(min(-60)))], learning, buried: {} }
+    const cur = nextItem(q, now, [], true)!
+    expect(cur.card.id).toBe('r0')
+    for (const [closed, expected] of [[false, 'l0'], [true, null]] as const) {
+      const after = applyRating(q, cur, 3, now, day).queue
+      expect(nextItem(after, now, [{ cardId: 'r0', at: now.getTime() }], closed)?.card.id ?? null).toBe(expected)
+      expect(peekNext(q, cur, now, [], closed)?.card.id ?? null).toBe(expected)
+      agree(after, [{ cardId: 'r0', at: now.getTime() }], closed)
+    }
   })
 })
 

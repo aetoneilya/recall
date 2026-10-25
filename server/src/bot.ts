@@ -2,6 +2,7 @@
 // reminders and the weekly report, the "Log in with Telegram" confirmation
 // (/start login_<nonce>, then a button), getting in by request and the
 // owner's /users (bot-access.ts), and adding words by message (bot-words.ts).
+import { waitsForTomorrow } from '@recall/core'
 import { Bot, GrammyError, InlineKeyboard } from 'grammy'
 import type { UserFromGetMe } from 'grammy/types'
 import { answerStranger, installAccessHandlers } from './bot-access.ts'
@@ -13,7 +14,7 @@ import type { Db } from './db.ts'
 import { lexiconOf } from './lexicon.ts'
 import { answerLoginRef, openLoginNonce, START_PREFIX } from './login.ts'
 import { defaultDeck, syncFreqRanks } from './repo.ts'
-import { buildQueue, reviewedOn, studyDay } from './study.ts'
+import { buildQueue, decksReviewedOn, reviewedOn, studyDay } from './study.ts'
 import { ensureUser, isAllowed, listUsers, ownerTelegramId, setBotStarted, setReminderSent, userDayOptions, type User } from './users.ts'
 import { weeklyTick } from './weekly.ts'
 
@@ -23,9 +24,15 @@ export interface DueCounts {
   decks?: { name: string; due: number }[]
 }
 
+// What the app would show today, per deck. A deck already reviewed in today
+// with only a few learning cards left (core.waitsForTomorrow) counts none:
+// the app holds them for tomorrow's first session, so no reminder or count
+// sends the user back for them. Before any review today they count.
 export function dueCounts(db: Db, cfg: Config, user: User, now: Date): DueCounts {
-  const { decks } = buildQueue(db, user.id, userDayOptions(cfg, user), now, { limit: 1 })
-  const per = decks.map((d) => ({ name: d.name, due: d.counts.new + d.counts.learning + d.counts.review }))
+  const opts = userDayOptions(cfg, user)
+  const { decks } = buildQueue(db, user.id, opts, now, { limit: 1 })
+  const reviewed = decksReviewedOn(db, user.id, studyDay(now, opts))
+  const per = decks.map((d) => ({ name: d.name, due: reviewed.has(d.id) && waitsForTomorrow(d.counts) ? 0 : d.counts.new + d.counts.learning + d.counts.review }))
   return { due: per.reduce((n, d) => n + d.due, 0), decks: per.filter((d) => d.due > 0) }
 }
 

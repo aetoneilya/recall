@@ -1,8 +1,9 @@
+import { BATCH } from '@recall/core'
 import { GrammyError } from 'grammy'
 import { describe, expect, it } from 'vitest'
 import { decideReminder, dueCounts, localMinutes, reminderText, reminderTick } from '../src/bot.ts'
 import { ensureUser, getUser, setBotStarted, updateUserSettings } from '../src/users.ts'
-import { addWord, deck, makeCtx } from './helpers.ts'
+import { addWord, cardsOf, deck, makeCtx, otherDeck, rate } from './helpers.ts'
 
 const cfg = { timeZone: 'Europe/Moscow', dayStartHour: 4, reminderTime: '09:00', eveningReminderTime: '20:30' }
 const none = { morningSentDay: null, eveningSentDay: null }
@@ -72,6 +73,67 @@ describe('reminders', () => {
     // Dropped words are never due.
     addWord(ctx, 'dropped', { status: 'rejected' })
     expect(dueCounts(ctx.db, ctx.cfg, ctx.user, ctx.now())).toEqual({ due: 2, decks: [{ name: 'English', due: 2 }] })
+  })
+})
+
+describe('a few learning cards left after a session', () => {
+  // n words studied today, each forward card rated Again: n learning cards, nothing else.
+  function studied(ctx: ReturnType<typeof makeCtx>, n: number, deckId?: string) {
+    for (let i = 0; i < n; i++) rate(ctx, cardsOf(ctx, addWord(ctx, `w${deckId ?? ''}${i}`, deckId ? { deckId } : {}).id)[0]!.id, 1, ctx.now())
+  }
+
+  it("don't count once the deck was reviewed today: the app holds them for tomorrow", () => {
+    const ctx = makeCtx()
+    deck(ctx, 3)
+    studied(ctx, 3)
+    expect(dueCounts(ctx.db, ctx.cfg, ctx.user, ctx.now())).toEqual({ due: 0, decks: [] })
+    // Tomorrow, nothing reviewed yet: the day's first session shows them.
+    ctx.clock.t = new Date('2026-10-22T09:00:00Z')
+    expect(dueCounts(ctx.db, ctx.cfg, ctx.user, ctx.now())).toEqual({ due: 3, decks: [{ name: 'English', due: 3 }] })
+  })
+
+  it('count when they make a round, or when anything else is due', () => {
+    const ctx = makeCtx()
+    deck(ctx, BATCH)
+    studied(ctx, BATCH)
+    expect(dueCounts(ctx.db, ctx.cfg, ctx.user, ctx.now()).due).toBe(BATCH)
+    const more = makeCtx()
+    deck(more, 4)
+    studied(more, 3)
+    addWord(more, 'fresh')
+    expect(dueCounts(more.db, more.cfg, more.user, more.now()).due).toBe(4)
+  })
+
+  it('are per deck: a deck not reviewed today still counts its few learning cards', () => {
+    const ctx = makeCtx()
+    deck(ctx, 2)
+    studied(ctx, 2)
+    const de = otherDeck(ctx)
+    const w = addWord(ctx, 'Haus', { deckId: de.id })
+    ctx.db.prepare("UPDATE cards SET state = 1, due = '2026-10-20T12:00:00.000Z', last_review = '2026-10-20T11:50:00.000Z' WHERE id = ?").run(cardsOf(ctx, w.id)[0]!.id)
+    expect(dueCounts(ctx.db, ctx.cfg, ctx.user, ctx.now())).toEqual({ due: 1, decks: [{ name: de.name, due: 1 }] })
+  })
+
+  it("don't make the morning reminder nag after an early session; the next day's does", async () => {
+    // 06:00 Moscow: a session before the 09:00 reminder leaves three learning cards.
+    const ctx = makeCtx({ OWNER_TELEGRAM_ID: '1001' }, '2026-10-21T03:00:00Z')
+    setBotStarted(ctx.db, ctx.user.id, ctx.now())
+    updateUserSettings(ctx.db, ctx.user.id, { eveningReminderTime: '20:30' })
+    deck(ctx, 3)
+    studied(ctx, 3)
+    const sent: string[] = []
+    const send = async (_: number, text: string) => void sent.push(text)
+    ctx.clock.t = new Date('2026-10-21T06:05:00Z')
+    await reminderTick(ctx, send)
+    expect(sent).toEqual([])
+    expect(getUser(ctx.db, ctx.user.id)!.morningSentDay).toBe('2026-10-21')
+    // 20:35: the evening nudge is only for a day with nothing reviewed.
+    ctx.clock.t = new Date('2026-10-21T17:35:00Z')
+    await reminderTick(ctx, send)
+    expect(sent).toEqual([])
+    ctx.clock.t = new Date('2026-10-22T06:05:00Z')
+    await reminderTick(ctx, send)
+    expect(sent).toEqual(['3 cards due'])
   })
 })
 

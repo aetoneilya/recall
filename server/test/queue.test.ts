@@ -54,6 +54,19 @@ describe('queue', () => {
     expect(q.items.filter((i) => i.card.schedule.state === 0 && wordOf(i).deckId === en.id).map((i) => wordOf(i).term)).toEqual(['a2', 'a3'])
   })
 
+  it("brings yesterday's learning cards first the next day, counted as learning", () => {
+    const ctx = makeCtx()
+    deck(ctx, 2)
+    addWord(ctx, 'a', { at: new Date('2026-10-01T00:00:00Z') })
+    const b = addWord(ctx, 'b', { at: new Date('2026-10-02T00:00:00Z') })
+    rate(ctx, cardsOf(ctx, b.id)[0]!.id, 1, ctx.now())
+    // b's 1-minute step was due yesterday; a is still new.
+    ctx.clock.t = new Date('2026-10-22T09:00:00Z')
+    const q = buildQueue(ctx.db, ctx.user.id, TZ, ctx.now())
+    expect(q.items.map((i) => [wordOf(i).term, i.card.schedule.state])).toEqual([['b', 1], ['a', 0]])
+    expect(q.counts).toEqual({ new: 1, learning: 1, review: 0 })
+  })
+
   it('buries siblings across directions: one card per word per day', () => {
     const ctx = makeCtx()
     const word = addWord(ctx, 'to frown', { pos: 'verb', translations: ['хмуриться'] })

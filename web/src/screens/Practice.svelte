@@ -9,6 +9,7 @@
   import { practiceStep } from '../lib/queue.ts'
   import { session } from '../lib/review.svelte.ts'
   import { back, router } from '../lib/router.svelte.ts'
+  import { shortcutsOff } from '../lib/keys.ts'
   import { haptic } from '../lib/telegram.ts'
   import { errorText } from '../lib/toast.svelte.ts'
 
@@ -116,7 +117,7 @@
   }
 
   function onKey(e: KeyboardEvent) {
-    if ((e.target as HTMLElement).closest('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return
+    if (shortcutsOff(e)) return
     if (e.key === ' ' || e.key === 'Enter') {
       e.preventDefault()
       if (!revealed) reveal()

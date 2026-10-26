@@ -22,6 +22,7 @@
   import { navigate } from '../lib/router.svelte.ts'
   import { defaultThreshold, dirOf, dominantAxis, swipe, type SwipeDir } from '../lib/swipe.ts'
   import { BUTTON_SPEED, canArm, dragRise, dragScale, nextArmedDir, nextPose, PEEK_HOLD_MS, PEEK_SAFE_MS, peekReveals, plan, reducedMotion, releaseDir, releaseOutcome, snapMs, THROW_EASE, tilt, tiltOrigin } from '../lib/throw.ts'
+  import { shortcutsOff } from '../lib/keys.ts'
   import { haptic } from '../lib/telegram.ts'
 
   const c = $derived(counts(session.queue))
@@ -538,8 +539,7 @@
   }
 
   function onKey(e: KeyboardEvent) {
-    const t = e.target as HTMLElement
-    if (t.closest('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return
+    if (shortcutsOff(e)) return
     if (e.key === ' ' || e.key === 'Enter') {
       e.preventDefault()
       if (exTyping && exTap) {

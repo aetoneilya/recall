@@ -25,6 +25,14 @@ describe('parseRoute', () => {
     expect(r('#/dashboard')).toMatchObject({ path: '/progress', tab: 'progress' })
   })
 
+  it('keeps collection screens in Cards and deck settings in their source tab', () => {
+    expect(r('#/decks')).toMatchObject({ path: '/decks', tab: 'words' })
+    expect(r('#/packs')).toMatchObject({ path: '/packs', tab: 'words' })
+    expect(r('#/deck/dk_1?from=%2Fwords')).toMatchObject({ path: '/deck/dk_1', tab: 'words' })
+    expect(r('#/deck/dk_1?from=%2Fdecks')).toMatchObject({ tab: 'words' })
+    expect(r('#/deck/dk_1?from=/')).toMatchObject({ tab: 'review' })
+  })
+
   it('drops the launch parameters Telegram appends', () => {
     expect(r('#/words/abc?term=x&tgWebAppData=query_id%3D1&tgWebAppVersion=8.0')).toEqual({ path: '/word/abc', tab: 'words', query: { term: 'x' } })
     expect(r('#/progress&tgWebAppData=a%3Db&tgWebAppPlatform=ios')).toEqual({ path: '/progress', tab: 'progress', query: {} })

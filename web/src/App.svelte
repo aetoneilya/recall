@@ -9,6 +9,8 @@
   import { checkpoint } from './lib/update.ts'
   import AddWord from './screens/AddWord.svelte'
   import Dashboard from './screens/Dashboard.svelte'
+  import Decks from './screens/Decks.svelte'
+  import Packs from './screens/Packs.svelte'
   import FactEditor from './screens/FactEditor.svelte'
   import Denied from './screens/Denied.svelte'
   import Login from './screens/Login.svelte'
@@ -95,6 +97,10 @@
         {#key b}<WordEditor id={b} />{/key}
       {:else if a === 'words'}
         <Words />
+      {:else if a === 'deck' || a === 'decks'}
+        <Decks id={a === 'deck' ? b : undefined} />
+      {:else if a === 'packs'}
+        <Packs />
       {:else if a === 'practice'}
         <Practice />
       {:else if a === 'handbook'}

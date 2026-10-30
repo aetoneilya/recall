@@ -13,7 +13,6 @@
   import Summary from '../components/Summary.svelte'
   import SyncPill from '../components/SyncPill.svelte'
   import WordCard from '../components/WordCard.svelte'
-  import { openAdd } from '../lib/add.ts'
   import { dropCard } from '../lib/drop.ts'
   import { fsrs } from '../lib/fsrs.ts'
   import { counts, remaining } from '../lib/queue.ts'
@@ -565,23 +564,12 @@
 <svelte:window onkeydown={onKey} />
 
 <div class="review">
-  <header>
-    <div class="counts" aria-label="{c.new} new, {c.learning} learning, {c.review} to review">
-      <span class:zero={!c.new}><b class="n">{c.new}</b> new</span>
-      <span class:zero={!c.learning}><b class="l">{c.learning}</b> learning</span>
-      <span class:zero={!c.review}><b class="r">{c.review}</b> due</span>
-    </div>
-    <div class="right">
-      <SyncPill />
-      <button class="add" onclick={() => openAdd(currentDeck, '/')} aria-label="Add a card"><Icon name="plus" size={20} stroke={2.2} /></button>
-    </div>
-  </header>
   {#if session.queueDecks.length}
     <!-- The deck, then what its review is narrowed to: chips to drop one by
          one (a tap on a chip opens the filter), Clear, and Filter. -->
     <div class="deckbar">
       <div class="switch-wrap">
-        <DeckSwitcher options={session.choices.map((d) => ({ id: d.id, name: d.name, n: d.left, counts: d.counts }))} selected={session.deckId} onselect={(id) => session.selectDeck(id)} />
+        <DeckSwitcher options={session.choices.map((d) => ({ id: d.id, name: d.name, counts: d.counts }))} selected={session.deckId} onselect={(id) => session.selectDeck(id)} />
       </div>
       <div class="fchips" role="group" aria-label="What is reviewed">
         {#each chips as c (c.key)}
@@ -595,8 +583,17 @@
           <Icon name="filter" size={16} stroke={2} />{#if !chips.length}<span>Filter</span>{/if}
         </button>
       </div>
+      <button class="deck-settings" onclick={() => navigate(`/deck/${session.deckId}?from=/`)} aria-label={`Settings for ${currentDeck?.name ?? 'deck'}`}><Icon name="settings" size={18} /></button>
     </div>
   {/if}
+  <header>
+    <div class="counts" aria-label="{c.new} new, {c.learning} learning, {c.review} to review">
+      <span class:zero={!c.new}><b class="n">{c.new}</b> new</span>
+      <span class:zero={!c.learning}><b class="l">{c.learning}</b> learning</span>
+      <span class:zero={!c.review}><b class="r">{c.review}</b> due</span>
+    </div>
+    <div class="completion"><span>{done} / {done + remaining(session.queue)}</span><SyncPill /></div>
+  </header>
   {#if filterOpen && session.deckId}
     <ReviewFilterSheet
       deckId={session.deckId}
@@ -813,31 +810,30 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    height: 44px;
+    min-height: 30px;
+    flex-wrap: wrap;
     padding: 0 8px;
   }
-  .right {
+  .completion {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
+    color: var(--faint);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    flex: none;
+    margin-left: auto;
   }
-  /* A 34px disc in a 44px target. */
-  .add {
-    width: 44px;
-    height: 44px;
-    padding: 5px;
-    border-radius: 22px;
-    background-clip: content-box;
+  .deck-settings {
     display: flex;
+    flex: none;
     align-items: center;
     justify-content: center;
-    color: var(--accent);
-    background-color: var(--accent-soft);
-    margin: 0 -9px 0 0;
-    transition: transform var(--t-press) var(--ease-out);
-  }
-  .add:active {
-    transform: scale(0.92);
+    width: 44px;
+    height: 44px;
+    color: var(--muted);
+    margin-right: -4px;
   }
   .counts {
     display: flex;
@@ -865,20 +861,18 @@
   .r {
     color: var(--c-review);
   }
-  /* The deck switcher and the filter: one row under the counts. */
   /* The deck and its filter chips: one line; the chips scroll sideways. */
   .deckbar {
     flex: none;
     display: flex;
     align-items: center;
     gap: 4px;
-    /* 12px clear of the "+" above it, hit areas included. */
-    margin: 12px 0 8px;
+    margin: 4px 0 0;
     min-height: 40px;
   }
   .switch-wrap {
     flex: none;
-    max-width: 55%;
+    max-width: 45%;
   }
   .fchips {
     flex: 1;
@@ -1412,7 +1406,8 @@
     flex: 1;
     height: 66px;
     border-radius: 18px;
-    background: var(--surface);
+    background: var(--accent);
+    color: var(--accent-text);
     font-weight: 600;
     font-size: 17px;
     letter-spacing: -0.01em;

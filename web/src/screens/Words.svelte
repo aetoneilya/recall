@@ -79,7 +79,8 @@
   })
   const hasGrammar = $derived(contents.types.rule > 0 || contents.tags.some((t) => t.tag.startsWith('Grammar/') || t.tag === 'Grammar' || t.tag === 'Grammar theory'))
   const filtered = $derived(!!(f.status || f.pos || f.cefr || f.state || f.tags.length || f.type))
-  let tagsOpen = $state(false)
+  let filtersOpen = $state(false)
+  const filterCount = $derived(f.tags.length + Number(!!f.state) + Number(!!f.status) + Number(!!f.pos) + Number(!!f.cefr) + Number(f.sort !== 'recent'))
   // Like the review filter (library.libraryFacets): a type, part of speech,
   // level or state is counted under the other picks, so the rest of its row
   // stays on offer (the type chips switch modes); tags drill down. Picked
@@ -109,8 +110,9 @@
     return { destroy: () => io.disconnect() }
   }
 
-  function clearFilters() {
-    f.type = ''
+  function clearFilters(all = false) {
+    if (all) f.type = ''
+    f.sort = 'recent'
     f.tags = []
     f.status = ''
     f.pos = ''
@@ -126,14 +128,22 @@
 <div class="words-screen">
   <div class="screen" bind:this={wordsView.scroller} onscroll={(e) => (wordsView.scrollTop = e.currentTarget.scrollTop)}>
     <div class="screen-title">
-      <h1>Cards</h1>
-      {#if rows}<span class="total">{rows.length === total ? total : `${rows.length} of ${total}`}</span>{/if}
+      <h1>Cards {#if rows}<small>{rows.length === total ? total : `${rows.length} of ${total}`}</small>{/if}</h1>
+      <button class="packs-link" onclick={() => navigate('/packs')}>Packs <Icon name="plus" size={16} /></button>
     </div>
-    <div class="switcher"><DeckSwitcher options={choices} selected={deckId} onselect={(id) => session.selectDeck(id)} /></div>
+    <div class="switcher">
+      <DeckSwitcher countLabel="cards" options={choices} selected={deckId} onselect={(id) => session.selectDeck(id)} />
+      <button class="deck-settings" onclick={() => navigate(deckId ? `/deck/${deckId}?from=%2Fwords` : '/decks')} aria-label={deck ? `Settings for ${deck.name}` : 'Manage decks'}><Icon name="settings" size={19} /></button>
+    </div>
 
-    <div class="search">
-      <Icon name="search" size={18} />
-      <input type="search" bind:value={f.q} placeholder="Search cards" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="search" aria-label="Search" />
+    <div class="search-row">
+      <div class="search">
+        <Icon name="search" size={18} />
+        <input type="search" bind:value={f.q} placeholder="Search cards" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="search" aria-label="Search" />
+      </div>
+      <button class="filters-toggle" class:on={filterCount > 0} onclick={() => (filtersOpen = true)} aria-label="Filter and sort cards" aria-haspopup="dialog">
+        <Icon name="filter" size={20} />{#if filterCount}<span>{filterCount}</span>{/if}
+      </button>
     </div>
 
     {#if presentTypes.length > 1}
@@ -145,7 +155,7 @@
       </div>
     {/if}
 
-    {#if hasGrammar}
+    {#if hasGrammar && (f.type === 'rule' || !presentTypes.includes('rule'))}
       <button class="handbook" onclick={() => navigate(`/handbook?deck=${deckId}&from=${from}`)}>
         <Icon name="words" size={18} />
         <span class="grow">Grammar handbook<span class="sub">The theory behind the rules</span></span>
@@ -153,48 +163,6 @@
       </button>
     {/if}
 
-    <div class="filters" role="group" aria-label="Filters">
-      <label class="pick" class:on={f.sort !== 'recent'}>
-        <span>{SORT_NAMES[f.sort] ?? 'Recent'}</span>
-        <select bind:value={f.sort} aria-label="Sort">
-          {#each Object.entries(SORT_NAMES) as [k, v] (k)}<option value={k}>{v}</option>{/each}
-        </select>
-      </label>
-      {#if contents.tags.length}
-        <button class="pick" class:on={f.tags.length} onclick={() => (tagsOpen = true)} aria-haspopup="dialog">
-          <span>{f.tags.length ? f.tags.map((t) => tagLabel(t).leaf).join(', ') : 'Any tag'}</span>
-        </button>
-      {/if}
-      <label class="pick" class:on={f.state}>
-        <span>{f.state ? STATE_NAMES[f.state] : 'Any state'}</span>
-        <select bind:value={f.state} aria-label="State">
-          <option value="">Any state</option>
-          {#each stateOptions as s (s.value)}<option value={s.value}>{STATE_NAMES[s.value]} ({s.n})</option>{/each}
-        </select>
-      </label>
-      <label class="pick" class:on={f.status}>
-        <span>{STATUS_NAMES[f.status === 'active' ? '' : f.status]}</span>
-        <select bind:value={f.status} aria-label="Status">
-          {#each Object.entries(STATUS_NAMES) as [k, v] (k)}<option value={k}>{v}</option>{/each}
-        </select>
-      </label>
-      {#if wordsOnly}
-        <label class="pick" class:on={f.pos}>
-          <span>{f.pos ? POS_NAMES[f.pos] : 'Any part'}</span>
-          <select bind:value={f.pos} aria-label="Part of speech">
-            <option value="">Any part of speech</option>
-            {#each posOptions as p (p.value)}<option value={p.value}>{POS_NAMES[p.value]} ({p.n})</option>{/each}
-          </select>
-        </label>
-        <label class="pick" class:on={f.cefr}>
-          <span>{f.cefr || 'Any level'}</span>
-          <select bind:value={f.cefr} aria-label="CEFR level">
-            <option value="">Any level</option>
-            {#each cefrOptions as c (c.value)}<option value={c.value}>{c.value} ({c.n})</option>{/each}
-          </select>
-        </label>
-      {/if}
-    </div>
 
     {#if !rows}
       {#if words.error || facts.error}
@@ -215,7 +183,7 @@
         <Icon name={f.q ? 'search' : 'words'} size={40} stroke={1.4} />
         {#if f.q || filtered}
           <p><strong>No matches</strong>{f.q ? `Nothing contains “${f.q.trim()}”${filtered ? ' with these filters' : ''}.` : 'No card fits these filters.'}</p>
-          {#if filtered}<button class="btn" onclick={clearFilters}>Clear filters</button>{/if}
+          {#if filtered}<button class="btn" onclick={() => clearFilters(true)}>Clear filters</button>{/if}
         {:else}
           <p><strong>No cards in {deck?.name ?? 'this deck'} yet</strong>Add words you meet, questions to remember, or grammar rules to practise.</p>
         {/if}
@@ -265,12 +233,54 @@
     {/if}
   </div>
 
-  {#if tagsOpen}
-    <Sheet title="Tags" onclose={() => (tagsOpen = false)}>
-      <TagTree tags={tagOptions} selected={f.tags} onchange={(t) => (f.tags = t)} />
+  {#if filtersOpen}
+    <Sheet title="Filter & sort" onclose={() => (filtersOpen = false)}>
+      <p class="filter-result">{rows?.length ?? 0} matching cards in {deck?.name ?? 'this deck'}</p>
+      <div class="filter-fields">
+        <label class="filter-field">
+          <span>Sort by</span>
+          <select bind:value={f.sort} aria-label="Sort">
+            {#each Object.entries(SORT_NAMES) as [k, v] (k)}<option value={k}>{v}</option>{/each}
+          </select>
+        </label>
+        <label class="filter-field">
+          <span>Card state</span>
+          <select bind:value={f.state} aria-label="State">
+            <option value="">Any state</option>
+            {#each stateOptions as s (s.value)}<option value={s.value}>{STATE_NAMES[s.value]} ({s.n})</option>{/each}
+          </select>
+        </label>
+        <label class="filter-field">
+          <span>Include</span>
+          <select bind:value={f.status} aria-label="Status">
+            {#each Object.entries(STATUS_NAMES) as [k, v] (k)}<option value={k}>{v}</option>{/each}
+          </select>
+        </label>
+        {#if wordsOnly}
+          <label class="filter-field">
+            <span>Part of speech</span>
+            <select bind:value={f.pos} aria-label="Part of speech">
+              <option value="">Any part of speech</option>
+              {#each posOptions as p (p.value)}<option value={p.value}>{POS_NAMES[p.value]} ({p.n})</option>{/each}
+            </select>
+          </label>
+          <label class="filter-field">
+            <span>Level</span>
+            <select bind:value={f.cefr} aria-label="CEFR level">
+              <option value="">Any level</option>
+              {#each cefrOptions as c (c.value)}<option value={c.value}>{c.value} ({c.n})</option>{/each}
+            </select>
+          </label>
+        {/if}
+      </div>
+
+      {#if contents.tags.length}
+        <div class="section-label">Tags</div>
+        <TagTree tags={tagOptions} selected={f.tags} onchange={(t) => (f.tags = t)} />
+      {/if}
       <div class="sheet-actions">
-        <button class="btn" onclick={() => (f.tags = [])} disabled={!f.tags.length}>Clear</button>
-        <button class="btn primary grow" onclick={() => (tagsOpen = false)}>Done</button>
+        <button class="btn" onclick={() => clearFilters()} disabled={!filterCount}>Reset</button>
+        <button class="btn primary grow" onclick={() => (filtersOpen = false)}>Show {rows?.length ?? 0} cards</button>
       </div>
     </Sheet>
   {/if}
@@ -286,19 +296,21 @@
   .screen {
     padding-bottom: 96px;
   }
-  .total {
+  h1 small {
     font-size: 15px;
     color: var(--muted);
+    font-weight: 400;
+    letter-spacing: 0;
     font-variant-numeric: tabular-nums;
   }
   .search {
-    position: sticky;
-    top: -8px;
-    z-index: 2;
+    position: relative;
+    flex: 1;
+    min-width: 0;
     display: flex;
     align-items: center;
     background: var(--bg);
-    padding: 4px 0 8px;
+    padding: 0;
     color: var(--faint);
   }
   .search :global(svg) {
@@ -314,55 +326,80 @@
   .search input:focus {
     background: var(--surface);
   }
-  .filters {
+  .filter-fields {
     display: flex;
-    gap: 6px;
-    overflow-x: auto;
-    margin: 0 -16px 12px;
-    padding: 0 16px 2px;
-    scrollbar-width: none;
+    flex-direction: column;
+    gap: 12px;
   }
-  .filters::-webkit-scrollbar {
-    display: none;
-  }
-  /* A native select under a chip: one tap opens the system picker. */
-  .pick {
-    position: relative;
-    flex: none;
-    display: inline-flex;
+  .filter-field {
+    display: flex;
     align-items: center;
-    height: 40px;
-    padding: 0 26px 0 12px;
-    border-radius: 16px;
-    background: var(--surface);
+    gap: 12px;
+    min-height: 44px;
+    font-size: 15px;
+  }
+  .filter-field span {
+    flex: 1;
+  }
+  .filter-field select {
+    width: 58%;
+    min-height: 44px;
+    padding: 8px 28px 8px 12px;
+  }
+  .filter-result {
     color: var(--muted);
     font-size: 14px;
-    font-weight: 500;
-    white-space: nowrap;
+    margin: 4px 0 20px;
   }
-  .pick::after {
-    content: '';
-    position: absolute;
-    right: 11px;
-    top: 13px;
-    width: 6px;
-    height: 6px;
-    border-right: 1.5px solid currentColor;
-    border-bottom: 1.5px solid currentColor;
-    transform: rotate(45deg);
-    opacity: 0.7;
+  .search-row {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--bg);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
   }
-  .pick.on {
-    background: var(--accent);
-    color: var(--accent-text);
+  .filters-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    min-width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    color: var(--muted);
+    background: var(--surface);
   }
-  .pick select {
-    position: absolute;
-    inset: 0;
-    opacity: 0;
-    width: 100%;
-    padding: 0;
-    cursor: pointer;
+  .filters-toggle.on {
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .filters-toggle span {
+    font-size: 13px;
+    font-weight: 600;
+    padding-right: 8px;
+  }
+  .filters-toggle.on :global(svg) {
+    margin-left: 8px;
+  }
+  .packs-link {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 44px;
+    color: var(--accent);
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .deck-settings {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    color: var(--muted);
   }
   .word {
     gap: 10px;
@@ -465,7 +502,10 @@
     transform: scale(0.92);
   }
   .switcher {
-    margin: -2px 0 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: -4px 0 8px;
   }
   /* Padded vertically (and pulled back by the margin) so the chips' 44px hit
      areas fit inside the scroller, which clips. */
@@ -473,7 +513,7 @@
     display: flex;
     gap: 6px;
     overflow-x: auto;
-    margin: -7px -16px 1px;
+    margin: -7px -16px 3px;
     padding: 7px 16px;
     scrollbar-width: none;
   }
@@ -610,6 +650,10 @@
     color: var(--faint);
   }
   .sheet-actions {
+    position: sticky;
+    bottom: -16px;
+    background: var(--bg);
+    padding: 12px 0 16px;
     display: flex;
     gap: 8px;
     margin-top: 16px;

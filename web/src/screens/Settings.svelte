@@ -2,214 +2,18 @@
   import ConfirmButton from '../components/ConfirmButton.svelte'
   import Icon from '../components/Icon.svelte'
   import Sheet from '../components/Sheet.svelte'
-  import TagManager from '../components/TagManager.svelte'
   import { HttpError } from '../lib/api.ts'
   import { api, flushNow, setMe, signOutLocally, status } from '../lib/app.svelte.ts'
-  import { getDecks, hasDeckLanguages } from '../lib/decks.ts'
   import { session } from '../lib/review.svelte.ts'
   import { allZones, deviceZone, patchMeOptimistic, type MeFieldPatch, relTime, searchZones, shortDate, zoneLabel, zoneOffset } from '../lib/settings.ts'
   import { applyTheme, loadTheme, type ThemeChoice } from '../lib/theme.ts'
   import { errorText, showToast } from '../lib/toast.svelte.ts'
-  import type { ApiToken, AuthVia, DeckPatch, DeckWithCounts, Me, NewToken, PackInfo, TypeAnswer } from '../lib/types.ts'
-  import { LEVEL_NAMES, type Level } from '../lib/onboarding.svelte.ts'
+  import type { ApiToken, AuthVia, Me, NewToken } from '../lib/types.ts'
 
-  // The review screen's cached copy paints the study settings at once (and
-  // offline); the fetch below brings fresh counts.
-  let decks = $state<DeckWithCounts[]>(
-    (Object.values(session.decks) as Partial<DeckWithCounts>[]).every((d) => d.counts) ? ($state.snapshot(Object.values(session.decks)) as DeckWithCounts[]) : [],
-  )
   let theme = $state<ThemeChoice>(loadTheme())
   let mockOffline = $state(false)
-
-  void getDecks(true)
-    .then((d) => (decks = d))
-    .catch(() => {})
-
-  const origin = location.origin
-  const mcpUrl = `${origin}/mcp`
-
+  const mcpUrl = `${location.origin}/mcp`
   const me = $derived(status.me)
-  const hasLangs = (d: DeckWithCounts) => hasDeckLanguages(d)
-
-  // Renaming a deck in place: tap its name, type, Enter (or leave the field).
-  let renaming = $state<string | null>(null)
-  let newName = $state('')
-  function startRename(d: DeckWithCounts) {
-    renaming = d.id
-    newName = d.name
-  }
-  async function rename(d: DeckWithCounts) {
-    if (renaming !== d.id) return
-    renaming = null
-    const name = newName.replace(/\s+/g, ' ').trim()
-    if (!name || name === d.name) return
-    await patchDeck(d, { name })
-  }
-
-  // A deck and, after the second tap, every card in it with its history.
-  async function removeDeck(d: DeckWithCounts) {
-    const before = decks
-    decks = decks.filter((x) => x.id !== d.id)
-    try {
-      const r = await api.deleteDeck(d.id, true)
-      const n = r.words + r.facts
-      showToast(n ? `Deleted “${d.name}” and ${n} ${n === 1 ? 'card' : 'cards'}` : `Deleted “${d.name}”`)
-      status.factsVersion++
-      status.wordsVersion++
-      // A pack whose cards went with the deck can be added again.
-      void api.packs().then((p) => (packs = p)).catch(() => {})
-      void getDecks(true).catch(() => {})
-      void session.refresh()
-    } catch (e) {
-      decks = before
-      showToast(`Not deleted: ${errorText(e)}`)
-    }
-  }
-
-  // The deck whose tags are being managed (a sheet).
-  let tagsDeck = $state<DeckWithCounts | null>(null)
-
-  // A deck into another: its cards move with its name as a tag; the emptied
-  // deck goes. Cards the target already has stay behind (and are listed).
-  async function merge(d: DeckWithCounts, intoId: string, el: HTMLSelectElement) {
-    el.value = ''
-    const into = decks.find((x) => x.id === intoId)
-    if (!into) return
-    try {
-      const r = await api.mergeDeck(d.id, into.id)
-      const n = r.moved.words + r.moved.facts
-      const left = r.skipped.length ? ` · ${r.skipped.length} already there, left in “${d.name}”` : ''
-      showToast(`Moved ${n} ${n === 1 ? 'card' : 'cards'} into “${into.name}”, tagged “${d.name}”${left}`)
-      status.factsVersion++
-      status.wordsVersion++
-      decks = await getDecks(true)
-      void session.refresh()
-    } catch (e) {
-      showToast(`Not merged: ${errorText(e)}`)
-    }
-  }
-
-  // Content packs, added with one tap into the deck picked for each. The
-  // starter word sets (one per level) get a compact list of their own.
-  let packs = $state<PackInfo[]>([])
-  const starters = $derived(packs.filter((p) => p.format === 'words'))
-  const otherPacks = $derived(packs.filter((p) => p.format !== 'words'))
-  let packDeck = $state<Record<string, string>>({})
-  let addingPack = $state<string | null>(null)
-  void api.packs().then((p) => (packs = p)).catch(() => {})
-  async function addPack(p: PackInfo) {
-    if (addingPack) return
-    addingPack = p.id
-    try {
-      const r = await api.addPack(p.id, packDeck[p.id] || p.deckId)
-      packs = r.packs
-      const deck = r.packs.find((x) => x.id === p.id)?.deckName ?? p.deckName
-      const unit = p.format === 'words' ? (r.added === 1 ? 'word' : 'words') : r.added === 1 ? 'card' : 'cards'
-      showToast(`Added ${r.added} ${unit} to “${deck}”${r.duplicates ? ` · ${r.duplicates} already there` : ''}`)
-      status.factsVersion++
-      status.wordsVersion++
-      void getDecks(true).then((x) => (decks = x)).catch(() => {})
-      void session.refresh()
-    } catch (e) {
-      showToast(`Not added: ${errorText(e)}`)
-    } finally {
-      addingPack = null
-    }
-  }
-
-  // A new deck: a name, and languages only for one that takes words.
-  let deckName = $state('')
-  let withLangs = $state(false)
-  let targetLang = $state('')
-  let nativeLang = $state('ru')
-  let addingDeck = $state(false)
-  const langOk = (s: string) => /^[a-z]{2,3}$/.test(s.trim().toLowerCase())
-  async function addDeck() {
-    const name = deckName.trim()
-    if (!name || addingDeck || (withLangs && !(langOk(targetLang) && langOk(nativeLang)))) return
-    addingDeck = true
-    try {
-      const d = await api.createDeck({ name, ...(withLangs ? { targetLang: targetLang.trim().toLowerCase(), nativeLang: nativeLang.trim().toLowerCase() } : {}) })
-      decks = [...decks, d]
-      deckName = ''
-      withLangs = false
-      targetLang = ''
-      session.applyDeck(d)
-      void getDecks(true).then((x) => (decks = x)).catch(() => {})
-      void session.refresh()
-    } catch (e) {
-      showToast(`Not added: ${errorText(e)}`)
-    } finally {
-      addingDeck = false
-    }
-  }
-
-  // Deck settings: shown at once (and the review queue follows at once),
-  // sent in the background, put back with a note if the server refuses.
-  async function patchDeck(d: DeckWithCounts, p: DeckPatch) {
-    const before = Object.fromEntries(Object.keys(p).map((k) => [k, d[k as keyof DeckPatch]])) as DeckPatch
-    Object.assign(d, p)
-    session.applyDeck($state.snapshot(d) as DeckWithCounts)
-    try {
-      await api.patchDeck(d.id, p)
-      // The queue reflects the change by the time Review is back on screen.
-      void session.refresh()
-    } catch (e) {
-      Object.assign(d, before)
-      session.applyDeck($state.snapshot(d) as DeckWithCounts)
-      showToast(`Not saved: ${errorText(e)}`)
-    }
-  }
-
-  function setDirection(d: DeckWithCounts, dir: 'forwardEnabled' | 'reverseEnabled', on: boolean, el: HTMLInputElement) {
-    const other = dir === 'forwardEnabled' ? d.reverseEnabled : d.forwardEnabled
-    // One direction always stays on.
-    if (!on && !other) {
-      el.checked = true
-      showToast('Keep at least one direction on')
-      return
-    }
-    void patchDeck(d, { [dir]: on })
-  }
-
-  const GATES: { label: string; value: number | null }[] = [
-    { label: 'Off', value: null },
-    { label: '3 d', value: 3 },
-    { label: '7 d', value: 7 },
-    { label: '14 d', value: 14 },
-    { label: '30 d', value: 30 },
-  ]
-  const TYPE_ANSWERS: { label: string; value: TypeAnswer }[] = [
-    { label: 'Off', value: 'off' },
-    { label: 'RU → EN', value: 'reverse' },
-    { label: 'Both', value: 'both' },
-  ]
-  const code = (l: string) => l.toUpperCase()
-
-  const timers = new Map<string, ReturnType<typeof setTimeout>>()
-  // The saved value before a burst of taps: a refusal goes back to it.
-  const saved = new Map<string, number>()
-  function setNew(d: DeckWithCounts, delta: number) {
-    const v = Math.max(0, Math.min(999, d.newPerDay + delta))
-    if (v === d.newPerDay) return
-    if (!saved.has(d.id)) saved.set(d.id, d.newPerDay)
-    const before = saved.get(d.id)!
-    d.newPerDay = v
-    clearTimeout(timers.get(d.id))
-    timers.set(
-      d.id,
-      setTimeout(async () => {
-        saved.delete(d.id)
-        try {
-          await api.patchDeck(d.id, { newPerDay: v })
-          void session.refresh()
-        } catch (e) {
-          d.newPerDay = before
-          showToast(`Not saved: ${errorText(e)}`)
-        }
-      }, 600),
-    )
-  }
 
   async function copy(text: string) {
     try {
@@ -465,157 +269,6 @@
     </div>
   </div>
 
-  {#each decks as d (d.id)}
-    {@const t = code(d.targetLang ?? '')}
-    {@const n = code(d.nativeLang ?? '')}
-    {@const shown = d.counts.total - d.counts.dropped}
-    <div class="section-label">{d.name}</div>
-    <div class="group">
-      <div class="row">
-        {#if renaming === d.id}
-          <form class="grow rename" onsubmit={(e) => { e.preventDefault(); void rename(d) }}>
-            <!-- svelte-ignore a11y_autofocus -->
-            <input bind:value={newName} autofocus onblur={() => void rename(d)} onkeydown={(e) => e.key === 'Escape' && (renaming = null)} aria-label="Deck name" autocomplete="off" />
-          </form>
-        {:else}
-          <button class="grow name" onclick={() => startRename(d)} aria-label="Rename {d.name}">
-            Name <span class="muted">{d.name}</span><Icon name="edit" size={14} />
-            <span class="sub">{shown} {shown === 1 ? 'card' : 'cards'}{hasLangs(d) ? ` · words, ${t} → ${n}` : ''}</span>
-          </button>
-        {/if}
-      </div>
-      <div class="row">
-        <span class="grow">New cards per day <span class="sub">{d.counts.newTotal ? `${d.counts.newTotal} not started yet` : 'Every card started'}</span></span>
-        <div class="stepper">
-          <button onclick={() => setNew(d, -1)} disabled={d.newPerDay <= 0} aria-label="Fewer new {d.name} cards"><Icon name="minus" size={18} stroke={2} /></button>
-          <span>{d.newPerDay}</span>
-          <button onclick={() => setNew(d, 1)} aria-label="More new {d.name} cards"><Icon name="plus" size={18} stroke={2} /></button>
-        </div>
-      </div>
-      {#if hasLangs(d)}
-        <label class="row">
-          <span class="grow">{t} → {n} <span class="muted">recognise</span><span class="sub">See the word, recall what it means</span></span>
-          <input type="checkbox" class="switch" checked={d.forwardEnabled} onchange={(e) => setDirection(d, 'forwardEnabled', e.currentTarget.checked, e.currentTarget)} />
-        </label>
-        <label class="row">
-          <span class="grow">{n} → {t} <span class="muted">recall</span><span class="sub">See the meaning, produce the word</span></span>
-          <input type="checkbox" class="switch" checked={d.reverseEnabled} onchange={(e) => setDirection(d, 'reverseEnabled', e.currentTarget.checked, e.currentTarget)} />
-        </label>
-        {#if d.forwardEnabled && d.reverseEnabled}
-          <div class="row col">
-            <span>Introduce {n} → {t} after {t} → {n} is stable for <span class="sub">New words start with recognition only; recall joins once it holds</span></span>
-            <div class="seg five" role="radiogroup" aria-label="Introduce {n} → {t} after">
-              {#each GATES as g (g.label)}
-                <button role="radio" aria-checked={d.reverseAfterDays === g.value} class:on={d.reverseAfterDays === g.value} onclick={() => patchDeck(d, { reverseAfterDays: g.value })}>{g.label}</button>
-              {/each}
-            </div>
-          </div>
-        {/if}
-        <div class="row col">
-          <span>Type the answer <span class="sub">Instead of just revealing it; typos count as Hard</span></span>
-          <div class="seg" role="radiogroup" aria-label="Type the answer">
-            {#each TYPE_ANSWERS as o (o.value)}
-              <button role="radio" aria-checked={d.typeAnswer === o.value} class:on={d.typeAnswer === o.value} onclick={() => patchDeck(d, { typeAnswer: o.value })}>{o.label.replace('RU', n).replace('EN', t)}</button>
-            {/each}
-          </div>
-        </div>
-      {/if}
-      {#if d.tags?.length}
-        <button class="row" onclick={() => (tagsDeck = d)}>
-          <span class="grow">Tags <span class="sub">{d.tags.length} · rename, nest with "/", or remove</span></span>
-          <Icon name="chevron" size={16} />
-        </button>
-      {/if}
-      <div class="row deck-actions">
-        {#if decks.length > 1}
-          <label class="btn small merge">
-            <span>Merge into…</span>
-            <select onchange={(e) => void merge(d, e.currentTarget.value, e.currentTarget)} aria-label="Merge {d.name} into">
-              <option value="">Merge into…</option>
-              {#each decks.filter((x) => x.id !== d.id) as x (x.id)}<option value={x.id}>{x.name}</option>{/each}
-            </select>
-          </label>
-        {/if}
-        <ConfirmButton class="btn danger small" onconfirm={() => void removeDeck(d)} confirmLabel={d.counts.total ? `Delete ${d.counts.total} ${d.counts.total === 1 ? 'card' : 'cards'} and their history` : 'Tap again to delete'}>
-          <Icon name="trash" size={15} /> Delete
-        </ConfirmButton>
-      </div>
-    </div>
-    {#if hasLangs(d)}<p class="caption">A direction you turn off keeps its history and comes back as it was.</p>{/if}
-  {:else}
-    <div class="section-label">Study</div>
-    <div class="group"><div class="row muted">Loading…</div></div>
-  {/each}
-
-  {#if decks.length}
-    <div class="section-label">New deck</div>
-    <div class="group">
-      <form class="row col new-deck" onsubmit={(e) => { e.preventDefault(); void addDeck() }}>
-        <div class="new-row">
-          <input bind:value={deckName} placeholder="Name, e.g. Programming" autocomplete="off" aria-label="New deck name" />
-          <button class="btn" type="submit" disabled={!deckName.trim() || addingDeck || (withLangs && !(langOk(targetLang) && langOk(nativeLang)))}>Add</button>
-        </div>
-        <label class="new-row langs">
-          <input type="checkbox" class="switch" bind:checked={withLangs} />
-          <span class="grow">Takes words <span class="sub">A language to learn: words with translations, both directions</span></span>
-        </label>
-        {#if withLangs}
-          <div class="new-row">
-            <input bind:value={targetLang} placeholder="Learning, e.g. de" maxlength="3" autocomplete="off" autocapitalize="off" aria-label="Language to learn" />
-            <input bind:value={nativeLang} placeholder="Yours, e.g. ru" maxlength="3" autocomplete="off" autocapitalize="off" aria-label="Your language" />
-          </div>
-        {/if}
-      </form>
-    </div>
-    <p class="caption">A deck holds cards of any type; subjects inside it are tags. Merging moves a deck's cards into another, tagged with its name.</p>
-    {#if otherPacks.length}
-      <div class="section-label">Packs</div>
-      <div class="group">
-        {#each otherPacks as p (p.id)}
-          <div class="row pack">
-            <span class="grow">{p.name} <span class="muted">· {p.count} cards</span>{#if p.description}<span class="sub">{p.description}</span>{/if}
-              {#if p.added && !p.missing}
-                <span class="sub">In “{p.deckName}”</span>
-              {:else}
-                <label class="sub into">Into
-                  <select bind:value={() => packDeck[p.id] ?? p.deckId ?? '', (v) => (packDeck[p.id] = v)} aria-label="Deck for {p.name}">
-                    {#if !p.deckId}<option value="">New deck “{p.deckName}”</option>{/if}
-                    {#each decks as x (x.id)}<option value={x.id}>{x.name}</option>{/each}
-                  </select>
-                </label>
-              {/if}
-            </span>
-            {#if p.added && !p.missing}
-              <span class="added"><Icon name="check" size={16} stroke={2.2} /> Added</span>
-            {:else}
-              <button class="btn small" onclick={() => addPack(p)} disabled={addingPack === p.id}>
-                {addingPack === p.id ? 'Adding…' : p.added ? `Add ${p.missing} new` : 'Add'}
-              </button>
-            {/if}
-          </div>
-        {/each}
-      </div>
-    {/if}
-    {#if starters.length}
-      <div class="section-label">Starter words</div>
-      <div class="group">
-        {#each starters as p (p.id)}
-          <div class="row pack">
-            <span class="grow"><b class="lvl">{p.level}</b> {p.level ? LEVEL_NAMES[p.level as Level] ?? '' : p.name} <span class="muted">· {p.count.toLocaleString('en-US')} words</span></span>
-            {#if p.added && !p.missing}
-              <span class="added"><Icon name="check" size={16} stroke={2.2} /> Added</span>
-            {:else}
-              <button class="btn small" onclick={() => addPack(p)} disabled={addingPack === p.id} aria-label="Add {p.name}">
-                {addingPack === p.id ? 'Adding…' : p.added ? `Add ${p.missing} new` : 'Add'}
-              </button>
-            {/if}
-          </div>
-        {/each}
-      </div>
-      <p class="caption">Common words for each level, most useful first, into “{starters[0]!.deckName}” and tagged Starter/&lt;level&gt;. Words you already have are skipped.</p>
-    {/if}
-  {/if}
-
   {#if me}
     <div class="section-label">Reminders</div>
     <div class="group">
@@ -826,10 +479,6 @@
   </Sheet>
 {/if}
 
-{#if tagsDeck}
-  <TagManager deckId={tagsDeck.id} deckName={tagsDeck.name} tags={tagsDeck.tags} onclose={() => ((tagsDeck = null), void getDecks(true).then((x) => (decks = x)).catch(() => {}))} />
-{/if}
-
 <style>
   .grow {
     flex: 1;
@@ -878,54 +527,6 @@
     font-size: 15px;
     flex: none;
   }
-  .deck-actions {
-    justify-content: flex-end;
-    gap: 8px;
-  }
-  .deck-actions :global(.btn.small) {
-    min-height: 40px;
-    padding: 0 12px;
-    font-size: 14px;
-    font-weight: 500;
-  }
-  .merge {
-    position: relative;
-  }
-  .merge select {
-    position: absolute;
-    inset: 0;
-    opacity: 0;
-  }
-  /* A 40px target, like every control. */
-  .into select {
-    margin-left: 4px;
-    min-height: 40px;
-    padding: 0 8px;
-    font-size: 13px;
-    width: auto;
-    max-width: 60%;
-  }
-  .lvl {
-    display: inline-block;
-    min-width: 26px;
-    font-weight: 650;
-    font-variant-numeric: tabular-nums;
-  }
-  .pack .btn.small {
-    flex: none;
-    min-height: 40px;
-    padding: 0 14px;
-    font-size: 14px;
-  }
-  .added {
-    flex: none;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 14px;
-    font-weight: 500;
-    color: var(--accent);
-  }
   .name {
     display: block;
     text-align: left;
@@ -937,52 +538,6 @@
     margin-left: 6px;
     color: var(--faint);
     vertical-align: -1px;
-  }
-  .rename input {
-    padding: 8px 10px;
-  }
-  .new-deck {
-    gap: 10px;
-  }
-  .new-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-  }
-  .new-row input:not(.switch) {
-    flex: 1;
-    min-width: 0;
-    padding: 9px 12px;
-  }
-  .new-row .btn {
-    flex: none;
-  }
-  .stepper {
-    display: flex;
-    align-items: center;
-    background: var(--surface-2);
-    border-radius: 10px;
-  }
-  .stepper button {
-    width: 44px;
-    height: 40px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--accent);
-    border-radius: 10px;
-    transition: background-color var(--t-fast) ease;
-  }
-  .stepper button:active:not(:disabled) {
-    background: color-mix(in srgb, var(--accent) 14%, transparent);
-    transition-duration: 0ms;
-  }
-  .stepper span {
-    min-width: 32px;
-    text-align: center;
-    font-variant-numeric: tabular-nums;
-    font-weight: 600;
   }
 
   /* Reminders */
@@ -1179,13 +734,6 @@
     flex-direction: column;
     align-items: stretch;
     gap: 10px;
-  }
-  .seg.five {
-    grid-template-columns: repeat(5, 1fr);
-  }
-  .seg.five button {
-    text-transform: none;
-    font-variant-numeric: tabular-nums;
   }
   .seg {
     display: grid;

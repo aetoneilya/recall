@@ -5,7 +5,7 @@
   // the decks with what each has today, the current one checked. A single
   // deck: just its name.
   type Option = { id: string; name: string; n?: number; counts?: { new: number; learning: number; review: number } }
-  let { options, selected, onselect, label = 'Deck' }: { options: Option[]; selected: string; onselect: (id: string) => void; label?: string } = $props()
+  let { options, selected, onselect, label = 'Deck', countLabel = 'today' }: { options: Option[]; selected: string; onselect: (id: string) => void; label?: string; countLabel?: string } = $props()
 
   let open = $state(false)
   let root: HTMLElement | undefined = $state()
@@ -39,7 +39,7 @@
 
 {#if options.length > 1}
   <div class="dd" bind:this={root}>
-    <button class="btn-dd" class:open onclick={toggle} aria-haspopup="menu" aria-expanded={open} aria-label="{label}: {current?.name}{current?.n !== undefined ? `, ${current.n} today` : ''}">
+    <button class="btn-dd" class:open onclick={toggle} aria-haspopup="menu" aria-expanded={open} aria-label="{label}: {current?.name}{current?.n !== undefined ? `, ${current.n} ${countLabel}` : ''}">
       <span class="name">{current?.name}</span>
       {#if current?.n !== undefined}<b>{current.n}</b>{/if}
       <svg class="chev" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>

@@ -10,6 +10,7 @@
   import { session } from '../lib/review.svelte.ts'
   import { navigate } from '../lib/router.svelte.ts'
   import { errorText } from '../lib/toast.svelte.ts'
+  import { studySummary } from '../lib/progress.ts'
   import type { Dashboard, DeckWithCounts } from '../lib/types.ts'
 
   let data = $state.raw<Dashboard | null>(null)
@@ -71,6 +72,7 @@
   // Growth proof under the headline: known words now vs about 30 days ago (weekly points).
   const change = $derived(growth.length > 4 ? growth.at(-1)!.value - growth.at(-5)!.value : null)
   const activeDays = $derived((data?.activity.days ?? []).filter((d) => d.reviews > 0).length)
+  const weekly = $derived(studySummary(data?.activity.days ?? []))
   const history = $derived([...(v?.history ?? [])].reverse())
   const tiles = $derived(
     data
@@ -104,7 +106,48 @@
     </div>
     <div class="panel" style="margin-top: 36px"><span class="skel" style="height: 110px; border-radius: 8px"></span></div>
   {:else}
-    <!-- Hero: the estimate and where it puts you. -->
+    <div class="panel study-hero">
+      <div class="study-heading"><span>Across all decks</span><span>{weekly.todayReviews} reviews today</span></div>
+      <div class="streak-number">{data.activity.streak.current}<span>{data.activity.streak.current === 1 ? 'day' : 'days'} in a row</span></div>
+      <div class="weekly-label">Last 7 days</div>
+      <div class="study-metrics">
+        <div><b>{fmt(weekly.reviews)}</b><span>reviews</span></div>
+        <div><b>{pct(weekly.recalled)}</b><span>recalled</span></div>
+        <div><b>{duration(weekly.timeMs)}</b><span>studying</span></div>
+      </div>
+      <p class="foot">{weekly.reviews ? 'Recalled = answers rated Hard, Good or Easy.' : 'Your first review starts your progress.'}</p>
+    </div>
+
+    <div class="section-label">Activity · {data.activity.days.length} days</div>
+    <div class="panel">
+      <div class="streaks"><span>{activeDays} active days</span><span class="faint">Best streak: {data.activity.streak.longest}</span></div>
+      <Heatmap days={data.activity.days} />
+      <div class="legend" aria-hidden="true"><span>Reviews per day</span><span class="scale">Less<i class="l0"></i><i class="l1"></i><i class="l2"></i><i class="l3"></i><i class="l4"></i>More</span></div>
+      <p class="foot">
+        {fmt(data.activity.totals.reviews)} reviews · {duration(data.activity.totals.timeMs)} spent
+      </p>
+    </div>
+
+    {#if decks.length > 1 || decks.some((d) => d.tags?.length)}
+      <div class="section-label">Decks</div>
+      <div class="group topics">
+        {#each decks as d (d.id)}
+          {@const c = d.counts}
+          {@const shown = c.total - c.dropped}
+          <div class="row topic">
+            <span class="tmain">
+              <span class="tname">{d.name}</span>
+              <!-- Words and questions vs their cards (a word has two): new and learning count cards. -->
+              <span class="tsub">{fmt(shown)} {shown === 1 ? 'item' : 'items'} · {fmt(c.known)} known · cards: {fmt(c.learning)} learning, {fmt(c.newTotal)} new</span>
+              {#if d.tags?.length}<span class="ttags">{d.tags.slice(0, 4).map((t) => `${t.tag.split('/').join(' › ')} ${t.n}`).join(' · ')}{d.tags.length > 4 ? ` · +${d.tags.length - 4}` : ''}</span>{/if}
+            </span>
+            <span class="today" aria-label="{c.due + c.new} due today"><b>{fmt(c.due + c.new)}</b> today</span>
+          </div>
+        {/each}
+      </div>
+    {/if}
+
+    <div class="section-label">{data.deck.name} · vocabulary</div>
     <div class="panel hero">
       {#if cur}
         <div class="big"><span class="approx">≈</span>{fmt(cur.adjusted)}</div>
@@ -116,10 +159,6 @@
             {#if cur.cefr.next}next: {cur.cefr.next.id} at {fmt(cur.cefr.next.size)}{:else}top of the learner scale{/if}
           </span>
         </div>
-        <p class="native">≈ {fmt(cur.nativeEquivalent.value)} as natives count</p>
-        <p class="explain">
-          Lemmas you know among the 30,000 most frequent English ones{cur.basis === 'app' ? ', from the words known in the app only' : ''}. The native comparison is a calibration, so it's approximate.
-        </p>
       {:else}
         <div class="what solo">Vocabulary size needs the frequency list on the server.</div>
       {/if}
@@ -130,11 +169,21 @@
             <button class="link" onclick={() => navigate('/test')}>Retake test</button>
           </div>
         {:else}
-          <button class="btn primary block cta" onclick={() => navigate('/test')}>Take the 3-minute test</button>
+          <button class="btn block cta" onclick={() => navigate('/test')}>3-minute vocabulary test</button>
         {/if}
       {/if}
     </div>
 
+    <details class="vocab-details">
+      <summary>Vocabulary details</summary>
+      {#if cur}
+        <div class="panel methodology">
+        <p class="native">≈ {fmt(cur.nativeEquivalent.value)} as natives count</p>
+        <p class="explain">
+          Lemmas you know among the 30,000 most frequent English ones{cur.basis === 'app' ? ', from the words known in the app only' : ''}. The native comparison is a calibration, so it's approximate.
+        </p>
+        </div>
+      {/if}
     {#if cur && v?.scale?.points.length}
       <div class="section-label">Where that puts you</div>
       <div class="panel ladder-panel">
@@ -188,40 +237,6 @@
       </div>
     {/if}
 
-    <div class="section-label">Activity · 90 days</div>
-    <div class="panel">
-      <div class="streaks">
-        <div class="streak">
-          <span><b>{data.activity.streak.current}</b> {data.activity.streak.current === 1 ? 'day' : 'days'} in a row</span>
-        </div>
-        <span class="faint">longest {data.activity.streak.longest}</span>
-      </div>
-      <Heatmap days={data.activity.days} />
-      <div class="legend" aria-hidden="true"><span>{activeDays} active {activeDays === 1 ? 'day' : 'days'}</span><span class="scale">Less<i class="l0"></i><i class="l1"></i><i class="l2"></i><i class="l3"></i><i class="l4"></i>More</span></div>
-      <p class="foot">
-        {fmt(data.activity.totals.reviews)} reviews · {duration(data.activity.totals.timeMs)} spent
-      </p>
-    </div>
-
-    {#if decks.length > 1 || decks.some((d) => d.tags?.length)}
-      <div class="section-label">Decks</div>
-      <div class="group topics">
-        {#each decks as d (d.id)}
-          {@const c = d.counts}
-          {@const shown = c.total - c.dropped}
-          <div class="row topic">
-            <span class="tmain">
-              <span class="tname">{d.name}</span>
-              <!-- Words and questions vs their cards (a word has two): new and learning count cards. -->
-              <span class="tsub">{fmt(shown)} {shown === 1 ? 'item' : 'items'} · {fmt(c.known)} known · cards: {fmt(c.learning)} learning, {fmt(c.newTotal)} new</span>
-              {#if d.tags?.length}<span class="ttags">{d.tags.slice(0, 4).map((t) => `${t.tag.split('/').join(' › ')} ${t.n}`).join(' · ')}{d.tags.length > 4 ? ` · +${d.tags.length - 4}` : ''}</span>{/if}
-            </span>
-            <span class="today" aria-label="{c.due + c.new} due today"><b>{fmt(c.due + c.new)}</b> today</span>
-          </div>
-        {/each}
-      </div>
-    {/if}
-
     {#if data.coverage.some((b) => b.words)}
       <div class="section-label">Frequency coverage</div>
       <div class="panel">
@@ -244,14 +259,80 @@
         {/each}
       </div>
     {/if}
+    </details>
   {/if}
 </div>
 
 <style>
+  .study-heading {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .streak-number {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    font-size: 48px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    font-variant-numeric: tabular-nums;
+    margin: 10px 0 20px;
+  }
+  .streak-number span {
+    font-size: 17px;
+    font-weight: 500;
+    letter-spacing: 0;
+    color: var(--muted);
+  }
+  .weekly-label {
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .study-metrics {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+  .study-metrics div {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .study-metrics b {
+    font-size: 23px;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+  .study-metrics span {
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .vocab-details {
+    margin-top: 8px;
+  }
+  .vocab-details summary {
+    min-height: 44px;
+    padding: 12px 16px;
+    color: var(--accent);
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .methodology {
+    margin-top: 8px;
+  }
   .panel {
     background: var(--surface);
     border-radius: var(--radius-m);
     padding: 14px;
+  }
+  .study-hero {
+    padding: 16px;
   }
   .hero {
     padding: 18px 16px 16px;
@@ -499,18 +580,9 @@
     font-size: 15px;
     font-variant-numeric: tabular-nums;
   }
-  .streak {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .streak :global(svg) {
-    color: var(--accent);
-  }
-  .streak b {
-    font-size: 20px;
-    font-weight: 700;
-  }
+
+
+
   .foot {
     margin: 10px 0 0;
     font-size: 13px;

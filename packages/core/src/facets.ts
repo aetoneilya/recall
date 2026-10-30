@@ -70,7 +70,7 @@ function candidates(items: readonly FacetItem[], k: Facet): Set<string> {
 // tags (AND); any other value stands in for its facet's selection (OR).
 export function withOption(f: ReviewFilter, k: Facet, v: string): ReviewFilter {
   const selected = (f[k] ?? []) as string[]
-  return { ...f, [k]: k === 'tags' ? [...new Set([...selected, v])] : [v] }
+  return { ...f, ...(k === 'tags' ? { tagSelection: undefined } : {}), [k]: k === 'tags' ? [...new Set([...selected, v])] : [v] }
 }
 
 // Per facet, options with n > 0 (counted as withOption) plus every selected
@@ -80,11 +80,12 @@ export function facetOptions(items: readonly FacetItem[], filter: ReviewFilter |
   const f = filter ?? {}
   const options = <K extends Facet>(k: K): FacetOptions[K] => {
     const selected = (f[k] ?? []) as string[]
-    const values = new Set([...candidates(items, k), ...selected])
+    const overrides = k === 'tags' ? Object.keys(f.tagSelection?.values ?? {}) : []
+    const values = new Set([...candidates(items, k), ...selected, ...overrides])
     const out: FacetOption<string>[] = []
     for (const v of values) {
       const n = count(items, withOption(f, k, v), k)
-      if (n > 0 || selected.includes(v)) out.push({ value: v, n })
+      if (n > 0 || selected.includes(v) || overrides.includes(v)) out.push({ value: v, n })
     }
     return out.sort((a, b) => b.n - a.n || a.value.localeCompare(b.value)) as FacetOptions[K]
   }

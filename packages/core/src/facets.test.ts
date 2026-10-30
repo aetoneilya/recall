@@ -34,6 +34,11 @@ describe('hybrid filter', () => {
 })
 
 describe('facet options', () => {
+  it('keeps a disabled tag available to turn back on while other facets reflect its exclusion', () => {
+    const options = facetOptions(items, { tagSelection: { values: { Grammar: false } } })
+    expect(options.tags.find((t) => t.value === 'Grammar')?.n).toBe(3)
+    expect(options.types).toEqual([{ value: 'word', n: 4 }])
+  })
   it('counts everything without a filter: tags with their ancestors, directions per word card', () => {
     const c = facetOptions(items, null)
     expect(c.types).toEqual([{ value: 'word', n: 4 }, { value: 'rule', n: 2 }, { value: 'fact', n: 1 }])

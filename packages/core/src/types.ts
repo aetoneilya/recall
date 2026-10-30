@@ -88,6 +88,20 @@ export interface ReviewFilter {
   pos?: PartOfSpeech[]
   cefr?: Cefr[]
   directions?: Direction[]
+  // Unmentioned tags stay enabled; a child overrides its parent's setting.
+  tagSelection?: { values?: Record<string, boolean>; untagged?: boolean }
+}
+
+export function tagEnabled(selection: ReviewFilter['tagSelection'], tag: string): boolean {
+  let enabled = true
+  let length = -1
+  for (const [path, on] of Object.entries(selection?.values ?? {})) {
+    if (path.length > length && tagMatches(path, tag)) {
+      enabled = on
+      length = path.length
+    }
+  }
+  return enabled
 }
 
 // A big container ("English", "Programming") of cards of any type; topics
@@ -134,6 +148,10 @@ export function inReviewFilter(f: ReviewFilter | null | undefined, c: CardFacts)
   if (!f) return true
   if (has(f.types) && !f.types.includes(c.type)) return false
   if (has(f.tags) && !f.tags.every((ft) => c.tags.some((t) => tagMatches(ft, t)))) return false
+  if (f.tagSelection) {
+    if (!c.tags.length && f.tagSelection.untagged === false) return false
+    if (c.tags.some((t) => !tagEnabled(f.tagSelection, t))) return false
+  }
   if (c.type === 'word') {
     if (has(f.pos) && !f.pos.includes(c.pos as PartOfSpeech)) return false
     if (has(f.cefr) && !f.cefr.includes(c.cefr as Cefr)) return false
@@ -150,6 +168,16 @@ export function cleanReviewFilter(f: ReviewFilter | null | undefined): ReviewFil
     const raw = (f[k] ?? []) as string[]
     const v = [...new Set(k === 'tags' ? raw.map((t) => cleanTag(t)) : raw)].filter(Boolean)
     if (v.length) (out as Record<string, string[]>)[k] = v
+  }
+  if (f.tagSelection) {
+    const entries = Object.entries(f.tagSelection.values ?? {}).map(([tag, on]) => [cleanTag(tag), on] as const).filter(([tag]) => tag)
+    const values: Record<string, boolean> = Object.create(null)
+    for (const [tag, on] of [...new Map(entries)].sort(([a], [b]) => a.length - b.length)) {
+      if (tagEnabled({ values }, tag) !== on) values[tag] = on
+    }
+    if (Object.keys(values).length || f.tagSelection.untagged === false) {
+      out.tagSelection = { values, ...(f.tagSelection.untagged === false ? { untagged: false } : {}) }
+    }
   }
   return Object.keys(out).length ? out : null
 }

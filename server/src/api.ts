@@ -85,6 +85,10 @@ const ReviewFilterBody = z.object({
   pos: z.array(posSchema).optional(),
   cefr: z.array(cefrSchema).optional(),
   directions: z.array(z.enum(['forward', 'reverse'])).optional(),
+  tagSelection: z.object({
+    values: z.record(z.string().min(1).max(100), z.boolean()).refine((v) => Object.keys(v).length <= 100, 'Too many tag choices').optional(),
+    untagged: z.boolean().optional(),
+  }).strict().optional(),
 }).strict()
 const DeckPatchBody = z.object({
   name: z.string(),

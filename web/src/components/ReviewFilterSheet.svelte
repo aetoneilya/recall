@@ -1,18 +1,17 @@
 <script lang="ts">
-  import { CEFR_LEVELS, cleanReviewFilter, type ReviewFilter } from '@recall/core'
+  import { cleanReviewFilter, type Facet, type ReviewFilter } from '@recall/core'
   import { untrack } from 'svelte'
   import { api } from '../lib/app.svelte.ts'
-  import { allIn, directionName, posPlural, toggleIn, TYPE_NAMES } from '../lib/reviewFilter.ts'
+  import { choiceOn, directionName, emptyChoices, posPlural, reviewTagState, toggleChoice, toggleReviewTag, toggleUntagged, untaggedOn, TYPE_NAMES } from '../lib/reviewFilter.ts'
   import { errorText } from '../lib/toast.svelte.ts'
   import type { ReviewOptions } from '../lib/types.ts'
   import Sheet from './Sheet.svelte'
   import TagTree from './TagTree.svelte'
 
   // "What to review" for one deck: card types, tags, and for words part of
-  // speech, level and direction; empty = everything. Within a row the picks
-  // add up (any of them: B2 and C1), except tags, which narrow (cards with
-  // all of them); the rows narrow each other. The server offers only options
-  // that have cards under the rest of the draft, plus the picked ones.
+  // speech, level and direction. Unrestricted rows show every value on;
+  // a tap turns one off. Tag checkboxes exclude cards carrying a disabled
+  // tag; child choices override their parent.
   // Today's count follows the draft; Done saves it on the deck.
   let {
     deckId,
@@ -34,20 +33,26 @@
   let options = $state.raw<ReviewOptions | null>(null)
   let error = $state('')
   let saving = $state(false)
-  let choosingTags = $state(untrack(() => !!initial?.tags?.length))
-  const tagsPending = $derived(choosingTags && !!options?.tags.length && !draft?.tags?.length)
+  let catalog = $state.raw<ReviewOptions | null>(null)
+  const empty = $derived(emptyChoices(draft))
 
   // Options and the live count, refetched (debounced) as the draft changes.
   let seq = 0
   let timer: ReturnType<typeof setTimeout> | undefined
   $effect(() => {
     const f = cleanReviewFilter($state.snapshot(draft) as ReviewFilter | null)
+    const none = empty
     clearTimeout(timer)
     const mine = ++seq
+    if (none) return
     timer = setTimeout(async () => {
       try {
-        const o = await api.reviewOptions(deckId, f)
+        const base = untrack(() => catalog)
+        const [o, all] = !base && f
+          ? await Promise.all([api.reviewOptions(deckId, f), api.reviewOptions(deckId, null)])
+          : await api.reviewOptions(deckId, f).then((o) => [o, base ?? o])
         if (mine === seq) {
+          catalog = all!
           options = o
           error = ''
         }
@@ -58,10 +63,18 @@
     return () => clearTimeout(timer)
   })
 
-  const today = $derived(options ? options.counts.new + options.counts.learning + options.counts.review : null)
-  const on = (key: keyof ReviewFilter, v: string) => ((draft?.[key] ?? []) as string[]).includes(v)
-  // The word rows go when the picked types leave no words.
-  const hasWords = $derived(!!options?.types.some((t) => t.value === 'word') && (!draft?.types?.length || draft.types.includes('word')))
+  const today = $derived(empty ? 0 : options ? options.counts.new + options.counts.learning + options.counts.review : null)
+  const on = (key: Exclude<Facet, 'tags'>, v: string) => choiceOn(draft, key, v)
+  function choices<K extends Facet>(key: K): ReviewOptions[K] {
+    const counts = new Map((options?.[key] ?? []).map((v) => [v.value, v.n]))
+    const all = new Map([...(catalog?.[key] ?? []), ...(options?.[key] ?? [])].map((v) => [v.value, v]))
+    return [...all.values()].map((v) => ({ ...v, n: counts.get(v.value) ?? 0 })) as ReviewOptions[K]
+  }
+  const tagPaths = $derived(choices('tags').map((t) => t.value))
+  const hasWords = $derived(!!catalog?.types.some((t) => t.value === 'word') && on('types', 'word'))
+  function toggle(key: Exclude<Facet, 'tags'>, value: string) {
+    draft = toggleChoice(draft, key, value, choices(key).map((v) => v.value))
+  }
 
   async function done() {
     saving = true
@@ -72,65 +85,59 @@
 </script>
 
 <Sheet title="What to review" label="What to review in {deckName}" {onclose}>
-  <p class="sub">{deckName} · {tagsPending ? 'choose one or more tags' : today === null ? (error ? 'counts need a connection' : '…') : `${today} ${today === 1 ? 'card' : 'cards'} today`}</p>
+  <p class="sub">{deckName} · {today === null ? (error ? 'counts need a connection' : '…') : `${today} ${today === 1 ? 'card' : 'cards'} today`}</p>
   {#if error && !options}
     <p class="note">{error}</p>
   {/if}
   {#if options}
-    {#if options.types.length > 1 || draft?.types?.length}
+    {#if choices('types').length > 1 || draft?.types?.length}
       <div class="label">Cards</div>
       <div class="chips">
-        <button class="chip-btn" class:on={!draft?.types?.length} aria-pressed={!draft?.types?.length} onclick={() => (draft = allIn(draft, 'types'))}>All cards</button>
-        {#each options.types as t (t.value)}
-          <button class="chip-btn" class:on={on('types', t.value)} aria-pressed={on('types', t.value)} onclick={() => (draft = toggleIn(draft, 'types', t.value))}>{TYPE_NAMES[t.value]} <b>{t.n}</b></button>
+        {#each choices('types') as t (t.value)}
+          <button class="chip-btn" class:on={on('types', t.value)} aria-pressed={on('types', t.value)} onclick={() => (toggle('types', t.value))}>{TYPE_NAMES[t.value]} <b>{t.n}</b></button>
         {/each}
       </div>
     {/if}
-    {#if options.tags.length}
+    {#if tagPaths.length}
       <div class="label">Tags</div>
-      <div class="chips tag-mode" role="radiogroup" aria-label="Tag filter">
-        <button class="chip-btn" role="radio" class:on={!choosingTags} aria-checked={!choosingTags} onclick={() => { choosingTags = false; draft = allIn(draft, 'tags') }}>All tags</button>
-        <button class="chip-btn" role="radio" class:on={choosingTags} aria-checked={choosingTags} onclick={() => (choosingTags = true)}>Choose tags</button>
-      </div>
-      {#if choosingTags}
-        <TagTree tags={options.tags} selected={draft?.tags ?? []} onchange={(tags) => (draft = cleanReviewFilter({ ...(draft ?? {}), tags }))} />
-      {:else}
-        <p class="tag-hint">Includes cards without tags.</p>
-      {/if}
+      <TagTree tags={choices('tags')} stateOf={(path) => reviewTagState(draft, path, tagPaths)} ontoggle={(path) => (draft = toggleReviewTag(draft, path, tagPaths))} />
+      <button class="untagged" role="checkbox" aria-checked={untaggedOn(draft)} onclick={() => (draft = toggleUntagged(draft, tagPaths))}>
+        <span class="box" class:on={untaggedOn(draft)} aria-hidden="true">{#if untaggedOn(draft)}✓{/if}</span>
+        Cards without tags
+      </button>
     {/if}
-    {#if hasWords && (options.pos.length > 1 || draft?.pos?.length)}
+    {#if hasWords && (choices('pos').length > 1 || draft?.pos?.length)}
       <div class="label">Words: part of speech</div>
       <div class="chips">
-        <button class="chip-btn" class:on={!draft?.pos?.length} aria-pressed={!draft?.pos?.length} onclick={() => (draft = allIn(draft, 'pos'))}>All parts</button>
-        {#each options.pos as p (p.value)}
-          <button class="chip-btn" class:on={on('pos', p.value)} aria-pressed={on('pos', p.value)} onclick={() => (draft = toggleIn(draft, 'pos', p.value))}>{posPlural(p.value)} <b>{p.n}</b></button>
+        {#each choices('pos') as p (p.value)}
+          <button class="chip-btn" class:on={on('pos', p.value)} aria-pressed={on('pos', p.value)} onclick={() => (toggle('pos', p.value))}>{posPlural(p.value)} <b>{p.n}</b></button>
         {/each}
       </div>
     {/if}
-    {#if hasWords && (options.cefr.length || draft?.cefr?.length)}
+    {#if hasWords && (choices('cefr').length || draft?.cefr?.length)}
       <div class="label">Words: level</div>
       <div class="chips">
-        <button class="chip-btn" class:on={!draft?.cefr?.length} aria-pressed={!draft?.cefr?.length} onclick={() => (draft = allIn(draft, 'cefr'))}>All levels</button>
-        {#each CEFR_LEVELS.filter((c) => options!.cefr.some((x) => x.value === c) || on('cefr', c)) as c (c)}
-          <button class="chip-btn" class:on={on('cefr', c)} aria-pressed={on('cefr', c)} onclick={() => (draft = toggleIn(draft, 'cefr', c))}>{c}</button>
+        {#each choices('cefr').toSorted((a, b) => a.value.localeCompare(b.value)) as option (option.value)}
+          {@const c = option.value}
+          <button class="chip-btn" class:on={on('cefr', c)} aria-pressed={on('cefr', c)} onclick={() => (toggle('cefr', c))}>{c}</button>
         {/each}
       </div>
     {/if}
-    {#if hasWords && (options.directions.length > 1 || draft?.directions?.length)}
+    {#if hasWords && (choices('directions').length > 1 || draft?.directions?.length)}
       <div class="label">Words: direction</div>
       <div class="chips">
-        <button class="chip-btn" class:on={!draft?.directions?.length} aria-pressed={!draft?.directions?.length} onclick={() => (draft = allIn(draft, 'directions'))}>All directions</button>
-        {#each options.directions as d (d.value)}
-          <button class="chip-btn" class:on={on('directions', d.value)} aria-pressed={on('directions', d.value)} onclick={() => (draft = toggleIn(draft, 'directions', d.value))}>{directionName(d.value, langs)}</button>
+        {#each choices('directions') as d (d.value)}
+          <button class="chip-btn" class:on={on('directions', d.value)} aria-pressed={on('directions', d.value)} onclick={() => (toggle('directions', d.value))}>{directionName(d.value, langs)}</button>
         {/each}
       </div>
     {/if}
-    <p class="note">All means no restriction. Pick specific values to narrow the review; selected tags must all match. Cards outside the filter wait for later.</p>
+    <p class="note">Everything starts selected. Turn off values to leave them out of review. A disabled tag excludes cards carrying it; child tag choices override their parent.</p>
   {/if}
+  {#if empty}<p class="note">Select at least one value in each row.</p>{/if}
   <div class="actions">
-    <button class="btn" onclick={() => { draft = null; choosingTags = false }} disabled={!draft && !choosingTags}>Reset</button>
+    <button class="btn" onclick={() => (draft = null)} disabled={!draft}>Reset</button>
     <button class="btn" onclick={onclose}>Cancel</button>
-    <button class="btn primary grow" onclick={done} disabled={saving || tagsPending}>{saving ? 'Saving…' : 'Done'}</button>
+    <button class="btn primary grow" onclick={done} disabled={saving || empty}>{saving ? 'Saving…' : 'Done'}</button>
   </div>
 </Sheet>
 
@@ -185,13 +192,33 @@
     font-size: 13px;
     color: var(--faint);
   }
-  .tag-mode {
-    margin-bottom: 8px;
+  .untagged {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+    width: 100%;
+    margin-top: 6px;
+    padding: 0 14px 0 40px;
+    border-radius: 14px;
+    background: var(--surface);
+    text-align: left;
+    font-size: 15px;
   }
-  .tag-hint {
-    margin: 0 2px;
-    color: var(--muted);
-    font-size: 13px;
+  .box {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    flex: none;
+    border-radius: 7px;
+    box-shadow: inset 0 0 0 1.5px var(--hairline);
+  }
+  .box.on {
+    background: var(--accent);
+    color: var(--accent-text);
+    box-shadow: none;
   }
   .actions {
     position: sticky;

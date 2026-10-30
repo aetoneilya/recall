@@ -69,8 +69,13 @@ export function applyOp(op: TagOp, tags: string[]): string[] {
 // (onlyWith, source) moved only part of it, and rewriting it would widen or
 // re-aim the session at every card.
 export function filterAfter(op: TagOp, f: ReviewFilter | null, stillUsed: (tag: string) => boolean = () => false): ReviewFilter | null {
-  if (!f?.tags || op.kind === 'add' || (op.kind === 'delete' && op.exact)) return f
-  return cleanReviewFilter({ ...f, tags: f.tags.flatMap((t) => (stillUsed(t) ? [t] : applyOp(op, [t]))) })
+  if (!f || op.kind === 'add' || (op.kind === 'delete' && op.exact)) return f
+  const changed = (t: string) => stillUsed(t) ? [t] : applyOp(op, [t])
+  const values: Record<string, boolean> = Object.create(null)
+  for (const [path, enabled] of Object.entries(f.tagSelection?.values ?? {})) {
+    for (const next of changed(path)) values[next] = values[next] === undefined ? enabled : values[next] && enabled
+  }
+  return cleanReviewFilter({ ...f, tags: f.tags?.flatMap(changed), ...(f.tagSelection ? { tagSelection: { ...f.tagSelection, values } } : {}) })
 }
 
 const same = (a: string[], b: string[]) => a.length === b.length && a.every((t, i) => t === b[i])

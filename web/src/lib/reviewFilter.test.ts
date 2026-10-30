@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { allIn, cefrLabel, filterChips, filterSummary, toggleIn } from './reviewFilter.ts'
+import { allIn, cefrLabel, choiceOn, emptyChoices, filterChips, filterSummary, reviewTagState, toggleChoice, toggleIn, toggleReviewTag, toggleUntagged, untaggedOn } from './reviewFilter.ts'
 
 describe('review filter labels', () => {
   it('summarises a filter on one line', () => {
@@ -30,6 +30,48 @@ describe('review filter labels', () => {
     expect(allIn({ types: ['word'], tags: ['Grammar'], cefr: ['B2'] }, 'types')).toEqual({ tags: ['Grammar'], cefr: ['B2'] })
     expect(allIn({ tags: ['Grammar'] }, 'tags')).toBeNull()
     expect(allIn(null, 'directions')).toBeNull()
+  })
+})
+
+describe('checked review choices', () => {
+  it('starts with every value on, removes one, and returns to unrestricted when it is checked again', () => {
+    const values = ['word', 'fact', 'rule']
+    expect(values.every((v) => choiceOn(null, 'types', v))).toBe(true)
+    const f = toggleChoice(null, 'types', 'word', values)
+    expect(f).toEqual({ types: ['fact', 'rule'] })
+    expect(choiceOn(f, 'types', 'word')).toBe(false)
+    expect(choiceOn(f, 'types', 'fact')).toBe(true)
+    expect(toggleChoice(f, 'types', 'word', values)).toBeNull()
+  })
+
+  it('keeps an empty row visibly empty until a value is re-enabled', () => {
+    const f = toggleChoice({ types: ['word'] }, 'types', 'word', ['word', 'fact'])
+    expect(f).toEqual({ types: [] })
+    expect(emptyChoices(f)).toBe(true)
+    expect(choiceOn(f, 'types', 'word')).toBe(false)
+    expect(emptyChoices(toggleChoice(f, 'types', 'fact', ['word', 'fact']))).toBe(false)
+    expect(emptyChoices({ types: ['fact'], pos: [] })).toBe(false)
+  })
+
+  it('starts with all tags on and supports parent exclusions and child exceptions', () => {
+    const paths = ['Grammar', 'Grammar/Tenses', 'Grammar/Articles', 'Books']
+    expect(paths.every((p) => reviewTagState(null, p, paths) === 'on')).toBe(true)
+    const off = toggleReviewTag(null, 'Grammar', paths)
+    expect(reviewTagState(off, 'Grammar/Tenses', paths)).toBe('off')
+    const child = toggleReviewTag(off, 'Grammar/Tenses', paths)
+    expect(reviewTagState(child, 'Grammar', paths)).toBe('mixed')
+    expect(reviewTagState(child, 'Grammar/Tenses', paths)).toBe('on')
+    expect(reviewTagState(child, 'Grammar/Articles', paths)).toBe('off')
+    expect(toggleReviewTag(child, 'Grammar', paths)).toBeNull()
+    expect(untaggedOn(off)).toBe(true)
+    expect(untaggedOn(toggleUntagged(off, paths))).toBe(false)
+  })
+
+  it('names exclusions as removable chips', () => {
+    const chips = filterChips({ tagSelection: { values: { Books: false }, untagged: false } })
+    expect(chips.map((c) => c.label)).toEqual(['Without Books', 'Without untagged'])
+    expect(chips[0]!.without).toEqual({ tagSelection: { values: {}, untagged: false } })
+    expect(filterChips(chips[0]!.without)[0]!.without).toBeNull()
   })
 })
 

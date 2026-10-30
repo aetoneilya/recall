@@ -141,6 +141,17 @@ describe('day', () => {
 })
 
 describe('review filter', () => {
+  it('excludes disabled tags on any card and lets a child override its parent', async () => {
+    const { inReviewFilter, cleanReviewFilter } = await import('./index.ts')
+    const f = { tagSelection: { values: { Grammar: false, 'Grammar/Tenses': true, 'Grammar/Articles': false } } }
+    expect(inReviewFilter(f, { type: 'fact', tags: ['Grammar/Tenses'] })).toBe(true)
+    expect(inReviewFilter(f, { type: 'word', tags: ['Grammar/Articles', 'Books'] })).toBe(false)
+    expect(inReviewFilter(f, { type: 'fact', tags: ['Grammarly'] })).toBe(true)
+    expect(inReviewFilter(f, { type: 'fact', tags: [] })).toBe(true)
+    expect(inReviewFilter({ tagSelection: { untagged: false } }, { type: 'fact', tags: [] })).toBe(false)
+    expect(cleanReviewFilter(f)).toEqual({ tagSelection: { values: { Grammar: false, 'Grammar/Tenses': true } } })
+    expect(cleanReviewFilter({ tagSelection: { values: { Grammar: true }, untagged: true } })).toBeNull()
+  })
   it('lets everything through when empty, and narrows by type, tag and word fields', async () => {
     const { inReviewFilter, cleanReviewFilter } = await import('./index.ts')
     const word = { type: 'word' as const, tags: ['book'], pos: 'phrasal_verb' as const, cefr: 'B2' as const, direction: 'reverse' as const }

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { filterTree, tagState, tagTree, toggleTag, type TagNode } from '../lib/tagTree.ts'
+  import { filterTree, tagState, tagTree, toggleTag, type TagNode, type TagState } from '../lib/tagTree.ts'
   import { haptic } from '../lib/telegram.ts'
   import Icon from './Icon.svelte'
 
@@ -10,10 +10,12 @@
   // handful. `count`: exact subtree counts.
   let {
     tags,
-    selected,
+    selected = [],
     onchange,
     count,
-  }: { tags: { value: string; n: number }[]; selected: string[]; onchange: (next: string[]) => void; count?: (path: string) => number } = $props()
+    stateOf,
+    ontoggle,
+  }: { tags: { value: string; n: number }[]; selected?: string[]; onchange?: (next: string[]) => void; count?: (path: string) => number; stateOf?: (path: string) => TagState; ontoggle?: (path: string) => void } = $props()
 
   const tree = $derived(tagTree(tags, count))
   let q = $state('')
@@ -24,13 +26,14 @@
 
   function toggle(path: string) {
     haptic.select()
-    onchange(toggleTag(selected, path))
+    if (ontoggle) ontoggle(path)
+    else onchange?.(toggleTag(selected, path))
   }
 </script>
 
 {#snippet rows(nodes: TagNode[], depth: number)}
   {#each nodes as t (t.path)}
-    {@const st = tagState(selected, t.path)}
+    {@const st = stateOf ? stateOf(t.path) : tagState(selected, t.path)}
     {@const expanded = searching || !!open[t.path]}
     <div class="node" style="--depth: {depth}">
       {#if t.children.length}

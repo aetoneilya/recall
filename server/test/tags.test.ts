@@ -22,6 +22,24 @@ const tagsOf = (ctx: TestCtx, table: 'words' | 'facts', id: string) =>
 const fronts = (items: { kind: string; fact?: { front: string }; word?: { term: string } }[]) => items.map((i) => i.fact?.front ?? i.word?.term)
 
 describe('prefix matching', () => {
+  it('saves checked-tag exclusions through the API and follows a renamed subtree', async () => {
+    const ctx = makeCtx({ DEV: '1', OWNER_TELEGRAM_ID: '1001' })
+    const en = deck(ctx)
+    addFact(ctx, en.id, 'Tenses', ['Grammar/Tenses'])
+    addFact(ctx, en.id, 'Articles', ['Grammar/Articles'])
+    addFact(ctx, en.id, 'Untagged', [])
+    const s = await listen(ctx)
+    try {
+      const r = await send(`${s.url}/api/decks/${en.id}`, 'PATCH', { reviewFilter: { tagSelection: { values: { Grammar: false, 'Grammar/Tenses': true }, untagged: false } } })
+      expect(r.status).toBe(200)
+      expect(fronts(buildQueue(ctx.db, ctx.user.id, TZ, ctx.now()).items)).toEqual(['Tenses'])
+      retagDeck(ctx.db, ctx.user.id, en.id, { kind: 'rename', from: 'Grammar', to: 'English grammar' }, {}, ctx.now())
+      expect(getDeck(ctx.db, ctx.user.id, en.id)!.reviewFilter).toEqual({ tagSelection: { values: { 'English grammar': false, 'English grammar/Tenses': true }, untagged: false } })
+      expect(fronts(buildQueue(ctx.db, ctx.user.id, TZ, ctx.now()).items)).toEqual(['Tenses'])
+    } finally {
+      await s.close()
+    }
+  })
   it('finds a tag and the tags under it, at the "/" boundary, with LIKE characters escaped', () => {
     const ctx = makeCtx()
     const en = deck(ctx)

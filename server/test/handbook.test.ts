@@ -241,7 +241,7 @@ describe('handbook API', () => {
     expect(handbookRef('pack:irregular-verbs:be')).toBeNull()
   })
 
-  it('is a route; MCP adds the pack and write items', async () => {
+  it('is a route; MCP adds the pack and tap items', async () => {
     const ctx = makeCtx({ DEV: '1', OWNER_TELEGRAM_ID: '1001', MCP_TOKEN: 'static-mcp-token' })
     load()
     const s = await listen(ctx)
@@ -259,11 +259,11 @@ describe('handbook API', () => {
       expect(practice.items).toHaveLength(3)
 
       const added = await callTool(s.url, 'static-mcp-token', 'add_exercises', {
-        factId: h.topics[1].ruleFactId, items: [{ type: 'write', text: 'Напиши тестовое предложение о вчерашнем дне.', rubric: 'Past simple, regular verb.' }, { type: 'choose', text: 'x ___', options: ['a', 'b'] }],
+        factId: h.topics[1].ruleFactId, items: [{ type: 'choose', text: 'Yesterday she ___ the room.', options: ['cleaned', 'clean'], answer: 'cleaned' }, { type: 'choose', text: 'x ___', options: ['a', 'b'], answer: 'c' }],
       })
-      expect(added).toMatchObject({ created: [{ index: 0 }], errors: [{ index: 1, error: 'answer is empty' }] })
+      expect(added).toMatchObject({ created: [{ index: 0 }], errors: [{ index: 1, error: expect.stringMatching(/answer.*option/) }] })
       const listed = await callTool(s.url, 'static-mcp-token', 'list_exercises', { factId: h.topics[1].ruleFactId })
-      expect(listed.at(-1)).toMatchObject({ type: 'write', prompt: 'Напиши тестовое предложение о вчерашнем дне.', rubric: 'Past simple, regular verb.', createdBy: 'claude' })
+      expect(listed.at(-1)).toMatchObject({ type: 'choose', prompt: 'Yesterday she ___ the room.', answer: 'cleaned', createdBy: 'claude' })
     } finally {
       await s.close()
     }

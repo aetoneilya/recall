@@ -3,8 +3,8 @@
 // them, picked when the queue is built; how each went comes back with the
 // review (ReviewInput.exercises) and is kept per log (exercise_attempts).
 // Ownership is the fact's: every function takes the acting user's id.
-// Write items (the learner's own sentence, graded by Claude) never make a
-// pool on their own: they join a review only where grading works.
+// Only choose / spot items are studied. Older text items stay in storage
+// for their history and older API clients.
 import {
   cleanExercise, exerciseKey, EXERCISE_TYPES, isTapType, isWriteType,
   type Author, type ExerciseAttempt, type ExerciseInput, type ExerciseItem, type ExerciseType,
@@ -21,8 +21,8 @@ const SAME_TYPE = 2
 const WRITE_PER_REVIEW = 1
 
 // SQL over `e` (fact_exercises): items that count towards MIN_POOL — what a
-// review can be made of on any server (write items need grading).
-export const SERVABLE = "e.status = 'active' AND e.type <> 'write'"
+// review can be made of by tapping.
+export const SERVABLE = "e.status = 'active' AND e.type IN ('choose', 'spot')"
 
 export type ExerciseStatus = 'active' | 'flagged'
 
@@ -186,8 +186,8 @@ export function poolCounts(db: Db, factIds: string[]): Map<string, PoolCounts> {
   const out = new Map<string, PoolCounts>()
   for (let i = 0; i < factIds.length; i += 500) {
     const chunk = factIds.slice(i, i + 500)
-    const rows = db.prepare(`SELECT fact_id, sum(status = 'active') AS active, sum(status = 'flagged') AS flagged,
-        sum(needs_review = 1) AS needs_review, sum(status = 'active' AND shown_count = 0) AS fresh
+    const rows = db.prepare(`SELECT fact_id, sum(status = 'active' AND type IN ('choose', 'spot')) AS active, sum(status = 'flagged' AND type IN ('choose', 'spot')) AS flagged,
+        sum(needs_review = 1 AND type IN ('choose', 'spot')) AS needs_review, sum(status = 'active' AND shown_count = 0 AND type IN ('choose', 'spot')) AS fresh
       FROM fact_exercises WHERE fact_id IN (${chunk.map(() => '?').join(',')}) GROUP BY fact_id`).all(...chunk) as { fact_id: string; active: number; flagged: number; needs_review: number; fresh: number }[]
     for (const r of rows) out.set(r.fact_id, { active: r.active, flagged: r.flagged, needsReview: r.needs_review, fresh: r.fresh })
   }
@@ -222,36 +222,15 @@ export function pickExercises<T extends { type: string; last_shown_at: string | 
   return out
 }
 
-// The items a review draws from (write items aside): with MIN_POOL active
-// tap items (choose, spot), only those — the typed legacy types are never
-// served again; else the whole active pool, tap items first.
+// Only tap items are eligible, even when the pool is too small for a round.
 export function servablePool<T extends { type: string; last_shown_at: string | null }>(pool: T[]): T[] {
-  const tap = pool.filter((x) => isTapType(x.type as ExerciseType))
-  if (tap.length >= MIN_POOL) return tap
-  return pool
+  return pool.filter((x) => isTapType(x.type as ExerciseType))
 }
 
-// The active items a fact's reviews can ever get: servablePool's choice
-// plus the write items (pickForReview decides whether to use those).
-function servedOf<T extends { type: string; last_shown_at: string | null }>(all: T[]): T[] {
-  const writes = all.filter((x) => isWriteType(x.type as ExerciseType))
-  return [...servablePool(all.filter((x) => !writes.includes(x))), ...writes]
-}
-
-// One review's items from a fact's active pool. Write items join the tap
-// ones only with `grading` (at most one, by the same least-recently-shown
-// order); typed legacy items only fill up a pool short of tap ones.
-export function pickForReview(all: ExerciseRow[], grading: boolean, n = PER_REVIEW, rand: () => number = Math.random): ExerciseRow[] {
-  const servable = all.filter((x) => !isWriteType(x.type as ExerciseType))
-  if (servable.length < MIN_POOL) return []
-  const pool = servablePool(servable)
-  const tap = pool.filter((x) => isTapType(x.type as ExerciseType))
-  const writes = grading ? all.filter((x) => isWriteType(x.type as ExerciseType)) : []
-  // A pool still short of tap items: those come first, typed ones fill up.
-  if (tap.length && tap.length < pool.length) {
-    return [...pickExercises([...tap, ...writes], n, rand), ...pickExercises(pool.filter((x) => !tap.includes(x)), n - Math.min(tap.length + Math.min(writes.length, WRITE_PER_REVIEW), n), rand)].slice(0, n)
-  }
-  return pickExercises([...pool, ...writes], n, rand)
+// The grading argument remains for older callers; it never enables typing.
+export function pickForReview(all: ExerciseRow[], _grading: boolean, n = PER_REVIEW, rand: () => number = Math.random): ExerciseRow[] {
+  const pool = servablePool(all)
+  return pool.length < MIN_POOL ? [] : pickExercises(pool, n, rand)
 }
 
 function activePools(db: Db, factIds: string[]): Map<string, ExerciseRow[]> {
@@ -287,7 +266,7 @@ export function seededRandom(seed: string): () => number {
 // This review's items for every fact given (fact id → seed) that has a pool
 // to review from. The seed (card, study day, reps: `reviewSeed`) makes the
 // pick stable: a refetch shows the same items until the card is rated.
-// `grading`: write items can be graded on this server (Claude configured).
+// The grading argument is retained for API compatibility.
 export function exercisesForQueue(db: Db, seeds: Map<string, string>, grading = false): Map<string, ExerciseItem[]> {
   const out = new Map<string, ExerciseItem[]>()
   for (const [factId, all] of activePools(db, [...seeds.keys()])) {
@@ -303,9 +282,8 @@ export const reviewSeed = (cardId: string, day: string, reps: number) => `${card
 // allows: each set is picked as for the queue, from the items the earlier
 // sets haven't used (topped up from the used ones once those run out).
 export function exerciseSets(db: Db, factId: string, sets: number, grading = false, rand: () => number = Math.random): ExerciseItem[][] {
-  // Tap-only or not is the whole pool's call, as for a review: a set drawn
-  // from a few unused tap items mustn't fall back to typed ones.
-  const all = servedOf(activePools(db, [factId]).get(factId) ?? [])
+  // Sets draw only from tap items, including when topping up a short set.
+  const all = servablePool(activePools(db, [factId]).get(factId) ?? [])
   const out: ExerciseItem[][] = []
   const used = new Set<string>()
   for (let i = 0; i < sets; i++) {

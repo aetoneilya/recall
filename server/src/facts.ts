@@ -234,7 +234,7 @@ export function factItems(db: Db, userId: string, rows: FactRow[], now: Date): F
   const pools = new Map<string, { active: number; flagged: number; needsReview: number }>()
   for (let i = 0; i < rows.length; i += 500) {
     const chunk = rows.slice(i, i + 500).map((r) => r.id)
-    const ps = db.prepare(`SELECT fact_id, sum(status = 'active') AS active, sum(status = 'flagged') AS flagged, sum(needs_review = 1) AS needs_review
+    const ps = db.prepare(`SELECT fact_id, sum(status = 'active' AND type IN ('choose', 'spot')) AS active, sum(status = 'flagged' AND type IN ('choose', 'spot')) AS flagged, sum(needs_review = 1 AND type IN ('choose', 'spot')) AS needs_review
       FROM fact_exercises WHERE fact_id IN (${chunk.map(() => '?').join(',')}) GROUP BY fact_id`).all(...chunk) as { fact_id: string; active: number; flagged: number; needs_review: number }[]
     for (const p of ps) pools.set(p.fact_id, { active: p.active, flagged: p.flagged, needsReview: p.needs_review })
   }

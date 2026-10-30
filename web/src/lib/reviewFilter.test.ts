@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cefrLabel, filterChips, filterSummary, toggleIn } from './reviewFilter.ts'
+import { allIn, cefrLabel, filterChips, filterSummary, toggleIn } from './reviewFilter.ts'
 
 describe('review filter labels', () => {
   it('summarises a filter on one line', () => {
@@ -24,6 +24,12 @@ describe('review filter labels', () => {
     expect(toggleIn(f, 'tags', 'Java')).toEqual({ tags: ['Kafka', 'Java'] })
     expect(toggleIn(f, 'tags', 'Kafka')).toBeNull()
     expect(toggleIn({ tags: ['a'] }, 'types', 'word')).toEqual({ tags: ['a'], types: ['word'] })
+  })
+
+  it('restores All for one section without clearing other restrictions', () => {
+    expect(allIn({ types: ['word'], tags: ['Grammar'], cefr: ['B2'] }, 'types')).toEqual({ tags: ['Grammar'], cefr: ['B2'] })
+    expect(allIn({ tags: ['Grammar'] }, 'tags')).toBeNull()
+    expect(allIn(null, 'directions')).toBeNull()
   })
 })
 

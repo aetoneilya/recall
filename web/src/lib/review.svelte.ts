@@ -1,6 +1,6 @@
 // The review session: cached queue, current card, ratings applied locally
 // and queued for upload, undo.
-import { dayKey, inReviewFilter, isLearningState, itemOf, waitsForTomorrow, type AnswerCheck, type Card, type CardState, type ExerciseAttempt, type ExerciseCheck, type Fact, type QueueItem, type Rating, type ReviewFilter, type Word, type WriteGrade } from '@recall/core'
+import { dayKey, inReviewFilter, isLearningState, itemOf, waitsForTomorrow, type Card, type CardState, type ExerciseAttempt, type Fact, type QueueItem, type Rating, type ReviewFilter, type Word } from '@recall/core'
 import { api, flushNow, kv, outbox, scheduleFlush, status } from './app.svelte.ts'
 import { AuthError, NetworkError, normalizeItem } from './api.ts'
 import { getDecks } from './decks.ts'
@@ -96,10 +96,6 @@ export interface ExerciseProgress {
   index: number
   results: ExerciseAttempt[]
   tap: { pick: string | null; token: number | null; done: boolean }
-  check: ExerciseCheck | null
-  answer: string
-  skipped: string[]
-  grade: WriteGrade | null
 }
 
 const MAX_DURATION_MS = 120_000
@@ -147,7 +143,7 @@ class ReviewSession {
   stats = $state<SessionStats>(zeroStats())
   missed = $state.raw<Missed[]>([])
   history = $state.raw<UndoEntry[]>([])
-  // Deck settings by id: in review, which directions are studied, typed answers.
+  // Deck settings by id: which cards and directions are studied.
   decks = $state.raw<Record<string, DeckSettings>>({})
   // Every deck with the server's counts for today (the switcher).
   queueDecks = $state.raw<QueueDeck[]>([])
@@ -489,8 +485,6 @@ class ReviewSession {
 
   // An exercise review's items, by card, for showing them again after an undo.
   exerciseResults: Record<string, ExerciseAttempt[]> = {}
-  // The same for a typed answer and its verdict.
-  typedAnswers: Record<string, { answer: string; check: AnswerCheck }> = {}
   // Exercises half answered, by card (see ExerciseProgress); gone with the rating.
   exerciseProgress: Record<string, ExerciseProgress> = {}
 

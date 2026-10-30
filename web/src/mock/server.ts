@@ -7,6 +7,7 @@
 // Loaded via dynamic import only in mock mode.
 import {
   cleanExercise,
+  isTapType,
   cleanFact,
   cleanReviewFilter,
   cleanWord,
@@ -606,7 +607,7 @@ function factItem(f: Fact, now: Date): FactItem {
   const c = db.cards.find((x) => x.factId === f.id)
   const pool = db.exercises.filter((e) => e.factId === f.id)
   const exercises = pool.length
-    ? { exercises: { active: pool.filter((e) => e.status === 'active').length, flagged: pool.filter((e) => e.status === 'flagged').length, needsReview: pool.filter((e) => e.needsReview).length } }
+    ? { exercises: { active: pool.filter((e) => e.status === 'active' && isTapType(e.type)).length, flagged: pool.filter((e) => e.status === 'flagged' && isTapType(e.type)).length, needsReview: pool.filter((e) => e.needsReview && isTapType(e.type)).length } }
     : {}
   const t = handbookTopics.find((x) => x.ruleFactId === f.id || x.cardFactIds.includes(f.id))
   const handbook = t ? { handbook: { topic: t.id, role: t.ruleFactId === f.id ? ('rule' as const) : ('card' as const) } } : {}
@@ -630,14 +631,11 @@ const reviewRand = (c: Card, now: Date) => seeded(`${c.id}:${today(now)}:${c.sch
 // Three items for a review: least recently shown first, at most two of a type (as the server does).
 function pickExercises(factId: string, avoid: Set<string> = new Set(), rand: () => number = Math.random) {
   const all = db.exercises.filter((e) => e.factId === factId && e.status === 'active')
-  const tap = all.filter((e) => e.type !== 'write')
+  const tap = all.filter((e) => isTapType(e.type))
   if (tap.length < 3) return null
   const shuffle = (xs: ExerciseInfo[]) => xs.map((e) => ({ e, r: rand() })).sort((a, b) => Number(avoid.has(a.e.id)) - Number(avoid.has(b.e.id)) || (a.e.lastShownAt ?? '').localeCompare(b.e.lastShownAt ?? '') || a.r - b.r).map((x) => x.e)
   const order = shuffle(tap)
   const out: ExerciseInfo[] = []
-  // At most one written item, only when it can be graded.
-  const write = mockControl.autofill ? shuffle(all.filter((e) => e.type === 'write'))[0] : undefined
-  if (write && rand() < 0.5) out.push(write)
   for (const e of order) if (out.length < 3 && out.filter((x) => x.type === e.type).length < 2) out.push(e)
   for (const e of order) if (out.length < 3 && !out.includes(e)) out.push(e)
   return out.map(({ id, type, prompt, answer, accepted, explain, options, wrong, rubric }) => ({ id, type, prompt, answer, accepted, explain, ...(options?.length ? { options, wrong } : {}), ...(type === 'write' ? { rubric: rubric ?? null } : {}) }))

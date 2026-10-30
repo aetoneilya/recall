@@ -1,6 +1,6 @@
 # recall — Mnemosyne
 
-Personal spaced repetition; the app and the Telegram bot (@mnemosyne_cards_bot) are called **Mnemosyne**, the code is `recall`. Cards live in SQLite on a VPS; I review them on my phone in a web app (installable PWA, also a Telegram Mini App); Claude adds and edits them through MCP. Scheduling is FSRS (`ts-fsrs`), shared by the server and the offline client.
+Personal spaced repetition; the app and the Telegram bot (@mnemosyne_cards_bot) are called **Mnemosyne**, the code is `recall`. Cards live in SQLite on a VPS; I review them on my phone in a web app (installable PWA, also a Telegram Mini App); MCP-compatible AI clients add and edit them. Scheduling is FSRS (`ts-fsrs`), shared by the server and the offline client.
 
 Architecture, data model, API and MCP tools: [DESIGN.md](DESIGN.md). Visual design of the app: [web/DESIGN.md](web/DESIGN.md).
 
@@ -84,12 +84,15 @@ A new account starts with a short setup: what the app is, the level (a 3-minute 
 
 Signing in: inside Telegram the Mini App signs in by itself; in Safari / the installed app, "Log in with Telegram" opens the bot, which asks to confirm. `OWNER_PASSWORD` is an owner-only fallback for when Telegram is unreachable.
 
-## Connect Claude
+## Connect an AI client with MCP
 
-- **Claude Code:** create a personal token in Settings → Personal tokens; the app shows the ready `claude mcp add --transport http mnemosyne https://<domain>/mcp --header "Authorization: Bearer mn_…"` command. (The legacy `MCP_TOKEN` from the env file still works and acts as the owner.)
-- **claude.ai / Claude app:** Settings → Connectors → Add custom connector → `https://<domain>/mcp`. The OAuth consent page confirms who you are through the bot.
+Settings → Connect via MCP shows the remote server URL, `https://<domain>/mcp`.
 
-What Claude can do through MCP: look up, add and fix words (`search_words`, `get_word`, `add_words`, `update_word`, `set_word_status`), read progress (`review_stats`, `get_leeches`, `vocabulary_profile`), add the app's content packs (`list_packs`, `add_pack`; the same as Cards → Packs, e.g. "Irregular verbs" or a level's starter words), and make flashcards from your notes: `list_decks`, `create_deck`, `search_facts`, `add_facts` (into a deck, the subject as a tag; Markdown answers, one idea per card; duplicates by question are reported, not added; `createDeck: true` creates a missing deck), `update_fact` (also moves a fact to another deck), `set_fact_status`, and grammar exercise pools: `list_exercises`, `add_exercises` (tap-based items: choose a word for the gap, or spot the mistake and pick its replacement; distractors from the rule's contrast set, exactly one grammatical option). `add_exercises` also takes `write` items (a task to write your own sentence with the rule, with an optional rubric), which the server grades with Claude when `ANTHROPIC_API_KEY` is set. With `ANTHROPIC_API_KEY` set, pools running low are topped up by Claude once a day per rule. Ask e.g. "make 10 cards on Kafka from this note into Programming".
+- **OAuth clients:** add the URL as a remote MCP server and confirm the sign-in in Telegram.
+- **Bearer clients:** create a personal access token in the same section and send `Authorization: Bearer mn_…` with requests. The app shows the token and a copyable header. The legacy `MCP_TOKEN` from the env file still works and acts as the owner.
+- **Claude Code example:** `claude mcp add --transport http mnemosyne https://<domain>/mcp --header "Authorization: Bearer mn_…"`.
+
+What an MCP client can do: look up, add and fix words (`search_words`, `get_word`, `add_words`, `update_word`, `set_word_status`), read progress (`review_stats`, `get_leeches`, `vocabulary_profile`), add the app's content packs (`list_packs`, `add_pack`; the same as Cards → Packs, e.g. "Irregular verbs" or a level's starter words), and make flashcards from your notes: `list_decks`, `create_deck`, `search_facts`, `add_facts` (into a deck, the subject as a tag; Markdown answers, one idea per card; duplicates by question are reported, not added; `createDeck: true` creates a missing deck), `update_fact` (also moves a fact to another deck), `set_fact_status`, and grammar exercise pools: `list_exercises`, `add_exercises` (tap-based items: choose a word for the gap, or spot the mistake and pick its replacement; distractors from the rule's contrast set, exactly one grammatical option). New exercises are tap-only (`choose` / `spot`). Stored text-answer items remain for history and older API clients, and never enter study rounds. With `ANTHROPIC_API_KEY` set, pools running low are topped up by Claude once a day per rule. Ask e.g. "make 10 cards on Kafka from this note into Programming".
 
 Words and cards from Claude are studied at once (within the deck's new cards per day) and tagged `claude`; drop the ones you don't want (⋯ on the card, or in its editor) — a dropped card never comes back and Claude won't propose it again.
 

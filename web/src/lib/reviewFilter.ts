@@ -49,6 +49,12 @@ export function toggleIn<K extends keyof ReviewFilter>(f: ReviewFilter | null, k
   return Object.keys(out).length ? out : null
 }
 
+export function allIn(f: ReviewFilter | null, key: keyof ReviewFilter): ReviewFilter | null {
+  const out = { ...(f ?? {}) }
+  delete out[key]
+  return cleanReviewFilter(out)
+}
+
 export interface FilterChip {
   key: string
   label: string

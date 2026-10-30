@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { cleanExercise, cleanFact, formatInterval, type ExerciseType, type ReviewLog } from '@recall/core'
+  import { cleanExercise, cleanFact, isTapType, formatInterval, type ExerciseType, type ReviewLog } from '@recall/core'
   import ConfirmButton from '../components/ConfirmButton.svelte'
   import { onDestroy, tick, untrack } from 'svelte'
   import AddTypeSwitch from '../components/AddTypeSwitch.svelte'
@@ -102,13 +102,13 @@
   // unflag / delete, and a form to add one.
   let pool = $state.raw<ExerciseInfo[]>([])
   let poolOpen = $state(false)
-  let draft = $state({ type: 'choose' as ExerciseType, prompt: '', answer: '', accepted: '', explain: '', options: '', wrong: '' })
+  let draft = $state({ type: 'choose' as 'choose' | 'spot', prompt: '', answer: '', accepted: '', explain: '', options: '', wrong: '' })
   let draftError = $state('')
   const poolActive = $derived(pool.filter((e) => e.status === 'active').length)
   async function loadPool() {
     if (isNew) return
     try {
-      pool = await api.exercises(id)
+      pool = (await api.exercises(id)).filter((e) => isTapType(e.type))
     } catch {
       // Offline: the section stays as it was.
     }
@@ -134,10 +134,9 @@
   }
   async function addItem() {
     const list = (v: string) => v.split(';').map((a) => a.trim()).filter(Boolean)
-    const tapType = draft.type === 'choose' || draft.type === 'spot'
-    const input = draft.type === 'write' ? { type: draft.type, prompt: draft.prompt, answer: '', rubric: draft.explain || null } : {
+    const input = {
       type: draft.type, prompt: draft.prompt, answer: draft.answer, explain: draft.explain || null,
-      ...(tapType ? { options: list(draft.options), wrong: draft.type === 'spot' ? draft.wrong : null } : { accepted: list(draft.accepted) }),
+      options: list(draft.options), wrong: draft.type === 'spot' ? draft.wrong : null,
     }
     const c = cleanExercise(input)
     if ('error' in c) {
@@ -150,7 +149,7 @@
         draftError = 'The pool already has this prompt.'
         return
       }
-      pool = r.exercises
+      pool = r.exercises.filter((e) => isTapType(e.type))
       draft = { ...draft, prompt: '', answer: '', accepted: '', explain: '', options: '', wrong: '' }
       draftError = ''
       session.markStale()
@@ -519,20 +518,17 @@
             <select bind:value={draft.type} aria-label="Type">
               <option value="choose">Choose</option>
               <option value="spot">Spot</option>
-              <option value="write">Write</option>
             </select>
-            <input bind:this={exPrompt} bind:value={draft.prompt} maxlength="500" placeholder={draft.type === 'choose' ? 'The backup runs ___ 3 a.m.' : draft.type === 'write' ? 'Напиши предложение с …' : 'His shoes gets wet.'} aria-label={draft.type === 'write' ? 'Task' : 'Sentence'} autocomplete="off" />
+            <input bind:this={exPrompt} bind:value={draft.prompt} maxlength="500" placeholder={draft.type === 'choose' ? 'The backup runs ___ 3 a.m.' : 'His shoes gets wet.'} aria-label="Sentence" autocomplete="off" />
           </div>
           {#if draft.type === 'spot'}
             <input bind:value={draft.wrong} placeholder="The wrong word(s), as in the sentence" aria-label="Wrong word" autocomplete="off" autocapitalize="off" />
           {/if}
-          {#if draft.type !== 'write'}
-            <input bind:value={draft.options} placeholder={draft.type === 'choose' ? 'Options: at; in; on (— = nothing)' : 'Replacements: get; getting (— = delete)'} aria-label="Options" autocomplete="off" autocapitalize="off" />
-            <input bind:value={draft.answer} maxlength="300" placeholder="The right option" aria-label="Answer" autocomplete="off" autocapitalize="off" />
-          {/if}
-          <input bind:value={draft.explain} maxlength="500" placeholder={draft.type === 'write' ? 'What a right sentence does (optional)' : 'Why (one line, optional)'} aria-label={draft.type === 'write' ? 'Rubric' : 'Why'} autocomplete="off" />
+          <input bind:value={draft.options} placeholder={draft.type === 'choose' ? 'Options: at; in; on (— = nothing)' : 'Replacements: get; getting (— = delete)'} aria-label="Options" autocomplete="off" autocapitalize="off" />
+          <input bind:value={draft.answer} maxlength="300" placeholder="The right option" aria-label="Answer" autocomplete="off" autocapitalize="off" />
+          <input bind:value={draft.explain} maxlength="500" placeholder="Why (one line, optional)" aria-label="Why" autocomplete="off" />
           {#if draftError}<p class="problem">{draftError}</p>{/if}
-          <button class="btn" type="submit" disabled={!draft.prompt.trim() || (draft.type !== 'write' && !draft.answer.trim())}><Icon name="plus" size={16} stroke={2.2} /> Add exercise</button>
+          <button class="btn" type="submit" disabled={!draft.prompt.trim() || !draft.answer.trim()}><Icon name="plus" size={16} stroke={2.2} /> Add exercise</button>
           {#if poolActive < 3}<p class="hint" class:wanted={asRule}>{asRule ? `A grammar rule wants at least three exercises (${poolActive} so far): it is` : 'With three or more, this card is'} reviewed through three of them at a time, by tapping, instead of question and answer.</p>{/if}
         </form>
         <div class="danger-zone">

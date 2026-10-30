@@ -134,8 +134,7 @@ export function suggestion(d: WeeklyData, now: Date): string {
   const weak = (['reverse', 'forward'] as const).find((dir) => d.retention[dir].reviews >= 20 && (d.retention[dir].rate ?? 1) < 0.8)
   if (weak) {
     const r = d.retention[weak]
-    const typing = d.typeAnswer === 'both' || (d.typeAnswer === 'reverse' && weak === 'reverse')
-    return `${d.labels[weak]} retention ${pct(r.rate!)} — ${typing ? 'take fewer new words for a few days' : 'try typing answers (deck settings)'}`
+    return `${d.labels[weak]} retention ${pct(r.rate!)} — take fewer new words for a few days`
   }
   if (!d.reviews) return 'No reviews this week — even five minutes a day keeps words from fading'
   if (d.lastWeekReviews && d.reviews < d.lastWeekReviews * 0.7) return 'Fewer reviews than last week — a short session every day beats a long one on Sunday'

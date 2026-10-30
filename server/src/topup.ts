@@ -70,7 +70,7 @@ export function topupCandidates(ctx: AppContext): Candidate[] {
     JOIN fact_exercises e ON e.fact_id = f.id AND e.type <> 'write'
     LEFT JOIN exercise_topups t ON t.fact_id = f.id
     WHERE f.status = 'active' AND (t.attempted_at IS NULL OR t.attempted_at < ?)
-    GROUP BY f.id HAVING sum(e.status = 'active' AND e.shown_count = 0) < ?
+    GROUP BY f.id HAVING sum(e.status = 'active' AND e.shown_count = 0 AND e.type IN ('choose', 'spot')) < ?
     ORDER BY f.user_id, f.created_at`).all(since, TOPUP_BELOW) as unknown as Candidate[]
 }
 

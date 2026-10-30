@@ -17,7 +17,7 @@ import path from 'node:path'
 const gap = (n: number, answer = `w${n}`) => ({ type: 'gap' as const, prompt: `Sentence ${n} ___ here. (hint)`, answer, accepted: [], explain: `why ${n}` })
 const fix = (n: number) => ({ type: 'fix' as const, prompt: `He go there ${n} times.`, answer: `He goes there ${n} times.`, explain: null })
 
-function rule(ctx: TestCtx, items: ReturnType<typeof gap | typeof fix>[] = []) {
+function rule(ctx: TestCtx, items: Parameters<typeof addExercises>[3] = []) {
   const deck = createDeck(ctx.db, ctx.user.id, { name: `Grammar ${Math.random()}` }, ctx.now())
   const { fact, cardId } = createFact(ctx.db, ctx.user.id, { deckId: deck.id, fact: { front: 'Third person -s', back: 'He/she/it **goes**.' }, status: 'active', createdBy: 'user' }, ctx.now())
   if (items.length) addExercises(ctx.db, ctx.user.id, fact.id, items, 'user', ctx.now())
@@ -33,7 +33,7 @@ describe('exercise pools', () => {
     expect(r.duplicates).toEqual([{ index: 2, existingId: r.created[0]!.id, existingStatus: 'active' }])
     expect(r.errors).toEqual([{ index: 3, error: 'a gap prompt needs exactly one ___' }])
     expect(listExercises(ctx.db, ctx.user.id, fact.id).map((e) => [e.type, e.answer, e.createdBy, e.shownCount])).toEqual([['gap', 'w1', 'claude', 0], ['gap', 'w2', 'claude', 0], ['fix', 'He goes there 1 times.', 'claude', 0]])
-    expect(factItem(ctx.db, ctx.user.id, fact.id, ctx.now()).exercises).toEqual({ active: 3, flagged: 0, needsReview: 0 })
+    expect(factItem(ctx.db, ctx.user.id, fact.id, ctx.now()).exercises).toEqual({ active: 0, flagged: 0, needsReview: 0 })
     const e = updateExercise(ctx.db, ctx.user.id, r.created[1]!.id, { status: 'flagged' })
     expect(e.status).toBe('flagged')
     expect(() => updateExercise(ctx.db, 'us_nobody', e.id, { status: 'active' })).toThrow(/not found/)
@@ -62,7 +62,7 @@ describe('exercise pools', () => {
 describe('exercise reviews', () => {
   it('picks the same items on every fetch of the day until the card is rated', () => {
     const ctx = makeCtx()
-    const big = rule(ctx, Array.from({ length: 12 }, (_, i) => gap(i)))
+    const big = rule(ctx, Array.from({ length: 12 }, (_, i) => choose(i)))
     const picked = (now = ctx.now()) => {
       const item = buildQueue(ctx.db, ctx.user.id, TZ, now).items.find((i) => i.kind === 'fact' && i.fact.id === big.fact.id)
       return (item as { exercises?: { id: string }[] } | undefined)?.exercises?.map((e) => e.id)
@@ -79,8 +79,8 @@ describe('exercise reviews', () => {
 
   it('puts three items in the queue item of a rule with a pool, and none with fewer than three', () => {
     const ctx = makeCtx()
-    const small = rule(ctx, [gap(1), gap(2)])
-    const big = rule(ctx, [gap(1), gap(2), gap(3), fix(1), fix(2)])
+    const small = rule(ctx, [choose(1), choose(2)])
+    const big = rule(ctx, [choose(1), choose(2), choose(3), spot(1), spot(2)])
     const items = buildQueue(ctx.db, ctx.user.id, TZ, ctx.now()).items
     const of = (id: string) => items.find((i) => i.kind === 'fact' && i.fact.id === id)
     expect(of(small.fact.id)).not.toHaveProperty('exercises')
@@ -106,8 +106,8 @@ describe('exercise reviews', () => {
     expect(after.get(c!.id)).toMatchObject({ shownCount: 1, correctCount: 0, wrongCount: 0, status: 'flagged' })
     expect(after.get(d!.id)).toMatchObject({ shownCount: 0 })
     expect(ctx.db.prepare('SELECT count(*) AS n FROM exercise_attempts').get()).toEqual({ n: 3 })
-    // A flagged item is out of the pool; three remain, so the rule still reviews by exercises.
-    expect(factItem(ctx.db, ctx.user.id, fact.id, ctx.now()).exercises).toEqual({ active: 3, flagged: 1, needsReview: 1 })
+    // Legacy attempts remain stored, but text items do not count towards the study pool.
+    expect(factItem(ctx.db, ctx.user.id, fact.id, ctx.now()).exercises).toEqual({ active: 0, flagged: 0, needsReview: 0 })
 
     undoReview(ctx.db, ctx.user.id, 'rv-1')
     expect(listExercises(ctx.db, ctx.user.id, fact.id).find((e) => e.id === a!.id)).toMatchObject({ shownCount: 0, correctCount: 0, lastShownAt: null })
@@ -188,7 +188,7 @@ describe('exercise routes and tools', () => {
       const r = method === 'GET' ? await fetch(`${url}/api${p}`) : await send(`${url}/api${p}`, method, body ?? {})
       return { status: r.status, body: (await r.json()) as any }
     }
-    const added = await api('POST', `/facts/${fact.id}/exercises`, { items: [gap(1), gap(2), fix(1)] })
+    const added = await api('POST', `/facts/${fact.id}/exercises`, { items: [choose(1), choose(2), spot(1)] })
     expect(added).toMatchObject({ status: 201, body: { created: [{ index: 0 }, { index: 1 }, { index: 2 }], exercises: [{}, {}, {}] } })
     expect((await api('POST', `/facts/${fact.id}/exercises`, { items: [{ type: 'quiz', prompt: 'x', answer: 'y' }] })).status).toBe(400)
     const ids = added.body.exercises.map((e: any) => e.id)
@@ -208,11 +208,13 @@ describe('exercise routes and tools', () => {
     // Two active left: a plain fact card again.
     expect((await api('GET', '/queue')).body.items.find((i: any) => i.kind === 'fact')?.exercises).toBeUndefined()
 
-    const mcp = await callTool(url, 'static-mcp-token', 'add_exercises', { factId: fact.id, items: [gap(2), gap(3), { ...gap(3), answer: 'dup' }] })
+    const mcp = await callTool(url, 'static-mcp-token', 'add_exercises', { factId: fact.id, items: [choose(2), choose(3), choose(3, 'in')] })
     expect(mcp).toMatchObject({ created: [{ index: 0 }, { index: 1 }], duplicates: [{ index: 2 }] })
+    const typed = await callTool(url, 'static-mcp-token', 'add_exercises', { factId: fact.id, items: [{ type: 'write', text: 'Write a sentence with the rule.' }] })
+    expect(typed.error).toMatch(/choose|spot/)
     const listed = await callTool(url, 'static-mcp-token', 'list_exercises', { factId: fact.id })
     expect(listed.map((e: any) => [e.prompt.slice(0, 10), e.status, e.createdBy])).toEqual([
-      ['Sentence 1', 'flagged', 'user'], ['He go ther', 'active', 'user'], ['Sentence 2', 'active', 'claude'], ['Sentence 3', 'active', 'claude'],
+      ['Thing 1 ru', 'flagged', 'user'], ['The 1 dogs', 'active', 'user'], ['Thing 2 ru', 'active', 'claude'], ['Thing 3 ru', 'active', 'claude'],
     ])
     expect((await callTool(url, 'static-mcp-token', 'list_exercises', { factId: 'ft_nope' })).error).toMatch(/not found/)
   })
@@ -316,16 +318,16 @@ describe('tap exercises', () => {
     expect(() => updateExercise(ctx.db, ctx.user.id, pool[2]!.id, { wrong: 'cats' })).toThrow(/exactly once/)
   })
 
-  it('serves tap items only once there are three, and puts them first before that', () => {
+  it('never fills a short tap pool with legacy text items', () => {
     const ctx = makeCtx()
     const { fact } = rule(ctx, [gap(1), gap(2), gap(3), fix(1)])
     const served = () => {
       const it = buildQueue(ctx.db, ctx.user.id, TZ, ctx.now()).items.find((i) => i.kind === 'fact')
-      return (it as { exercises: { type: string }[] }).exercises.map((e) => e.type)
+      return ((it as { exercises?: { type: string }[] }).exercises ?? []).map((e) => e.type)
     }
-    expect(served().every((t) => t !== 'choose')).toBe(true)
+    expect(served()).toEqual([])
     addExercises(ctx.db, ctx.user.id, fact.id, [choose(1)], 'user', ctx.now())
-    for (let i = 0; i < 10; i++) expect(served()[0]).toBe('choose')
+    expect(served()).toEqual([])
     addExercises(ctx.db, ctx.user.id, fact.id, [spot(1), choose(2)], 'user', ctx.now())
     for (let i = 0; i < 10; i++) expect(served().sort()).toEqual(['choose', 'choose', 'spot'])
   })

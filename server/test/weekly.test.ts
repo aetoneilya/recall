@@ -61,7 +61,7 @@ describe('weekly report text', () => {
       'Retention: EN→RU 92% · RU→EN 71%',
       'Vocabulary: ≈ 8,400 words (+350)',
       'Hardest: tenacious ×4 · aloof ×3 · wary ×2',
-      '💡 RU→EN retention 71% — try typing answers (deck settings)',
+      '💡 RU→EN retention 71% — take fewer new words for a few days',
     ].join('\n'))
     const quiet = weeklyText({ ...DATA, reviews: 0, lastWeekReviews: 0, knownChange: 0, streak: 1, retention: { forward: { rate: null, reviews: 0 }, reverse: { rate: null, reviews: 0 } },
       estimate: null, estimateChange: null, hardest: [] }, NOW)

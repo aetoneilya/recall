@@ -1,6 +1,6 @@
 // Write items: the learner writes their own sentence for a rule, Claude
-// grades it. Storage, picking (at most one per review, only where grading
-// works), the grade route and /api/me's `grading`. Rules here are invented.
+// graded it. Storage and the grading API remain compatible; study excludes
+// these tasks. Rules here are invented.
 import Anthropic from '@anthropic-ai/sdk'
 import { describe, expect, it } from 'vitest'
 import { addExercises, listExercises, pickExercises, pickForReview, updateExercise, type ExerciseRow } from '../src/exercises.ts'
@@ -37,7 +37,7 @@ describe('write items', () => {
     expect(updateExercise(ctx.db, ctx.user.id, a!.id, { rubric: 'Past simple only.' })).toMatchObject({ rubric: 'Past simple only.', prompt: a!.prompt })
   })
 
-  it('never make a rule on their own, and join a review only with grading, one at most', () => {
+  it('never enter study rounds, including when grading is available', () => {
     const ctx = makeCtx()
     const writesOnly = rule(ctx, [write(1), write(2), write(3), choose(1), choose(2)])
     // Two tap items + writes: still a plain fact card, on any server.
@@ -51,11 +51,11 @@ describe('write items', () => {
       expect(off.map((x) => x.type)).toEqual(['choose', 'choose', 'choose'])
       const on = pickForReview(pool, true)
       expect(on).toHaveLength(3)
-      expect(on.filter((x) => x.type === 'write').length).toBeLessThanOrEqual(1)
+      expect(on.every((x) => x.type === 'choose')).toBe(true)
     }
-    // Never shown before anything: with the tap items seen, a write item comes up.
+    // Unseen write items cannot replace already seen tap items.
     ctx.db.prepare("UPDATE fact_exercises SET last_shown_at = '2026-10-01' WHERE type = 'choose'").run()
-    expect(pickForReview(rows(ctx, full.fact.id), true).filter((x) => x.type === 'write')).toHaveLength(1)
+    expect(pickForReview(rows(ctx, full.fact.id), true).every((x) => x.type === 'choose')).toBe(true)
     // pickExercises alone caps write items at one, even when nothing else is left.
     expect(pickExercises([...pool.filter((x) => x.type === 'write'), pool[0]!]).map((x) => x.type).sort()).toEqual(['choose', 'write'])
 
@@ -63,12 +63,11 @@ describe('write items', () => {
     const item = q(true)
     expect(item.kind === 'fact' && item.exercises).toHaveLength(3)
     const w = item.kind === 'fact' ? item.exercises!.find((e) => e.type === 'write') : undefined
-    expect(w).toMatchObject({ type: 'write', answer: '', accepted: [], explain: null, rubric: 'Uses the rule.' })
-    expect(w).not.toHaveProperty('options')
+    expect(w).toBeUndefined()
     const plain = q(false)
     expect(plain.kind === 'fact' && plain.exercises!.every((e) => e.type === 'choose')).toBe(true)
-    // FactItem counts the whole active pool.
-    expect(factItem(ctx.db, ctx.user.id, full.fact.id, ctx.now()).exercises).toEqual({ active: 7, flagged: 0, needsReview: 0 })
+    // FactItem counts only the items that can be studied.
+    expect(factItem(ctx.db, ctx.user.id, full.fact.id, ctx.now()).exercises).toEqual({ active: 4, flagged: 0, needsReview: 0 })
   })
 })
 

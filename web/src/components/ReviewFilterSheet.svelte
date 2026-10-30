@@ -2,7 +2,7 @@
   import { CEFR_LEVELS, cleanReviewFilter, type ReviewFilter } from '@recall/core'
   import { untrack } from 'svelte'
   import { api } from '../lib/app.svelte.ts'
-  import { directionName, posPlural, toggleIn, TYPE_NAMES } from '../lib/reviewFilter.ts'
+  import { allIn, directionName, posPlural, toggleIn, TYPE_NAMES } from '../lib/reviewFilter.ts'
   import { errorText } from '../lib/toast.svelte.ts'
   import type { ReviewOptions } from '../lib/types.ts'
   import Sheet from './Sheet.svelte'
@@ -34,6 +34,8 @@
   let options = $state.raw<ReviewOptions | null>(null)
   let error = $state('')
   let saving = $state(false)
+  let choosingTags = $state(untrack(() => !!initial?.tags?.length))
+  const tagsPending = $derived(choosingTags && !!options?.tags.length && !draft?.tags?.length)
 
   // Options and the live count, refetched (debounced) as the draft changes.
   let seq = 0
@@ -70,7 +72,7 @@
 </script>
 
 <Sheet title="What to review" label="What to review in {deckName}" {onclose}>
-  <p class="sub">{deckName} · {today === null ? (error ? 'counts need a connection' : '…') : `${today} ${today === 1 ? 'card' : 'cards'} today`}</p>
+  <p class="sub">{deckName} · {tagsPending ? 'choose one or more tags' : today === null ? (error ? 'counts need a connection' : '…') : `${today} ${today === 1 ? 'card' : 'cards'} today`}</p>
   {#if error && !options}
     <p class="note">{error}</p>
   {/if}
@@ -78,6 +80,7 @@
     {#if options.types.length > 1 || draft?.types?.length}
       <div class="label">Cards</div>
       <div class="chips">
+        <button class="chip-btn" class:on={!draft?.types?.length} aria-pressed={!draft?.types?.length} onclick={() => (draft = allIn(draft, 'types'))}>All cards</button>
         {#each options.types as t (t.value)}
           <button class="chip-btn" class:on={on('types', t.value)} aria-pressed={on('types', t.value)} onclick={() => (draft = toggleIn(draft, 'types', t.value))}>{TYPE_NAMES[t.value]} <b>{t.n}</b></button>
         {/each}
@@ -85,11 +88,20 @@
     {/if}
     {#if options.tags.length}
       <div class="label">Tags</div>
-      <TagTree tags={options.tags} selected={draft?.tags ?? []} onchange={(tags) => (draft = { ...(draft ?? {}), tags })} />
+      <div class="chips tag-mode" role="radiogroup" aria-label="Tag filter">
+        <button class="chip-btn" role="radio" class:on={!choosingTags} aria-checked={!choosingTags} onclick={() => { choosingTags = false; draft = allIn(draft, 'tags') }}>All tags</button>
+        <button class="chip-btn" role="radio" class:on={choosingTags} aria-checked={choosingTags} onclick={() => (choosingTags = true)}>Choose tags</button>
+      </div>
+      {#if choosingTags}
+        <TagTree tags={options.tags} selected={draft?.tags ?? []} onchange={(tags) => (draft = cleanReviewFilter({ ...(draft ?? {}), tags }))} />
+      {:else}
+        <p class="tag-hint">Includes cards without tags.</p>
+      {/if}
     {/if}
     {#if hasWords && (options.pos.length > 1 || draft?.pos?.length)}
       <div class="label">Words: part of speech</div>
       <div class="chips">
+        <button class="chip-btn" class:on={!draft?.pos?.length} aria-pressed={!draft?.pos?.length} onclick={() => (draft = allIn(draft, 'pos'))}>All parts</button>
         {#each options.pos as p (p.value)}
           <button class="chip-btn" class:on={on('pos', p.value)} aria-pressed={on('pos', p.value)} onclick={() => (draft = toggleIn(draft, 'pos', p.value))}>{posPlural(p.value)} <b>{p.n}</b></button>
         {/each}
@@ -98,6 +110,7 @@
     {#if hasWords && (options.cefr.length || draft?.cefr?.length)}
       <div class="label">Words: level</div>
       <div class="chips">
+        <button class="chip-btn" class:on={!draft?.cefr?.length} aria-pressed={!draft?.cefr?.length} onclick={() => (draft = allIn(draft, 'cefr'))}>All levels</button>
         {#each CEFR_LEVELS.filter((c) => options!.cefr.some((x) => x.value === c) || on('cefr', c)) as c (c)}
           <button class="chip-btn" class:on={on('cefr', c)} aria-pressed={on('cefr', c)} onclick={() => (draft = toggleIn(draft, 'cefr', c))}>{c}</button>
         {/each}
@@ -106,17 +119,18 @@
     {#if hasWords && (options.directions.length > 1 || draft?.directions?.length)}
       <div class="label">Words: direction</div>
       <div class="chips">
+        <button class="chip-btn" class:on={!draft?.directions?.length} aria-pressed={!draft?.directions?.length} onclick={() => (draft = allIn(draft, 'directions'))}>All directions</button>
         {#each options.directions as d (d.value)}
           <button class="chip-btn" class:on={on('directions', d.value)} aria-pressed={on('directions', d.value)} onclick={() => (draft = toggleIn(draft, 'directions', d.value))}>{directionName(d.value, langs)}</button>
         {/each}
       </div>
     {/if}
-    <p class="note">Picks in a row add up; tags and the rows narrow each other. Only what has cards is offered. Cards outside the filter wait and don't use the day's new cards.</p>
+    <p class="note">All means no restriction. Pick specific values to narrow the review; selected tags must all match. Cards outside the filter wait for later.</p>
   {/if}
   <div class="actions">
-    <button class="btn" onclick={() => (draft = null)} disabled={!draft}>Clear</button>
+    <button class="btn" onclick={() => { draft = null; choosingTags = false }} disabled={!draft && !choosingTags}>Reset</button>
     <button class="btn" onclick={onclose}>Cancel</button>
-    <button class="btn primary grow" onclick={done} disabled={saving}>{saving ? 'Saving…' : 'Done'}</button>
+    <button class="btn primary grow" onclick={done} disabled={saving || tagsPending}>{saving ? 'Saving…' : 'Done'}</button>
   </div>
 </Sheet>
 
@@ -142,7 +156,7 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    min-height: 40px;
+    min-height: 44px;
     padding: 0 13px;
     border-radius: 18px;
     font-size: 15px;
@@ -171,7 +185,19 @@
     font-size: 13px;
     color: var(--faint);
   }
+  .tag-mode {
+    margin-bottom: 8px;
+  }
+  .tag-hint {
+    margin: 0 2px;
+    color: var(--muted);
+    font-size: 13px;
+  }
   .actions {
+    position: sticky;
+    bottom: -16px;
+    padding: 12px 0 16px;
+    background: var(--bg);
     display: flex;
     gap: 8px;
     margin-top: 20px;

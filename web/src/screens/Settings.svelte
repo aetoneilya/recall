@@ -246,8 +246,6 @@
     }
   }
 
-  const command = (secret: string) => `claude mcp add --transport http mnemosyne ${mcpUrl} --header "Authorization: Bearer ${secret}"`
-
   function focus(el: HTMLElement) {
     el.focus()
   }
@@ -404,22 +402,22 @@
   <!-- One-time setup, folded away so the daily settings stay short. -->
   <div class="group adv" class:tight={!!me?.fsrs}>
     <button class="row" aria-expanded={connectOpen} onclick={() => (connectOpen = !connectOpen)}>
-      <span class="grow">Connect Claude <span class="sub">claude.ai connector, tokens for Claude Code</span></span>
+      <span class="grow">Connect via MCP <span class="sub">For MCP-compatible AI apps and agents</span></span>
       <span class="chev" class:open={connectOpen}><Icon name="chevron" size={16} stroke={2} /></span>
     </button>
   </div>
   {#if connectOpen}
-    <div class="section-label">claude.ai</div>
+    <div class="section-label">Server URL</div>
     <div class="group">
       <div class="block">
-        <p class="hint">Settings → Connectors → Add custom connector with this URL. It confirms in Telegram, no token needed.</p>
+        <p class="hint">Add this URL as a remote MCP server. If your client supports OAuth, sign in through Telegram. Otherwise use a personal token below.</p>
         <code class="cmd">{mcpUrl}</code>
         <button class="btn copy" onclick={() => copy(mcpUrl)}><Icon name="copy" size={16} /> Copy URL</button>
       </div>
     </div>
 
     {#if canManageTokens}
-      <div class="section-label">Personal tokens for Claude</div>
+      <div class="section-label">Personal access tokens</div>
       <div class="group">
         {#if tokens === null && !tokensError}
           <div class="row skel-row" aria-hidden="true"><span class="skel" style="width: 40%"></span><span class="skel" style="width: 62%; height: 10px"></span></div>
@@ -449,7 +447,7 @@
           <button class="row add" onclick={startNaming}><Icon name="plus" size={20} stroke={2} /> New token</button>
         {/if}
       </div>
-      <p class="caption">For Claude Code and scripts. A token acts as you; revoke the ones you no longer use.</p>
+      <p class="caption">For clients using Bearer authentication. A token acts as you; revoke the ones you no longer use.</p>
     {/if}
 
   {/if}
@@ -467,14 +465,14 @@
         <button class="btn copy" onclick={() => copy(created!.secret)}><Icon name="copy" size={16} /> Copy token</button>
       </div>
     </div>
-    <div class="section-label">Claude Code</div>
+    <div class="section-label">Connect your client</div>
     <div class="group">
       <div class="block">
-        <code class="cmd">{command(created.secret)}</code>
-        <button class="btn copy" onclick={() => copy(command(created!.secret))}><Icon name="copy" size={16} /> Copy command</button>
+        <code class="cmd">{`Authorization: Bearer ${created.secret}`}</code>
+        <button class="btn copy" onclick={() => copy(`Authorization: Bearer ${created!.secret}`)}><Icon name="copy" size={16} /> Copy header</button>
       </div>
     </div>
-    <p class="caption">claude.ai doesn't use tokens: add the connector URL <span class="mono">{mcpUrl}</span> and confirm in Telegram instead.</p>
+    <p class="caption">Use the server URL <span class="mono">{mcpUrl}</span> and send this authorization header with requests.</p>
     <button class="btn primary block done" onclick={() => (created = null)}>Done</button>
   </Sheet>
 {/if}

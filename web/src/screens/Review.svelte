@@ -1,8 +1,6 @@
 <script lang="ts">
-  import { checkAnswer, checkExercise, exerciseRating, formatInterval, isTapType, preview, spotTokens, type AnswerCheck, type ExerciseAttempt, type ExerciseCheck, type Rating, type WriteGrade } from '@recall/core'
-  import { api, status } from '../lib/app.svelte.ts'
-  import { errorText, showToast } from '../lib/toast.svelte.ts'
-  import { flushSync, onMount, untrack } from 'svelte'
+  import { exerciseRating, formatInterval, isTapType, preview, spotTokens, type ExerciseAttempt, type Rating } from '@recall/core'
+  import { onMount, untrack } from 'svelte'
   import DeckSwitcher from '../components/DeckSwitcher.svelte'
   import ExerciseCard from '../components/ExerciseCard.svelte'
   import ReviewFilterSheet from '../components/ReviewFilterSheet.svelte'
@@ -42,84 +40,41 @@
 
   const deck = $derived(item ? session.deckOf(item) : undefined)
   const langs = $derived<[string, string]>([deck?.targetLang ?? 'en', deck?.nativeLang ?? 'ru'])
-  // Typed answers: the deck asks for them on RU→EN cards, or on both
-  // (forward then means typing the main translation). Never on facts.
-  const typed = $derived(
-    item?.kind === 'word' && (deck?.typeAnswer === 'both' || (deck?.typeAnswer === 'reverse' && item.card.direction === 'reverse')),
-  )
   // The deck under review, its filter sheet, the "+" picker.
   const currentDeck = $derived(session.decks[session.deckId])
   let filterOpen = $state(false)
   const chips = $derived(filterChips(session.filter, [currentDeck?.targetLang ?? null, currentDeck?.nativeLang ?? null]))
-  const LANG_NAMES: Record<string, string> = { en: 'English', ru: 'Russian', de: 'German', fr: 'French', es: 'Spanish' }
-  const placeholder = $derived(
-    item?.card.direction === 'reverse' ? `In ${LANG_NAMES[langs[0]] ?? langs[0].toUpperCase()}…` : `In ${LANG_NAMES[langs[1]] ?? langs[1].toUpperCase()}…`,
-  )
-  let answer = $state('')
-  let check = $state<AnswerCheck | null>(null)
-  let input: HTMLInputElement | undefined = $state()
-  // A rule with exercises: three items to type, checked one by one, then a
-  // summary whose rating comes from the results.
-  // Written items need the server's grader: offline, or on a server
-  // without one, they're left out (and so is one whose grading failed).
-  const canGrade = $derived(status.online && status.me?.grading !== false)
-  let skipped = $state<string[]>([])
+  // Cached queues can still contain older text exercises; study stays tap-only.
   const exercises = $derived.by(() => {
     if (item?.kind !== 'fact' || !item.exercises?.length) return null
-    const list = item.exercises.filter((e) => e.type !== 'write' || (canGrade && !skipped.includes(e.id)))
+    const list = item.exercises.filter((e) => isTapType(e.type))
     return list.length ? list : null
   })
-  let grading = $state(false)
-  let writeGrade = $state<WriteGrade | null>(null)
   let exIndex = $state(0)
   let exResults = $state<ExerciseAttempt[]>([])
-  let exCheck = $state<ExerciseCheck | null>(null)
-  let exAnswer = $state('')
-  let exInput: HTMLInputElement | undefined = $state()
-  const exTyping = $derived(!!exercises && !session.revealed)
+  const exercising = $derived(!!exercises && !session.revealed)
   // The current item, and for tap items (choose, spot) their state: the
   // option picked, the token tapped, done.
   const exItem = $derived(exercises?.[exIndex] ?? null)
-  const exTap = $derived(!!exItem && isTapType(exItem.type))
   let tap = $state<{ pick: string | null; token: number | null; done: boolean }>({ pick: null, token: null, done: false })
-  const exAnswered = $derived(exTap ? tap.done : !!exCheck)
-  // The rating to take on Enter / one tap: the typed answer's, or the exercises'.
-  const suggested = $derived<Rating | null>(exercises ? (exResults.length ? exerciseRating(exResults) : null) : check?.suggestedRating ?? null)
+  // The rating suggested by the exercise results.
+  const suggested = $derived<Rating | null>(exResults.length ? exerciseRating(exResults) : null)
 
-  // A new card (or the same one back) starts with an empty answer. Back
-  // after an undo, an exercise card shows how its items went.
+  // A new card starts fresh; Undo restores the exercise results.
   $effect.pre(() => {
     void cardKey
-    answer = ''
-    check = null
     exIndex = 0
-    exCheck = null
-    exAnswer = ''
-    writeGrade = null
-    skipped = []
     tap = { pick: null, token: null, done: false }
     // Back from the theory (or any screen) to a rule half answered: where it
     // was; on its summary, with the results it was answered with.
     untrack(() => {
       const cur = session.current
-      const p = cur?.kind === 'fact' && progressFits(session.exerciseProgress[cur.card.id], cur.exercises) ? session.exerciseProgress[cur.card.id] : undefined
+      const p = cur?.kind === 'fact' && progressFits(session.exerciseProgress[cur.card.id], exercises ?? undefined) ? session.exerciseProgress[cur.card.id] : undefined
       exResults = cur && session.revealed ? [...(session.exerciseResults[cur.card.id] ?? p?.results ?? [])] : []
       if (!p || session.revealed) return
       exIndex = p.index
       exResults = [...p.results]
       tap = { ...p.tap }
-      exCheck = p.check
-      exAnswer = p.answer
-      skipped = [...p.skipped]
-      writeGrade = p.grade
-    })
-    untrack(() => {
-      const cur = session.current
-      const t = cur && session.revealed ? session.typedAnswers[cur.card.id] : undefined
-      if (t) {
-        answer = t.answer
-        check = t.check
-      }
     })
   })
 
@@ -132,60 +87,20 @@
   $effect(() => {
     const cur = item
     if (cur?.kind !== 'fact' || !exercises) return
-    const started = exIndex > 0 || exResults.length > 0 || tap.token !== null || exAnswer !== ''
-    const p = { ids: (cur.exercises ?? []).map((e) => e.id), index: exIndex, results: $state.snapshot(exResults), tap: $state.snapshot(tap), check: $state.snapshot(exCheck), answer: exAnswer, skipped: [...skipped], grade: $state.snapshot(writeGrade) }
+    const started = exIndex > 0 || exResults.length > 0 || tap.token !== null
+    const p = { ids: exercises.map((e) => e.id), index: exIndex, results: $state.snapshot(exResults), tap: $state.snapshot(tap) }
     untrack(() => {
       if (started) session.exerciseProgress[cur.card.id] = p as ExerciseProgress
     })
   })
 
-  function checkItem() {
-    const ex = exercises?.[exIndex]
-    if (!ex || exCheck || grading) return
-    if (ex.type === 'write') return void gradeWrite(ex.id)
-    exCheck = checkExercise(exAnswer, ex)
-    exResults = [...exResults.slice(0, exIndex), { id: ex.id, given: exAnswer.trim(), correct: exCheck.correct }]
-    haptic.notify(exCheck.correct ? 'success' : 'error')
-  }
-
-  // A written sentence: Claude's verdict, the corrected sentence and why.
-  async function gradeWrite(id: string) {
-    const text = exAnswer.trim()
-    if (!text) {
-      exCheck = { correct: false, expected: '' }
-      exResults = [...exResults.slice(0, exIndex), { id, given: '', correct: false }]
-      return
-    }
-    grading = true
-    try {
-      const g = await api.grade(id, text)
-      if (exercises?.[exIndex]?.id !== id) return
-      writeGrade = g
-      exCheck = { correct: g.correct, expected: g.corrected }
-      exResults = [...exResults.slice(0, exIndex), { id, given: text, correct: g.correct }]
-      haptic.notify(g.correct ? 'success' : g.score === 1 ? 'warning' : 'error')
-    } catch (e) {
-      // Can't be checked now: the item is left out of this review.
-      showToast(`Couldn't check it: ${errorText(e)} — skipped`)
-      skipped = [...skipped, id]
-      exAnswer = ''
-    } finally {
-      grading = false
-    }
-  }
-
   // Next item, or the summary after the last one.
   function nextItem() {
     clearTimeout(autoNext)
-    if (!exercises || !exAnswered) return
+    if (!exercises || !tap.done) return
     if (exIndex + 1 < exercises.length) {
       exIndex++
-      exCheck = null
-      exAnswer = ''
-      writeGrade = null
       tap = { pick: null, token: null, done: false }
-      if (!exTap) flushSync()
-      if (exercises[exIndex] && !isTapType(exercises[exIndex]!.type)) exInput?.focus()
     } else session.reveal()
   }
 
@@ -228,7 +143,6 @@
     const r = exResults[exIndex]
     if (!r || r.correct) return
     exResults = exResults.map((x, i) => (i === exIndex ? { ...x, correct: true, overridden: true } : x))
-    exCheck = exCheck && { ...exCheck, correct: true }
   }
 
   // "Bad item": out of the pool, not graded.
@@ -239,18 +153,7 @@
     haptic.select()
   }
 
-  function onExerciseKey(e: KeyboardEvent) {
-    if (e.key !== 'Enter') return
-    e.preventDefault()
-    if (!exCheck) checkItem()
-    else nextItem()
-  }
-
-  const commit = (r: Rating) => {
-    // Kept so an undo brings the card back with its verdict.
-    if (item && check) session.typedAnswers[item.card.id] = { answer, check }
-    return session.rate(r, exercises && exResults.length ? { exercises: exResults } : {})
-  }
+  const commit = (r: Rating) => session.rate(r, exercises && exResults.length ? { exercises: exResults } : {})
 
   const intervals = $derived.by(() => {
     if (!item) return null
@@ -278,8 +181,8 @@
   // Held down: the card lifts (and its deeper shadow fades in).
   let pressed = $state(false)
   // Peek and throw: a plain word or fact card can be picked up before its
-  // reveal; typed answers and exercises keep their own flow.
-  const peekable = $derived(!!item && !typed && !exercises)
+  // reveal; exercises keep their own flow.
+  const peekable = $derived(!!item && !exercises)
   // Revealed by a press: the reveal plays fast.
   let peeked = $state(false)
   // When the answer became visible; swipes arm only PEEK_SAFE_MS later.
@@ -309,7 +212,7 @@
   const next = $derived(item ? session.peek : null)
   const nextExercises = $derived.by(() => {
     if (next?.kind !== 'fact' || !next.exercises?.length) return null
-    const list = next.exercises.filter((e) => e.type !== 'write' || canGrade)
+    const list = next.exercises.filter((e) => isTapType(e.type))
     return list.length ? list : null
   })
   let stageEl: HTMLElement | undefined = $state()
@@ -396,18 +299,9 @@
       anim.finished.then(() => ghost.remove(), () => ghost.remove())
     }
     resetDrag()
-    // Typed cards: the next one renders inside the tap so focusing its field
-    // keeps the iOS keyboard up. Otherwise the commit waits a frame so the
-    // throw's first frames aren't spent on the state work.
-    if (typed) {
-      if (!commit(r)) return restore()
-      flushSync()
-      input?.focus()
-    } else {
-      requestAnimationFrame(() => {
-        if (!commit(r)) restore()
-      })
-    }
+    requestAnimationFrame(() => {
+      if (!commit(r)) restore()
+    })
     function restore() {
       if (el) el.style.visibility = ''
     }
@@ -415,23 +309,7 @@
 
   function reveal() {
     if (!item || session.revealed) return
-    const c = typed && item.kind === 'word' ? checkAnswer(answer, item.word, item.card.direction) : null
     session.reveal()
-    if (!session.revealed) return
-    check = c
-    if (c) haptic.notify(c.verdict === 'exact' ? 'success' : c.verdict === 'close' ? 'warning' : 'error')
-  }
-
-  // Enter: check the answer, then take the suggested rating.
-  function onAnswerKey(e: KeyboardEvent) {
-    if (e.key === 'Enter') {
-      e.preventDefault()
-      if (!session.revealed) reveal()
-      else rate(suggested ?? 3)
-    } else if (session.revealed && ['1', '2', '3', '4'].includes(e.key)) {
-      e.preventDefault()
-      rate(Number(e.key) as Rating)
-    }
   }
 
   // A press on a hidden card revealed it (past the slop, or held).
@@ -445,11 +323,9 @@
 
   function tapCard() {
     coach.dismiss()
-    if (exTyping && exTap) {
+    if (exercising) {
       if (tap.done) nextItem()
-    } else if (exTyping) exInput?.focus()
-    else if (typed && !session.revealed) input?.focus()
-    else reveal()
+    } else reveal()
   }
 
   // The wash, the pill and arming follow the dominant direction right now.
@@ -541,16 +417,11 @@
     if (shortcutsOff(e)) return
     if (e.key === ' ' || e.key === 'Enter') {
       e.preventDefault()
-      if (exTyping && exTap) {
+      if (exercising) {
         if (tap.done) nextItem()
-      } else if (exTyping) {
-        if (exCheck && e.key === 'Enter') nextItem()
-        else exInput?.focus()
-      } else if (!session.revealed) {
-        if (typed) input?.focus()
-        else reveal()
-      } else rate(suggested ?? 3)
-    } else if (exTyping && exTap && ['1', '2', '3', '4'].includes(e.key)) {
+      } else if (!session.revealed) reveal()
+      else rate(suggested ?? 3)
+    } else if (exercising && ['1', '2', '3', '4'].includes(e.key)) {
       const o = exItem?.options?.[Number(e.key) - 1]
       if (o) chooseOption(o)
     } else if (session.revealed && ['1', '2', '3', '4'].includes(e.key)) {
@@ -637,7 +508,7 @@
           style="transform: {transform}; transform-origin: {origin}; --ctx-left: {session.canUndo ? '52px' : '20px'}; --snap: {snapping || 320}ms; --from-y: {stepFrom.y}px; --from-scale: {stepFrom.scale}"
           role="button"
           tabindex="-1"
-          aria-label={session.revealed ? 'Card' : typed || exTyping ? 'Card, type the answer below' : 'Show answer'}
+          aria-label={session.revealed ? 'Card' : exercising ? 'Card, tap an answer' : 'Show answer'}
           onclick={tapCard}
           onkeydown={() => {}}
           use:swipe={{
@@ -660,12 +531,11 @@
           {/if}
           {#if item.kind === 'fact' && exercises}
             <ExerciseCard
-              {item}
+              item={{ ...item, exercises }}
               index={exIndex}
               results={exResults}
-              check={exCheck}
-              given={exAnswer}
-              {writeGrade}
+              check={null}
+              given=""
               {tap}
               revealed={session.revealed}
               onchoose={chooseOption}
@@ -678,7 +548,7 @@
           {:else if item.kind === 'fact'}
             <FactCard {item} revealed={session.revealed} onedit={() => navigate(`/fact/${item.fact.id}?from=/`)} ondrop={() => void dropCard('fact', item.fact.id, item.fact.front)} onread={isGrammar(item.fact) ? () => readTheory(item.fact) : undefined} />
           {:else}
-            <WordCard {item} revealed={session.revealed} typed={answer} {check} {langs} onedit={() => navigate(`/word/${item.word.id}?from=/`)} ondrop={() => void dropCard('word', item.word.id, item.word.term)} />
+            <WordCard {item} revealed={session.revealed} {langs} onedit={() => navigate(`/word/${item.word.id}?from=/`)} ondrop={() => void dropCard('word', item.word.id, item.word.term)} />
           {/if}
           {#if dir && lean && intervals && armReady}
             <div class="wash {dir} {tone[lean]}" style="opacity: {pull * 0.6}"></div>
@@ -718,31 +588,7 @@
 
   {#if item}
     <div class="actions">
-      {#if typed}
-        <!-- Stays mounted (and focused) across typed cards so the keyboard
-             doesn't drop between them; after the check it steps out of view
-             but keeps the focus, and Enter takes the suggested rating. -->
-        <form class="type-row" class:gone={session.revealed} onsubmit={(e) => e.preventDefault()}>
-          <!-- svelte-ignore a11y_autofocus -->
-          <input
-            bind:this={input}
-            bind:value={answer}
-            maxlength="500"
-            onkeydown={onAnswerKey}
-            {placeholder}
-            lang={item.card.direction === 'reverse' ? langs[0] : langs[1]}
-            autocomplete="off"
-            autocapitalize="off"
-            autocorrect="off"
-            spellcheck="false"
-            enterkeyhint="done"
-            aria-label={placeholder}
-            autofocus
-          />
-          <button type="button" class="check" onclick={reveal} onmousedown={(e) => e.preventDefault()}>{answer.trim() ? 'Check' : "Don't know"}</button>
-        </form>
-      {/if}
-      {#if exTyping && exTap}
+      {#if exercising}
         <!-- Tap items are answered on the card; here: undo before, Next after. -->
         <div class="pre">
           {#if tap.done}
@@ -754,39 +600,9 @@
             <p class="tap-hint">{exItem?.type === 'spot' ? (tap.token === null ? 'Tap the wrong word' : 'Pick the right form') : 'Tap the right option'}</p>
           {/if}
         </div>
-      {:else if exTyping}
-        <form class="type-row" onsubmit={(e) => e.preventDefault()}>
-          {#if exCheck}
-            {#if !exCheck.correct && !exResults[exIndex]?.overridden && exResults[exIndex]?.given}
-              <button type="button" class="soft" onclick={overrule} onmousedown={(e) => e.preventDefault()}>I was right</button>
-            {/if}
-            <button type="button" class="check grow" onclick={nextItem} onmousedown={(e) => e.preventDefault()}>{exIndex + 1 < (exercises?.length ?? 0) ? 'Next' : 'Done'}</button>
-          {/if}
-          <!-- svelte-ignore a11y_autofocus -->
-          <input
-            class:gone={!!exCheck}
-            bind:this={exInput}
-            bind:value={exAnswer}
-            maxlength="500"
-            onkeydown={onExerciseKey}
-            placeholder={exercises?.[exIndex]?.type === 'write' ? 'Write your sentence' : exercises?.[exIndex]?.type === 'fix' ? 'Type the corrected sentence' : 'Type the answer'}
-            lang="en"
-            autocomplete="off"
-            autocapitalize="off"
-            autocorrect="off"
-            spellcheck="false"
-            enterkeyhint={exCheck ? 'next' : 'done'}
-            aria-label="Your answer"
-            readonly={!!exCheck}
-            autofocus
-          />
-          {#if !exCheck}
-            <button type="button" class="check" onclick={checkItem} onmousedown={(e) => e.preventDefault()} disabled={grading}>{grading ? 'Checking…' : exAnswer.trim() ? 'Check' : "Don't know"}</button>
-          {/if}
-        </form>
       {:else if session.revealed}
-        <RatingBar state={item.card.schedule} onrate={rate} lean={lean ?? (exercises ? suggested : null)} {suggested} keepFocus={typed} {intervals} />
-      {:else if !typed}
+        <RatingBar state={item.card.schedule} onrate={rate} lean={lean ?? (exercises ? suggested : null)} {suggested} {intervals} />
+      {:else}
         <div class="pre">
           <button class="show" onclick={reveal}>Show answer</button>
         </div>
@@ -1295,55 +1111,6 @@
   :global(:root[data-keyboard]) .actions {
     padding-bottom: 8px;
   }
-  .type-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 66px;
-  }
-  .type-row.gone {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    height: 1px;
-    opacity: 0;
-    overflow: hidden;
-    pointer-events: none;
-  }
-  .type-row input {
-    flex: 1;
-    min-width: 0;
-    height: 66px;
-    padding: 0 14px;
-    border-radius: 18px;
-    font-size: 18px;
-    background: var(--surface);
-    border-color: transparent;
-    box-shadow: var(--shadow);
-  }
-  .type-row input:focus {
-    border-color: var(--accent);
-    box-shadow: var(--shadow), 0 0 0 3px var(--accent-ring);
-  }
-  .check {
-    flex: none;
-    height: 66px;
-    min-width: 72px;
-    padding: 0 12px;
-    border-radius: 18px;
-    font-weight: 600;
-    font-size: 16px;
-    color: var(--accent-text);
-    background: var(--accent);
-    transition: transform var(--t-press) var(--ease-out);
-  }
-  .check:active {
-    transform: scale(0.97);
-  }
-  .check.grow {
-    flex: 1;
-  }
   .tap-hint {
     flex: 1;
     margin: 0;
@@ -1355,14 +1122,6 @@
   .show.next {
     color: var(--accent-text);
     background: var(--accent);
-  }
-  /* Checked: the field steps out of view but keeps the focus (and the keyboard). */
-  .type-row input.gone {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    opacity: 0;
-    pointer-events: none;
   }
   .soft {
     flex: none;

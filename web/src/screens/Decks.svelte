@@ -8,7 +8,7 @@
   import { session } from '../lib/review.svelte.ts'
   import { navigate } from '../lib/router.svelte.ts'
   import { errorText, showToast } from '../lib/toast.svelte.ts'
-  import type { DeckPatch, DeckWithCounts, TypeAnswer } from '../lib/types.ts'
+  import type { DeckPatch, DeckWithCounts } from '../lib/types.ts'
 
   let { id }: { id?: string } = $props()
   // The review screen's cached copy paints the study settings at once (and
@@ -155,11 +155,6 @@
     { label: '14 d', value: 14 },
     { label: '30 d', value: 30 },
   ]
-  const TYPE_ANSWERS: { label: string; value: TypeAnswer }[] = [
-    { label: 'Off', value: 'off' },
-    { label: 'RU → EN', value: 'reverse' },
-    { label: 'Both', value: 'both' },
-  ]
   const code = (l: string) => l.toUpperCase()
 
   function setNew(d: DeckWithCounts, delta: number) {
@@ -226,14 +221,6 @@
               </div>
             </div>
           {/if}
-          <div class="row col">
-            <span>Type the answer <span class="sub">Instead of just revealing it; typos count as Hard</span></span>
-            <div class="seg" role="radiogroup" aria-label="Type the answer">
-              {#each TYPE_ANSWERS as o (o.value)}
-                <button role="radio" aria-checked={d.typeAnswer === o.value} class:on={d.typeAnswer === o.value} onclick={() => patchDeck(d, { typeAnswer: o.value })}>{o.label.replace('RU', n).replace('EN', t)}</button>
-              {/each}
-            </div>
-          </div>
         {/if}
         {#if d.tags?.length}
           <button class="row" onclick={() => (tagsDeck = d)}>

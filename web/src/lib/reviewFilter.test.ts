@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { allIn, cefrLabel, choiceOn, emptyChoices, filterChips, filterSummary, reviewTagState, toggleChoice, toggleIn, toggleReviewTag, toggleUntagged, untaggedOn } from './reviewFilter.ts'
+import { allIn, cefrLabel, choiceOn, emptyChoices, filterChips, filterSummary, reviewTagState, setChoiceGroup, toggleChoice, toggleIn, toggleReviewTag, toggleUntagged, untaggedOn } from './reviewFilter.ts'
 
 describe('review filter labels', () => {
   it('summarises a filter on one line', () => {
@@ -34,6 +34,17 @@ describe('review filter labels', () => {
 })
 
 describe('checked review choices', () => {
+  it('clears a row for a single choice and restores it without changing the other filters', () => {
+    const initial = { types: ['word' as const], tagSelection: { values: { Books: false } } }
+    const cleared = setChoiceGroup(initial, 'cefr', false)
+    expect(cleared).toEqual({ ...initial, cefr: [] })
+    expect(emptyChoices(cleared)).toBe(true)
+    const selected = toggleChoice(cleared, 'cefr', 'B2', ['B1', 'B2', 'C1'])
+    expect(selected).toEqual({ ...initial, cefr: ['B2'] })
+    expect(emptyChoices(selected)).toBe(false)
+    expect(setChoiceGroup(selected, 'cefr', true)).toEqual(initial)
+    expect(setChoiceGroup({ types: [], cefr: ['B2'] }, 'cefr', true)).toEqual({ types: [] })
+  })
   it('starts with every value on, removes one, and returns to unrestricted when it is checked again', () => {
     const values = ['word', 'fact', 'rule']
     expect(values.every((v) => choiceOn(null, 'types', v))).toBe(true)

@@ -2,7 +2,7 @@
   import { cleanReviewFilter, type Facet, type ReviewFilter } from '@recall/core'
   import { untrack } from 'svelte'
   import { api } from '../lib/app.svelte.ts'
-  import { choiceOn, directionName, emptyChoices, posPlural, reviewTagState, toggleChoice, toggleReviewTag, toggleUntagged, untaggedOn, TYPE_NAMES } from '../lib/reviewFilter.ts'
+  import { choiceOn, directionName, emptyChoices, posPlural, reviewTagState, setChoiceGroup, toggleChoice, toggleReviewTag, toggleUntagged, untaggedOn, TYPE_NAMES } from '../lib/reviewFilter.ts'
   import { errorText } from '../lib/toast.svelte.ts'
   import type { ReviewOptions } from '../lib/types.ts'
   import Sheet from './Sheet.svelte'
@@ -75,6 +75,7 @@
   function toggle(key: Exclude<Facet, 'tags'>, value: string) {
     draft = toggleChoice(draft, key, value, choices(key).map((v) => v.value))
   }
+  const allOn = (key: Exclude<Facet, 'tags'>) => choices(key).every((v) => on(key, v.value))
 
   async function done() {
     saving = true
@@ -84,6 +85,13 @@
   }
 </script>
 
+{#snippet heading(title: string, key: Exclude<Facet, 'tags'>, label: string)}
+  <div class="label">
+    <span>{title}</span>
+    <button class="bulk" onclick={() => (draft = setChoiceGroup(draft, key, !allOn(key)))} aria-label="{allOn(key) ? 'Deselect all' : 'Select all'} {label}">{allOn(key) ? 'Deselect all' : 'Select all'}</button>
+  </div>
+{/snippet}
+
 <Sheet title="What to review" label="What to review in {deckName}" {onclose}>
   <p class="sub">{deckName} · {today === null ? (error ? 'counts need a connection' : '…') : `${today} ${today === 1 ? 'card' : 'cards'} today`}</p>
   {#if error && !options}
@@ -91,7 +99,7 @@
   {/if}
   {#if options}
     {#if choices('types').length > 1 || draft?.types?.length}
-      <div class="label">Cards</div>
+      {@render heading('Cards', 'types', 'card types')}
       <div class="chips">
         {#each choices('types') as t (t.value)}
           <button class="chip-btn" class:on={on('types', t.value)} aria-pressed={on('types', t.value)} onclick={() => (toggle('types', t.value))}>{TYPE_NAMES[t.value]} <b>{t.n}</b></button>
@@ -107,7 +115,7 @@
       </button>
     {/if}
     {#if hasWords && (choices('pos').length > 1 || draft?.pos?.length)}
-      <div class="label">Words: part of speech</div>
+      {@render heading('Words: part of speech', 'pos', 'parts of speech')}
       <div class="chips">
         {#each choices('pos') as p (p.value)}
           <button class="chip-btn" class:on={on('pos', p.value)} aria-pressed={on('pos', p.value)} onclick={() => (toggle('pos', p.value))}>{posPlural(p.value)} <b>{p.n}</b></button>
@@ -115,7 +123,7 @@
       </div>
     {/if}
     {#if hasWords && (choices('cefr').length || draft?.cefr?.length)}
-      <div class="label">Words: level</div>
+      {@render heading('Words: level', 'cefr', 'levels')}
       <div class="chips">
         {#each choices('cefr').toSorted((a, b) => a.value.localeCompare(b.value)) as option (option.value)}
           {@const c = option.value}
@@ -124,7 +132,7 @@
       </div>
     {/if}
     {#if hasWords && (choices('directions').length > 1 || draft?.directions?.length)}
-      <div class="label">Words: direction</div>
+      {@render heading('Words: direction', 'directions', 'directions')}
       <div class="chips">
         {#each choices('directions') as d (d.value)}
           <button class="chip-btn" class:on={on('directions', d.value)} aria-pressed={on('directions', d.value)} onclick={() => (toggle('directions', d.value))}>{directionName(d.value, langs)}</button>
@@ -149,10 +157,28 @@
     font-variant-numeric: tabular-nums;
   }
   .label {
-    margin: 16px 2px 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 28px;
+    margin: 8px 2px;
     font-size: 13px;
     font-weight: 600;
     color: var(--muted);
+  }
+  .bulk {
+    position: relative;
+    min-height: 28px;
+    flex: none;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--accent);
+  }
+  .bulk::after {
+    content: '';
+    position: absolute;
+    inset: -8px -4px;
   }
   .chips {
     display: flex;

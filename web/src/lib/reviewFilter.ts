@@ -61,6 +61,10 @@ type ChoiceFacet = Exclude<Facet, 'tags'>
 
 export const choiceOn = (f: ReviewFilter | null, key: ChoiceFacet, value: string) => f?.[key] === undefined || (f[key] as string[]).includes(value)
 
+export function setChoiceGroup(f: ReviewFilter | null, key: ChoiceFacet, selected: boolean): ReviewFilter | null {
+  return selected ? allIn(f, key) : { ...f, [key]: [] }
+}
+
 // Missing means all checked. Keep an empty draft row until it is corrected;
 // it cannot be saved as an empty array (the API reads that as unrestricted).
 export function toggleChoice(f: ReviewFilter | null, key: ChoiceFacet, value: string, available: readonly string[]): ReviewFilter | null {

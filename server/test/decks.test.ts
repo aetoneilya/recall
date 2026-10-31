@@ -73,6 +73,21 @@ describe('decks', () => {
 })
 
 describe('the per-deck queue and its review filter', () => {
+  it('appends a moved fact to its destination plan without reviving its source position', () => {
+    const ctx = makeCtx()
+    const en = deck(ctx, 10)
+    const notes = createDeck(ctx.db, ctx.user.id, { name: 'Notes' }, ctx.now())
+    const moving = addFact(ctx, en.id, 'Moving question')
+    addFact(ctx, en.id, 'Staying question')
+    addFact(ctx, notes.id, 'Destination question')
+    buildQueue(ctx.db, ctx.user.id, TZ, ctx.now())
+    updateFact(ctx.db, ctx.user.id, moving.fact.id, { deckId: notes.id }, ctx.now())
+    const q = buildQueue(ctx.db, ctx.user.id, TZ, ctx.now(), { deckId: notes.id })
+    expect(fronts(q)).toEqual(['Destination question', 'Moving question'])
+    expect(q.counts.new).toBe(2)
+    expect(fronts(buildQueue(ctx.db, ctx.user.id, TZ, ctx.now(), { deckId: en.id }))).toEqual(['Staying question'])
+  })
+
   function setup() {
     const ctx = makeCtx()
     const en = deck(ctx, 10)
@@ -97,7 +112,7 @@ describe('the per-deck queue and its review filter', () => {
       { id: en.id, name: 'English', hasLanguages: true, counts: { new: 3, learning: 0, review: 0 } },
       { id: p.id, name: 'Programming', hasLanguages: false, counts: { new: 2, learning: 0, review: 0 } },
     ])
-    expect(fronts(buildQueue(ctx.db, ctx.user.id, TZ, ctx.now(), { deckId: en.id }))).toEqual(['to give up', 'bone', 'Prepositions of time'])
+    expect(fronts(buildQueue(ctx.db, ctx.user.id, TZ, ctx.now(), { deckId: en.id }))).toEqual(['bone', 'to give up', 'Prepositions of time'])
   })
 
   it('applies the filter: by type, tag, part of speech, CEFR and direction; outside cards spend no budget', () => {
@@ -115,7 +130,7 @@ describe('the per-deck queue and its review filter', () => {
     expect(getDeck(ctx.db, ctx.user.id, en.id)!.reviewFilter).toEqual({ types: ['word'], cefr: ['A2'] })
     // Two values of one facet: either of them.
     updateDeck(ctx.db, ctx.user.id, en.id, { reviewFilter: { types: ['word'], cefr: ['A2', 'B1'] } })
-    expect(fronts(buildQueue(ctx.db, ctx.user.id, TZ, ctx.now(), { deckId: en.id }))).toEqual(['to give up', 'bone'])
+    expect(fronts(buildQueue(ctx.db, ctx.user.id, TZ, ctx.now(), { deckId: en.id }))).toEqual(['bone', 'to give up'])
     updateDeck(ctx.db, ctx.user.id, en.id, { reviewFilter: { types: ['word', 'rule'], pos: ['noun'] } })
     expect(fronts(buildQueue(ctx.db, ctx.user.id, TZ, ctx.now(), { deckId: en.id }))).toEqual(['bone', 'Prepositions of time'])
     updateDeck(ctx.db, ctx.user.id, en.id, { reviewFilter: { types: ['word'], cefr: ['A2'] } })

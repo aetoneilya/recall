@@ -15,15 +15,15 @@ import { addWord, cardsOf, makeCtx, rate, type TestCtx } from './helpers.ts'
 const ME = 1001
 const FRIEND = 2002
 
-type Sense = { term: string; pos: string; translations: string[]; ipa: string | null; examples: { text: string; translation: string | null }[]; note: string | null; cefr: string | null }
+type Sense = { term: string; pos: string; translations: string[]; ipa: string | null; examples: { text: string; translation: string | null }[]; note: string | null; cefr: string | null; tags?: string[] }
 const sense = (term: string, over: Partial<Sense> = {}): Sense => ({
   term, pos: 'noun', translations: [`${term} ru`], ipa: null, examples: [{ text: `Example with ${term}.`, translation: `Пример: ${term}.` }], note: null, cefr: 'B2', ...over,
 })
 
 const SENSES: Record<string, { draft: Sense; alternatives: Sense[] }> = {
   frown: {
-    draft: sense('to frown', { pos: 'verb', translations: ['хмуриться', 'насупиться'], ipa: 'fraʊn', examples: [{ text: 'She frowned at him.', translation: 'Она нахмурилась.' }], cefr: 'B2' }),
-    alternatives: [sense('frown', { pos: 'noun', translations: ['хмурый взгляд'], ipa: 'fraʊn' })],
+    draft: sense('to frown', { pos: 'verb', translations: ['хмуриться', 'насупиться'], ipa: 'fraʊn', examples: [{ text: 'She frowned at him.', translation: 'Она нахмурилась.' }], cefr: 'B2', tags: ['Topic/Feelings'] }),
+    alternatives: [sense('frown', { pos: 'noun', translations: ['хмурый взгляд'], ipa: 'fraʊn', tags: ['Topic/Communication'] })],
   },
 }
 
@@ -93,7 +93,7 @@ describe('adding a word by message', () => {
     const text = await tg.message(ME, 'frown')
     expect(text).toBe('✅ <b>to frown</b> /fraʊn/ · verb · B2\nхмуриться, насупиться\n<i>She frowned at him.</i>\nОна нахмурилась.')
     const [w] = words(ctx)
-    expect(w).toMatchObject({ term: 'to frown', pos: 'verb', status: 'active', createdBy: 'user', ipa: 'fraʊn', freqRank: 2500 })
+    expect(w).toMatchObject({ term: 'to frown', pos: 'verb', status: 'active', createdBy: 'user', ipa: 'fraʊn', freqRank: 2500, tags: ['Topic/Feelings'] })
     expect(ai.calls).toHaveLength(1)
     const shown = tg.buttons()
     expect(shown.map(([l]) => l)).toEqual(['✏️ Edit', '✖', '↔ Other meaning'])
@@ -104,9 +104,9 @@ describe('adding a word by message', () => {
     // ↔ switches the word to the next meaning and back.
     const card = tg.last()!
     expect((await tg.press(ME, tg.data('↔ Other meaning'))).edited).toBe('✅ <b>frown</b> /fraʊn/ · noun · B2\nхмурый взгляд\n<i>Example with frown.</i>\nПример: frown.')
-    expect(getWord(ctx.db, ctx.user.id, w!.id)).toMatchObject({ term: 'frown', pos: 'noun', translations: ['хмурый взгляд'], status: 'active' })
+    expect(getWord(ctx.db, ctx.user.id, w!.id)).toMatchObject({ term: 'frown', pos: 'noun', translations: ['хмурый взгляд'], status: 'active', tags: ['Topic/Communication'] })
     expect((await tg.press(ME, tg.data('↔ Other meaning'))).edited).toBe(card.text)
-    expect(getWord(ctx.db, ctx.user.id, w!.id)).toMatchObject({ term: 'to frown', pos: 'verb' })
+    expect(getWord(ctx.db, ctx.user.id, w!.id)).toMatchObject({ term: 'to frown', pos: 'verb', tags: ['Topic/Feelings'] })
   })
 
   it('✖ deletes the new word, or drops it once reviewed', async () => {

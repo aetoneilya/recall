@@ -1,7 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { emptyForm, formFrom, formToInput, guessPos, newTranslations, withContext } from './wordForm.ts'
+import { emptyForm, formFrom, formToInput, guessPos, newTranslations, withContext, withDraftTags } from './wordForm.ts'
 
 describe('word form', () => {
+  it('replaces an autofilled topic when the sense changes, keeping provenance and manual topics', () => {
+    expect(withDraftTags('Books/Novel', [], ['Topic/Travel']))
+      .toEqual({ tags: 'Books/Novel, Topic/Travel', autoTags: ['Topic/Travel'] })
+    expect(withDraftTags('Books/Novel, Topic/Travel', ['Topic/Travel'], ['Topic/Education']))
+      .toEqual({ tags: 'Books/Novel, Topic/Education', autoTags: ['Topic/Education'] })
+    expect(withDraftTags('Books/Novel, Topic/Travel', [], ['Topic/Travel']))
+      .toEqual({ tags: 'Books/Novel, Topic/Travel', autoTags: [] })
+    expect(withDraftTags('Books/Novel, Topic/Custom', [], ['Topic/Education']))
+      .toEqual({ tags: 'Books/Novel, Topic/Custom', autoTags: [] })
+    expect(formToInput(formFrom({ term: 'ticket', pos: 'noun', translations: ['билет'], ipa: null, examples: [], note: null, cefr: 'A1', tags: ['Topic/Travel'] })).tags)
+      .toEqual(['Topic/Travel'])
+  })
+
   it('guesses a part of speech for manual entry', () => {
     expect(guessPos('to frown')).toBe('verb')
     expect(guessPos('to put up')).toBe('phrasal_verb')

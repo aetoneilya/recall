@@ -92,9 +92,14 @@ describe('adding a starter set', () => {
     const times = (ctx.db.prepare('SELECT created_at FROM words WHERE import_ref IS NOT NULL ORDER BY created_at').all() as { created_at: string }[]).map((x) => Date.parse(x.created_at))
     expect(times.map((t) => t - times[0]!)).toEqual([0, 1, 2])
 
-    // new_per_day paces them in file order (forward before reverse, one card per word a day).
+    // The daily curriculum picks two of the pack's words, one direction
+    // per word. Reopening keeps the choice; storage still keeps file order.
     ctx.db.prepare('UPDATE decks SET new_per_day = 2 WHERE id = ?').run(en.id)
-    expect(buildQueue(ctx.db, ctx.user.id, TZ, ctx.now()).items.map((i) => wordOf(i).term)).toEqual(['house', 'to eat'])
+    const queued = buildQueue(ctx.db, ctx.user.id, TZ, ctx.now()).items
+    expect(queued).toHaveLength(2)
+    expect(new Set(queued.map((it) => wordOf(it).id)).size).toBe(2)
+    expect(queued.every((it) => it.card.direction === 'forward' && wordOf(it).tags.includes('Starter/A1'))).toBe(true)
+    expect(buildQueue(ctx.db, ctx.user.id, TZ, ctx.now()).items.map((it) => it.card.id)).toEqual(queued.map((it) => it.card.id))
 
     expect(listPacks(ctx.db, ctx.user.id)[0]).toMatchObject({ added: true, missing: 0, deckId: en.id })
     expect(addPack(ctx.db, ctx.user.id, 'starter-a1', ctx.now())).toMatchObject({ added: 0, alreadyAdded: 3, duplicates: 1 })

@@ -13,7 +13,7 @@
   import { setUnsaved } from '../lib/unsaved.ts'
   import { errorText, showToast } from '../lib/toast.svelte.ts'
   import type { AutofillResult, DeckWithCounts, Draft, WordItem } from '../lib/types.ts'
-  import { emptyForm, formFrom, formToInput, guessPos, newTranslations, withContext, type WordForm } from '../lib/wordForm.ts'
+  import { emptyForm, formFrom, formToInput, guessPos, newTranslations, withContext, withDraftTags, type WordForm } from '../lib/wordForm.ts'
   import { words } from '../lib/words.svelte.ts'
 
   // One field, ✨ autofill as soon as typing pauses, one Add. After adding,
@@ -29,6 +29,7 @@
     }
   }
   const rememberTags = (tags: string[] | undefined) => {
+    tags = tags?.filter((t) => !/^topic\//i.test(t))
     try {
       localStorage.removeItem('recall.lastSource')
       if (tags?.length) localStorage.setItem(TAGS_KEY, tags.join(', '))
@@ -60,6 +61,7 @@
   const cache = new Map<string, AutofillResult>()
   // The term + context the fields were last filled for.
   let filledFor = ''
+  let autoTags: string[] = []
   let seq = 0
   // 503 (not configured) or 429 (daily limit): don't ask again this visit.
   let autofillOff = $state(false)
@@ -155,7 +157,9 @@
     cache.set(filledFor, r)
     if (r.draft.term !== term.trim()) term = r.draft.term
     const f = formFrom(r.draft)
-    form = { ...f, tags: form.tags, examples: withContext(f.examples, c) }
+    const topic = withDraftTags(form.tags, autoTags, r.draft.tags)
+    form = { ...f, tags: topic.tags, examples: withContext(f.examples, c) }
+    autoTags = topic.autoTags
     alternatives = r.alternatives
     duplicate = r.duplicate
     fallback = autofillOff ? fallback : ''
@@ -178,6 +182,8 @@
     viaEnter ||= addWhenFilled
     addWhenFilled = false
     filledFor = key(t, c)
+    form.tags = withDraftTags(form.tags, autoTags).tags
+    autoTags = []
     if (!edited) form = { ...emptyForm(t.trim(), form.tags), examples: withContext([], c) }
     else form.pos = form.translations.length ? form.pos : guessPos(t)
     duplicate = null
@@ -236,10 +242,11 @@
     if (!status.online) return queueOffline(input)
     // Clear the form at once so the next word can be typed while this one
     // uploads; a refusal brings it back (if the field is still free).
-    const snapshot = { term, context, contextOpen, form: $state.snapshot(form) as WordForm, alternatives: $state.snapshot(alternatives) as Draft[] }
+    const snapshot = { term, context, contextOpen, autoTags: [...autoTags], form: $state.snapshot(form) as WordForm, alternatives: $state.snapshot(alternatives) as Draft[] }
     const restore = () => {
       if (term.trim()) return false
       ;({ term, context, contextOpen } = snapshot)
+      autoTags = snapshot.autoTags
       form = snapshot.form
       alternatives = snapshot.alternatives
       filledFor = key(term, context)
@@ -331,7 +338,9 @@
     const current: Draft = { ...formToInput({ ...form, term }), ipa: form.ipa || null, note: form.note || null, cefr: form.cefr || null } as Draft
     alternatives = [current, ...alternatives.filter((a) => a !== alt)]
     const f = formFrom(alt)
-    form = { ...f, tags: form.tags, examples: withContext(f.examples, context) }
+    const topic = withDraftTags(form.tags, autoTags, alt.tags)
+    form = { ...f, tags: topic.tags, examples: withContext(f.examples, context) }
+    autoTags = topic.autoTags
     if (alt.term !== term.trim()) {
       filledFor = key(alt.term, context)
       term = alt.term
@@ -341,6 +350,7 @@
   }
 
   function reset() {
+    autoTags = []
     clearTimeout(timer)
     seq++
     term = ''

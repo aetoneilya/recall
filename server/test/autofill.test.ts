@@ -29,6 +29,17 @@ function fake(reply: (body: MessageCreateParamsNonStreaming) => BetaMessage | Pr
 const run = (ctx: TestCtx, term = 'frowned', hint?: string) => autofill(ctx, ctx.user, defaultDeck(ctx.db, ctx.user.id, ctx.now()), { term, hint })
 
 describe('autofill', () => {
+  it('returns one validated contextual topic per sense, ready to save as word tags', async () => {
+    const { client } = fake(() => message({ draft: sense({ tags: ['Topic/Feelings', 'claude', 'Topic/Work'] }),
+      alternatives: [sense({ pos: 'noun', tags: ['Some book', 'Topic/Invalid'] })] }))
+    const ctx = makeCtx({}, undefined, client)
+    const r = await run(ctx)
+    expect(r.draft.tags).toEqual(['Topic/Feelings'])
+    expect(r.alternatives[0]!.tags).toBeUndefined()
+    const saved = addWord(ctx, r.draft.term, r.draft)
+    expect(saved.tags).toEqual(['Topic/Feelings'])
+  })
+
   it('asks Claude with structured outputs, low effort and the server-side fallback, and normalises the draft', async () => {
     const { client, calls } = fake(() => message({ draft: sense(), alternatives: [sense({ term: 'frown', pos: 'noun', translations: ['хмурый взгляд'], cefr: 'Z9' }), sense()] }))
     const ctx = makeCtx({}, undefined, client)

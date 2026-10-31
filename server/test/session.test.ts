@@ -53,9 +53,13 @@ describe('+5 new after a session', () => {
     expect(q.counts).toEqual({ new: 5, learning: 1, review: 0 })
     expect(q.decks.find((x) => x.id === d.id)!.counts).toEqual(q.counts)
     expect(decksWithCounts(ctx.db, ctx.user.id, TZ, ctx.now()).find((x) => x.id === d.id)!.counts.new).toBe(5)
-    // The client counts the same and shows exactly those five.
+    // The client counts the same and shows those five in the daily plan's
+    // order, without introducing a reverse sibling or a word rated today.
     expect(counts(clientQueue(q.items, buried, {}, ctx.now(), TZ))).toEqual(q.counts)
-    expect(play(ctx, q.items, buried)).toEqual(['w3:forward', 'w4:forward', 'w5:forward', 'w6:forward', 'w7:forward'])
+    const expected = q.items.filter((it) => it.card.schedule.state === 0).map((it) => `${wordOf(it).term}:${it.card.direction}`)
+    expect(expected).toHaveLength(5)
+    expect(expected.every((term) => /^w(?:[3-9]|1[0-2]):forward$/.test(term))).toBe(true)
+    expect(play(ctx, q.items, buried)).toEqual(expected)
   })
 
   it('spends nothing on a disabled direction or a card outside the filter, and shows a new card with a future due', () => {

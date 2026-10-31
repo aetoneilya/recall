@@ -18,6 +18,7 @@ import {
   exerciseKey,
   factKey,
   newCardState,
+  newItemOrder,
   nextDayStart,
   normalizeTerm,
   planToday,
@@ -38,6 +39,8 @@ import {
   facetOptions,
   inReviewFilter,
   tagMatches,
+  wordTopic,
+  WORD_TOPICS,
   type QueueItem,
   type Rating,
   type ReviewFilter,
@@ -91,6 +94,7 @@ const db = {
   logs: [] as ReviewLog[],
   tests: [] as TestRow[],
 }
+const newPlans = new Map<string, string[]>()
 
 let seq = 0
 const id = (prefix: string) => `${prefix}_${(++seq).toString(36)}${Math.random().toString(36).slice(2, 6)}`
@@ -459,10 +463,11 @@ function buildQueue(now: Date, limit: number, deckId?: string, draft?: { deckId:
     if (!reviewedToday.has(ownerKey(c))) reviewedToday.set(ownerKey(c), new Set())
     reviewedToday.get(ownerKey(c))!.add(c.id)
   }
-  const cards = db.cards.filter((c) => {
+  const activeCards = db.cards.filter((c) => {
     const o = owners.get(ownerKey(c))
-    return o && !c.suspended && (c.factId !== null || enabled(deckOf(o.deckId), c.direction)) && inReviewFilter(filterOf(o.deckId), factsOf(c, o))
+    return o && !c.suspended && (c.factId !== null || enabled(deckOf(o.deckId), c.direction))
   })
+  const cards = activeCards.filter((c) => inReviewFilter(filterOf(owners.get(ownerKey(c))!.deckId), factsOf(c, owners.get(ownerKey(c))!)))
   const deckIdOf = (c: Card) => owners.get(ownerKey(c))!.deckId
   const dueT = (c: Card) => new Date(c.schedule.due).getTime()
   const learning = cards.filter((c) => (c.schedule.state === 1 || c.schedule.state === 3) && dueT(c) < dayEnd).sort((a, b) => dueT(a) - dueT(b))
@@ -484,9 +489,24 @@ function buildQueue(now: Date, limit: number, deckId?: string, draft?: { deckId:
     const fwd = cardsOf(c.wordId).find((x) => x.direction === 'forward')
     return !!fwd && !fwd.suspended && (fwd.schedule.state === 0 || fwd.schedule.stability < deck.reverseAfterDays)
   }
-  const fresh = cards
+  const candidates = activeCards
     .filter((c) => c.schedule.state === 0 && !gated(c))
-    .sort((a, b) => owners.get(ownerKey(a))!.createdAt.localeCompare(owners.get(ownerKey(b))!.createdAt) || (a.direction === 'forward' ? -1 : 1))
+    .sort((a, b) => owners.get(ownerKey(a))!.createdAt.localeCompare(owners.get(ownerKey(b))!.createdAt) || ownerKey(a).localeCompare(ownerKey(b)) || a.direction.localeCompare(b.direction))
+  const fresh: Card[] = []
+  for (const d of db.decks) {
+    const list = candidates.filter((c) => deckIdOf(c) === d.id)
+    const groups = new Map<string, Card[]>()
+    for (const c of list) groups.set(ownerKey(c), [...(groups.get(ownerKey(c)) ?? []), c])
+    const key = `${dayKey(now, DAY)}:${d.id}`
+    const ids = newItemOrder([...groups.keys()].map((id) => {
+      const o = owners.get(id)!
+      return { id, kind: 'term' in o ? 'word' : 'fact', createdAt: o.createdAt, tags: o.tags, language: d.targetLang,
+        ...('term' in o ? { term: o.term, pos: o.pos, cefr: o.cefr, freqRank: o.freqRank,
+          familiar: db.cards.some((c) => c.wordId === id && c.schedule.state > 0) } : {}) }
+    }), dayKey(now, DAY), newPlans.get(key))
+    newPlans.set(key, ids)
+    for (const id of ids) for (const c of groups.get(id) ?? []) if (cards.includes(c)) fresh.push(c)
+  }
 
   // Burying, what waits and what the budget spends on: core.planToday, as on the server.
   const placed = planToday(
@@ -803,6 +823,11 @@ function autofill(body: Body) {
     senses = [draft, { ...draft, pos: multi ? 'idiom' : 'adjective', translations: [`ещё одно значение: ${key}`], examples: [], cefr: 'C1' }]
     freqRank = rankOf(term)
   }
+  senses = senses.map((sense) => {
+    const topic = wordTopic({ ...sense, tags: sense.tags ?? [], language: deck.targetLang })
+    const name = WORD_TOPICS.find((name) => name.toLowerCase() === topic)
+    return name ? { ...sense, tags: [`Topic/${name}`] } : sense
+  })
   const [draft, ...alternatives] = senses
   return { draft: draft!, alternatives, freqRank, duplicate: duplicateOf(deck.id, draft!.term, draft!.pos) }
 }

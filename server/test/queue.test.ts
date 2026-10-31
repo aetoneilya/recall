@@ -136,6 +136,52 @@ describe('queue', () => {
     const q = buildQueue(ctx.db, ctx.user.id, TZ, ctx.now())
     expect(q.items.map((i) => wordOf(i).term)).toEqual(['book 1', 'leon 1', 'plain', 'book 2'])
   })
+
+  it('plans easy new words first and persists the remaining order through ratings, edits and additions', () => {
+    const ctx = makeCtx()
+    const d = deck(ctx, 10)
+    updateDeck(ctx.db, ctx.user.id, d.id, { reverseEnabled: false })
+    const hard = addWord(ctx, 'advanced word', { cefr: 'C2' })
+    const middle = addWord(ctx, 'intermediate word', { cefr: 'B1' })
+    const easy = addWord(ctx, 'beginner word', { cefr: 'A1' })
+    const fresh = () => buildQueue(ctx.db, ctx.user.id, TZ, ctx.now()).items.filter((it) => it.card.schedule.state === 0).map((it) => wordOf(it).id)
+    expect(fresh()).toEqual([easy.id, middle.id, hard.id])
+    const stored = ctx.db.prepare('SELECT item_ids FROM daily_new_plans WHERE deck_id = ?').get(d.id) as { item_ids: string }
+    expect(JSON.parse(stored.item_ids)).toEqual([easy.id, middle.id, hard.id])
+    rate(ctx, cardsOf(ctx, easy.id)[0]!.id, 3, ctx.now())
+    ctx.db.prepare("UPDATE words SET cefr = 'A1' WHERE id = ?").run(hard.id)
+    const added = addWord(ctx, 'new beginner word', { cefr: 'A1' })
+    expect(fresh()).toEqual([middle.id, hard.id, added.id])
+    ctx.clock.t = new Date('2026-10-22T09:00:00Z')
+    expect(fresh().indexOf(middle.id)).toBeGreaterThan(fresh().indexOf(added.id))
+  })
+
+  it('plans all candidates before applying filters and spends the budget only on matching words', () => {
+    const ctx = makeCtx()
+    const d = deck(ctx, 2)
+    const hard = addWord(ctx, 'advanced word', { cefr: 'C2', tags: ['Topic/Travel'] })
+    const easy = addWord(ctx, 'beginner word', { cefr: 'A1', tags: ['Topic/Home'] })
+    updateDeck(ctx.db, ctx.user.id, d.id, { reverseEnabled: false, reviewFilter: { tags: ['Topic/Travel'] } })
+    let q = buildQueue(ctx.db, ctx.user.id, TZ, ctx.now())
+    expect(q.counts.new).toBe(1)
+    expect(q.items.map((it) => wordOf(it).id)).toEqual([hard.id])
+    updateDeck(ctx.db, ctx.user.id, d.id, { reviewFilter: null })
+    q = buildQueue(ctx.db, ctx.user.id, TZ, ctx.now())
+    expect(q.items.map((it) => wordOf(it).id)).toEqual([easy.id, hard.id])
+  })
+
+  it('does not give a familiar word a second difficulty-based introduction for its reverse card', () => {
+    const ctx = makeCtx()
+    deck(ctx, 10)
+    const familiar = addWord(ctx, 'familiar advanced word', { cefr: 'C2', at: new Date('2026-10-01T09:00:00Z') })
+    rate(ctx, cardsOf(ctx, familiar.id)[0]!.id, 4, new Date('2026-10-01T09:00:00Z'))
+    ctx.db.prepare("UPDATE cards SET due = '2026-12-01T09:00:00Z' WHERE word_id = ? AND direction = 'forward'").run(familiar.id)
+    const easy = addWord(ctx, 'beginner word', { cefr: 'A1' })
+    const hard = addWord(ctx, 'advanced word', { cefr: 'C2' })
+    const items = buildQueue(ctx.db, ctx.user.id, TZ, ctx.now()).items
+    expect(items.map((it) => wordOf(it).id)).toEqual([familiar.id, easy.id, hard.id])
+    expect(items[0]!.card.direction).toBe('reverse')
+  })
 })
 
 describe('direction settings', () => {

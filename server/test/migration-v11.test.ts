@@ -36,7 +36,7 @@ describe('migration to v11', () => {
     const before = JSON.parse(JSON.stringify(db.prepare('SELECT * FROM users ORDER BY rowid').all()))
     migrate(db, ENV, 11)
     expect(schemaVersion(db)).toBe(11)
-    expect(MIGRATIONS.length).toBe(11)
+    expect(MIGRATIONS.length).toBeGreaterThanOrEqual(11)
     db.exec('PRAGMA foreign_keys = ON')
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
     const after = db.prepare('SELECT id, onboarded, coach_seen FROM users ORDER BY rowid').all()

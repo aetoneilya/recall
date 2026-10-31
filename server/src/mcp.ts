@@ -61,7 +61,7 @@ const fields = {
   })).max(5).optional().describe('1–2 short natural examples; the first one is shown on the cards.'),
   note: z.string().max(2000).optional().describe('Short usage note in Russian: register, collocations, pitfalls.'),
   cefr: cefr.optional().describe('CEFR level estimate.'),
-  tags: z.array(z.string()).max(30).optional().describe('Short tags, e.g. the subject or the book or article the word came from; "/" makes a path ("Books/<title>").'),
+  tags: z.array(z.string()).max(30).optional().describe('Short tags; "/" makes a path ("Books/<title>"). Add one Topic/<everyday context> tag (e.g. Topic/Travel, Topic/Work, Topic/Food) for thematic introductions, alongside provenance tags. A context is a situation, not a synonym group.'),
 }
 
 const FACT_RULES = 'Front: one question with one clear answer, standalone (no "as above"). Back: the answer in Markdown — a few sentences or a short "-" / "1." list; **bold** the key point, `code` for identifiers, ``` fenced blocks only for short code. One idea per card: split a big topic into several facts rather than one long answer.'
@@ -326,7 +326,7 @@ export function buildMcpServer(ctx: AppContext, user: User): McpServer {
 
   server.registerTool('add_pack', {
     title: 'Add content pack',
-    description: 'Adds a content pack\'s cards to a deck (default: starter words, irregular verbs and the grammar handbook into the English deck, other packs into a deck named after the pack), each tagged with the pack\'s name (the grammar handbook: "Grammar/<the topic\'s group>" on rules and theory cards alike; a starter word set: "Starter/<level>"); they are active at once, introduced in the pack\'s order (most useful first). A starter word set adds words with both cards, deduped like add_words (a word the deck has, in any status, counts under duplicates). The grammar handbook adds per topic a rule (title → cheat sheet) with its exercise pool, and the theory cards; `exercises` = items added to rules. Running it again adds only what the user lacks, including new exercises of rules already added. Only when the user asked for it.',
+    description: 'Adds a content pack\'s cards to a deck (default: starter words, irregular verbs and the grammar handbook into the English deck, other packs into a deck named after the pack), each tagged with the pack\'s name (the grammar handbook: "Grammar/<the topic\'s group>" on rules and theory cards alike; a starter word set: "Starter/<level>"); they are active at once, introduced through the daily curriculum (words favour easier/common vocabulary; facts keep pack order within their source). A starter word set adds words with both cards, deduped like add_words (a word the deck has, in any status, counts under duplicates). The grammar handbook adds per topic a rule (title → cheat sheet) with its exercise pool, and the theory cards; `exercises` = items added to rules. Running it again adds only what the user lacks, including new exercises of rules already added. Only when the user asked for it.',
     inputSchema: { id: z.string().describe('Pack id from list_packs.'), deck: z.string().optional().describe('Deck name or id to add it to.') },
   }, guard(({ id, deck }) => {
     const r = addPack(db, uid, id, ctx.now(), { deckId: deck, lex: lex() })

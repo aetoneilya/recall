@@ -310,6 +310,15 @@ export const MIGRATIONS: Migration[] = [
   UPDATE users SET onboarded = 1, coach_seen = 1
     WHERE EXISTS (SELECT 1 FROM words WHERE words.user_id = users.id) OR EXISTS (SELECT 1 FROM facts WHERE facts.user_id = users.id);
   `,
+  // v12: keep the introduction order stable across ratings and restarts.
+  `
+  CREATE TABLE daily_new_plans (
+    deck_id TEXT NOT NULL REFERENCES decks(id) ON DELETE CASCADE,
+    day TEXT NOT NULL,
+    item_ids TEXT NOT NULL,
+    PRIMARY KEY (deck_id, day)
+  );
+  `,
 ]
 
 function plainDecks(db: Db) {

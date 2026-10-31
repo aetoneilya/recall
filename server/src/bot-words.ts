@@ -11,7 +11,7 @@
 // Buttons carry `<kind>:<action>:<draft id>[:<index>]`; the draft (drafts.ts)
 // holds the rest and must belong to the presser. Work runs in a per-user
 // queue so a slow batch doesn't hold up the poller or other users.
-import { LIMITS, normalizeTerm, type Deck, type PartOfSpeech } from '@recall/core'
+import { LIMITS, normalizeTerm, withWordTopics, type Deck, type PartOfSpeech } from '@recall/core'
 import { GrammyError, InlineKeyboard, type Api, type Bot, type Context } from 'grammy'
 import { autofill, withFirstExample, type Draft as Sense } from './autofill.ts'
 import type { AppContext } from './context.ts'
@@ -498,7 +498,8 @@ export function installWordHandlers(bot: Bot, ctx: AppContext, opts: WordBotOpti
         const index = (p.index + step) % p.senses.length
         const s = p.senses[index]!
         try {
-          updateWord(db, user.id, word.id, { term: s.term, pos: s.pos, translations: s.translations, ipa: s.ipa, examples: s.examples, note: s.note, cefr: s.cefr }, ctx.now(), lexiconOf(ctx))
+          const { tags } = withWordTopics(word.tags, p.senses[p.index]?.tags ?? [], s.tags)
+          updateWord(db, user.id, word.id, { term: s.term, pos: s.pos, translations: s.translations, ipa: s.ipa, examples: s.examples, note: s.note, cefr: s.cefr, tags }, ctx.now(), lexiconOf(ctx))
         } catch (e) {
           if (e instanceof DuplicateWordError) continue
           throw e

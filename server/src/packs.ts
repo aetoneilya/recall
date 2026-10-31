@@ -267,7 +267,7 @@ export function addPack(db: Db, userId: string, packId: string, now: Date, { dec
 // cards, deduped against the deck (any status: a dropped word stays dropped,
 // and counts as a duplicate), tagged Starter/<level>, import_ref
 // pack:<id>:<n> (n = the item's place in the file), created a millisecond
-// apart in file order so new_per_day introduces them in that order.
+// apart to preserve file order; the daily curriculum chooses introductions.
 function addPackWords(db: Db, userId: string, p: Pack, deck: DeckInfo, refs: Set<string>, now: Date, lex?: Lexicon | null): AddPackResult {
   const out: AddPackResult = { deck, added: 0, alreadyAdded: 0, duplicates: 0, exercises: 0 }
   const tag = starterTag(p)

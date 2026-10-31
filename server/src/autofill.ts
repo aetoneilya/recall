@@ -3,7 +3,7 @@
 // the server-side refusal fallback re-runs a declined request on another model.
 import Anthropic from '@anthropic-ai/sdk'
 import type { BetaContentBlockParam, BetaMessage, MessageCreateParamsNonStreaming } from '@anthropic-ai/sdk/resources/beta/messages/messages'
-import { CEFR_LEVELS, cleanWord, LIMITS, PARTS_OF_SPEECH, type CleanWord, type Deck, type Example, type Word } from '@recall/core'
+import { CEFR_LEVELS, cleanWord, LIMITS, PARTS_OF_SPEECH, WORD_TOPICS, type CleanWord, type Deck, type Example, type Word } from '@recall/core'
 import type { AppContext } from './context.ts'
 import type { Db } from './db.ts'
 import { lexiconOf } from './lexicon.ts'
@@ -33,7 +33,7 @@ const nullable = (schema: object) => ({ anyOf: [schema, { type: 'null' }] })
 const SENSE = {
   type: 'object',
   additionalProperties: false,
-  required: ['term', 'pos', 'translations', 'ipa', 'examples', 'note', 'cefr'],
+  required: ['term', 'pos', 'translations', 'ipa', 'examples', 'note', 'cefr', 'tags'],
   properties: {
     term: { type: 'string', description: 'Dictionary base form; verbs with "to" ("to frown"), phrasal verbs and idioms as a whole.' },
     pos: { type: 'string', enum: [...PARTS_OF_SPEECH] },
@@ -51,6 +51,7 @@ const SENSE = {
     },
     note: nullable({ type: 'string', description: 'Short usage note in the native language: register, collocations, pitfalls.' }),
     cefr: nullable({ type: 'string', enum: [...CEFR_LEVELS] }),
+    tags: { type: 'array', items: { type: 'string', enum: WORD_TOPICS.map((topic) => `Topic/${topic}`) }, description: 'One everyday context for this sense, or empty if none fits.' },
   },
 }
 
@@ -77,12 +78,13 @@ Given a ${target} term (and maybe a hint about the intended sense), return:
 - ipa: General American pronunciation in IPA, without slashes (pick General American consistently, never British);
 - examples: 1–2 natural, everyday ${target} sentences using the term, each with a ${native} translation;
 - note: a concise usage note in ${native} (register, typical collocations, false friends) or null;
-- cefr: your CEFR estimate (A1–C2) or null for idioms you can't place.
+- cefr: your CEFR estimate (A1–C2) or null for idioms you can't place;
+- tags: at most one Topic/<context> tag from ${WORD_TOPICS.join(', ')}. Pick the everyday situation this sense belongs in, not a synonym group, source or difficulty. If none fits, return [].
 Put the most common sense in draft. If the term has other common senses or parts of speech, give each in alternatives (at most 3); otherwise alternatives is empty. Use the hint to choose the draft sense.
 If a context sentence is given, the term is used in it: the draft is the sense it has there, and the sentence is the draft's first example, verbatim, with its translation.`
 }
 
-export type Draft = Omit<CleanWord, 'tags'>
+export type Draft = Omit<CleanWord, 'tags'> & { tags?: string[] }
 
 const sameText = (a: string, b: string) => a.replace(/\s+/g, ' ').trim().toLowerCase() === b.replace(/\s+/g, ' ').trim().toLowerCase()
 
@@ -111,7 +113,8 @@ function toDraft(raw: unknown): Draft | null {
   })
   if ('error' in c) return null
   const { tags: _t, ...draft } = c.word
-  return draft
+  const tags = Array.isArray(r.tags) ? r.tags.filter((t): t is string => typeof t === 'string' && WORD_TOPICS.some((topic) => t === `Topic/${topic}`)).slice(0, 1) : []
+  return { ...draft, ...(tags.length ? { tags } : {}) }
 }
 
 export interface AutofillResult {

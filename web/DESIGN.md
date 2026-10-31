@@ -48,6 +48,8 @@ spacing:
 
 **Creative North Star: "The index card on a quiet desk"**
 
+New words follow the daily difficulty/context curriculum described in `../DESIGN.md`; the review screen keeps its normal card and progress layout. In Add word, autofill can propose one `Topic/<context>` tag alongside the remembered provenance tags. Changing the suggested sense replaces only its automatic topic; an explicit manual topic takes precedence. Topic tags are not carried into the next word's form.
+
 Warm paper in the light theme, deep graphite at night, and one white (or charcoal) card that carries all the attention. Chrome recedes to hairlines and muted grey; colour appears only where it means something: the accent for the current place and primary action, and the four rating hues for the decision the owner makes a few hundred times a day.
 
 The app is Operate-mode: familiar iOS patterns (large titles, grouped inset lists, segmented controls, a bottom tab bar), system fonts, and no decorative motion. Character lives in the precise details: the vocabulary word that doesn't jump when its translation appears, the pronunciation set under the English word like a dictionary entry, the cloze blank that lights up in place.

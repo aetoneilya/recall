@@ -264,6 +264,7 @@ export interface Draft {
   examples: Example[]
   note: string | null
   cefr: Cefr | null
+  tags?: string[]
 }
 
 export interface AutofillResult {

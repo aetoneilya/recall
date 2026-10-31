@@ -5,7 +5,7 @@
 // Words' and facts' cards are read alike through the study_cards view
 // (db.ts v6): `c.item_id` is the word or fact, `c.deck_id`/`c.user_id` its own.
 import {
-  cleanReviewFilter, dayKey, dayStart, DIRECTIONS, facetOptions, inReviewFilter, nextDayStart, planToday, retrievability, review,
+  cleanReviewFilter, dayKey, dayStart, DIRECTIONS, facetOptions, inReviewFilter, newItemOrder, nextDayStart, planToday, retrievability, review,
   type Card, type CardFacts, type CardState, type CardType, type Cefr, type DayOptions, type Direction, type FsrsState, type PartOfSpeech, type QueueItem, type Rating,
   type FacetItem, type ReviewFilter, type ReviewInput, type ReviewLog,
 } from '@recall/core'
@@ -46,6 +46,11 @@ export interface QueueRow extends CardRow {
   item_tags: string
   item_pos: string | null
   item_cefr: string | null
+  item_freq_rank: number | null
+  item_term: string | null
+  item_created_at: string
+  target_lang: string | null
+  familiar: number
   // Active exercises of a fact that any server can serve (not write): a
   // rule with MIN_POOL or more.
   pool: number
@@ -56,6 +61,8 @@ export interface QueueRow extends CardRow {
 export const QUEUE_SELECT = `
   SELECT c.*, d.name AS deck_name, d.new_per_day, d.review_filter,
     coalesce(w.tags, f.tags, '[]') AS item_tags, w.pos AS item_pos, w.cefr AS item_cefr,
+    w.freq_rank AS item_freq_rank, w.term AS item_term, d.target_lang,
+    EXISTS (SELECT 1 FROM cards sibling WHERE sibling.word_id = c.word_id AND sibling.state > 0) AS familiar,
     (SELECT count(*) FROM fact_exercises e WHERE e.fact_id = c.fact_id AND ${SERVABLE}) AS pool
   FROM study_cards c JOIN decks d ON d.id = c.deck_id
   LEFT JOIN words w ON w.id = c.word_id LEFT JOIN facts f ON f.id = c.fact_id
@@ -167,30 +174,43 @@ export function inFilter(filters: Map<string, ReviewFilter | null> = new Map()) 
   return (rows: QueueRow[]) => rows.filter((r) => inReviewFilter(filterOf(r), rowFacts(r)))
 }
 
-// Where a card comes from, for mixing new cards: the top level of its first
-// tag ("Books", "Grammar", "Starter"; a pack keeps its own order), else its
-// kind, so one import or pack doesn't fill a day's new cards on its own.
-const sourceOf = (r: QueueRow) => (JSON.parse(r.item_tags) as string[])[0]?.split('/')[0] ?? `:${r.kind}`
-
-// New cards taken in turn from each source (the oldest source first), each
-// source's in the order they were added; an item's cards stay together.
-export function mixSources(rows: QueueRow[]): QueueRow[] {
-  const sources = new Map<string, QueueRow[][]>()
+// Plan before filtering or spending budgets: a filter preview must not
+// choose the day's topics. Cards/directions of an item remain together.
+function orderNew(db: Db, rows: QueueRow[], day: string): QueueRow[] {
+  const decks = new Map<string, QueueRow[]>()
   const items = new Map<string, QueueRow[]>()
   for (const r of rows) {
     let cards = items.get(r.item_id)
     if (!cards) {
       items.set(r.item_id, (cards = []))
-      const k = sourceOf(r)
-      let s = sources.get(k)
-      if (!s) sources.set(k, (s = []))
-      s.push(cards)
+      const deck = decks.get(r.deck_id) ?? []
+      deck.push(r)
+      decks.set(r.deck_id, deck)
     }
     cards.push(r)
   }
-  const lists = [...sources.values()]
   const out: QueueRow[] = []
-  for (let i = 0; out.length < rows.length; i++) for (const s of lists) if (i < s.length) out.push(...s[i]!)
+  let changed = false
+  const find = db.prepare('SELECT item_ids FROM daily_new_plans WHERE deck_id = ? AND day = ?')
+  const save = db.prepare('INSERT INTO daily_new_plans(deck_id, day, item_ids) VALUES (?, ?, ?) ON CONFLICT(deck_id, day) DO UPDATE SET item_ids = excluded.item_ids')
+  for (const [deckId, list] of decks) {
+    const stored = find.get(deckId, day) as { item_ids: string } | undefined
+    const previous = stored ? JSON.parse(stored.item_ids) as string[] : []
+    const ids = newItemOrder(list.map((r) => ({
+      id: r.item_id, kind: r.kind, tags: JSON.parse(r.item_tags) as string[], createdAt: r.item_created_at,
+      term: r.item_term ?? undefined, pos: r.item_pos as PartOfSpeech | null, cefr: r.item_cefr as Cefr | null,
+      freqRank: r.item_freq_rank, language: r.target_lang, familiar: !!r.familiar,
+    })), day, previous)
+    if (ids.length !== previous.length) {
+      save.run(deckId, day, JSON.stringify(ids))
+      changed = true
+    }
+    for (const id of ids) {
+      const cards = items.get(id)
+      if (cards?.[0]?.deck_id === deckId) out.push(...cards)
+    }
+  }
+  if (changed) db.prepare('DELETE FROM daily_new_plans WHERE day < ?').run(new Date(Date.parse(`${day}T00:00:00Z`) - 7 * 86_400_000).toISOString().slice(0, 10))
   return out
 }
 
@@ -221,7 +241,7 @@ function selectQueue(db: Db, userId: string, opts: DayOptions, now: Date, deckId
   const wanted = inFilter(filters)
   const learning = wanted(db.prepare(`${QUEUE_SELECT} AND c.state IN (1, 3) AND c.due < ?${deckFilter} ORDER BY c.due, c.id`).all(userId, end, ...deckArgs) as unknown as QueueRow[])
   const reviews = wanted(db.prepare(`${QUEUE_SELECT} AND c.state = 2 AND c.due < ?${deckFilter} ORDER BY c.due, c.id`).all(userId, end, ...deckArgs) as unknown as QueueRow[])
-  const fresh = mixSources(wanted(db.prepare(`${QUEUE_SELECT} AND c.state = 0 AND ${REVERSE_GATE}${deckFilter} ORDER BY c.item_created_at, c.item_id, c.direction`).all(userId, ...deckArgs) as unknown as QueueRow[]))
+  const fresh = wanted(orderNew(db, db.prepare(`${QUEUE_SELECT} AND c.state = 0 AND ${REVERSE_GATE}${deckFilter} ORDER BY c.item_created_at, c.item_id, c.direction`).all(userId, ...deckArgs) as unknown as QueueRow[], day.key))
 
   const touched = reviewedToday(db, userId, day)
   const introduced = introducedToday(db, userId, day)

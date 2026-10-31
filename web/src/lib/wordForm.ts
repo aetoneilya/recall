@@ -1,7 +1,7 @@
 // Editable form state for a word (add screen and editor) and its
 // conversion to the API's WordInput. Strings stay strings while editing;
 // empty fields become null on the way out.
-import type { Cefr, PartOfSpeech, WordInput } from '@recall/core'
+import { withWordTopics, type Cefr, type PartOfSpeech, type WordInput } from '@recall/core'
 import type { Draft } from './types.ts'
 
 export interface ExampleForm {
@@ -52,6 +52,12 @@ export function formFrom(w: Fill): WordForm {
     tags: (w.tags ?? []).join(', '),
     cefr: w.cefr ?? '',
   }
+}
+
+// Keep provenance/manual tags, replace only the previous autofill's topic.
+export function withDraftTags(current: string, previous: string[], proposed: string[] = []): { tags: string; autoTags: string[] } {
+  const result = withWordTopics(current.split(',').map((t) => t.trim()).filter(Boolean), previous, proposed)
+  return { tags: result.tags.join(', '), autoTags: result.autoTags }
 }
 
 const orNull = (s: string) => (s.trim() ? s.trim() : null)
